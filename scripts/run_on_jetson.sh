@@ -123,6 +123,7 @@ Examples:
   $0 zed
   $0 perception model_path:=${WS_DIR}/src/ylhb_perception/models/yolo26.engine backend:=tensorrt imgsz:=960 half:=true
   $0 llm enable_voice:=false enable_tts:=false
+  $0 llm enable_voice:=true enable_tts:=true audio_input_device:=plughw:CARD=Luna,DEV=0 audio_output_device:=plughw:CARD=Luna,DEV=0
   $0 competition fullscreen:=true
   $0 navigation map:=${WS_DIR}/src/my_map.yaml
 EOF

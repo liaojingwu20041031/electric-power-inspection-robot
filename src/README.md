@@ -72,6 +72,22 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
 ./scripts/run_on_jetson.sh llm enable_voice:=false enable_tts:=false
 ```
 
+eMeet Luna 语音输入/播报：
+
+```bash
+./scripts/run_on_jetson.sh llm \
+  enable_voice:=true \
+  enable_tts:=true \
+  audio_input_device:=plughw:CARD=Luna,DEV=0 \
+  audio_output_device:=plughw:CARD=Luna,DEV=0
+```
+
+语音输入采用按钮或服务触发：
+
+```bash
+ros2 service call /retail_ai/capture_voice std_srvs/srv/Trigger "{}"
+```
+
 启动比赛现场显示屏 UI / 总控台：
 
 ```bash

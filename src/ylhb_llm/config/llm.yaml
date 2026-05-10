@@ -118,10 +118,12 @@ voice_input_node:
   ros__parameters:
     # ASR 识别出的文字发布到这个话题，retail_task_node 会按文字指令处理。
     text_command_topic: /retail_ai/text_command
+    capture_voice_service_name: /retail_ai/capture_voice
 
     # ALSA 录音设备。default 表示系统默认麦克风。
-    # 如果 arecord -l 显示 CZ007 是 hw:2,0，则启动时传 audio_device:=hw:2,0。
+    # eMeet Luna 推荐使用 plughw:CARD=Luna,DEV=0；audio_device 保留兼容旧启动命令。
     audio_device: default
+    audio_input_device: default
 
     # 每次录音时长，单位秒。短命令推荐 3~5 秒。
     # 太短可能截断语音，太长会增加 ASR 延迟。
@@ -130,8 +132,8 @@ voice_input_node:
     # 录音采样率。中文短语音识别用 16000 通常足够。
     sample_rate: 16000
 
-    # 是否启用语音输入。默认 false，避免没有 CZ007 或声卡时反复报错。
-    # 接上 CZ007 并确认 arecord -l 正常后再设 true。
+    # 是否启用语音输入。默认 false，避免没有声卡或 API Key 时误触发。
+    # 接上 eMeet Luna 并确认 arecord -l 正常后再设 true。
     enabled: false
 
     # DashScope OpenAI 兼容接口地址，和 retail_task_node 保持一致。
@@ -160,14 +162,17 @@ voice_output_node:
     tts_enabled: false
 
     # ALSA 播放设备。default 表示系统默认扬声器。
-    # 如果 aplay -l 显示输出设备是 hw:2,0，则启动时传 audio_device:=hw:2,0。
+    # eMeet Luna 推荐使用 plughw:CARD=Luna,DEV=0；audio_device 保留兼容旧启动命令。
     audio_device: default
+    audio_output_device: default
 
     # DashScope OpenAI 兼容接口地址，和 retail_task_node 保持一致。
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 
     # TTS 模型。若账号未开通该模型，需要按百炼控制台可用模型 ID 替换。
     tts_model: qwen3-tts-flash
+    tts_voice: Cherry
+    tts_language_type: Chinese
 
     # TTS 请求超时，单位秒。播报内容较长时可适当调大。
     request_timeout_sec: 15.0

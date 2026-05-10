@@ -137,26 +137,64 @@ class QwenClient:
             messages=[{'role': 'user', 'content': content}],
             timeout_sec=timeout_sec,
             temperature=0.0,
+            extra_body={'asr_options': {'enable_itn': False}},
         ).strip()
 
     def synthesize_speech(self, text: str, model: str, timeout_sec: float) -> Optional[bytes]:
-        prompt = f'请用自然普通话朗读以下内容：{text}'
-        raw = self.chat_completion(
+        return self.synthesize_speech_bytes(
+            text=text,
             model=model,
-            messages=[{'role': 'user', 'content': prompt}],
             timeout_sec=timeout_sec,
-            temperature=0.0,
         )
-        # Some OpenAI-compatible TTS responses return text only. Keep this method
-        # tolerant so the voice node can fall back to text-only status.
+
+    def synthesize_speech_bytes(
+        self,
+        text: str,
+        model: str,
+        timeout_sec: float,
+        voice: str = 'Cherry',
+        language_type: str = 'Chinese',
+    ) -> Optional[bytes]:
+        if not self.api_key:
+            raise QwenClientError(f'{self.api_key_env} is not set')
+
+        endpoint = self._dashscope_generation_url()
+        payload = {
+            'model': model,
+            'input': {
+                'text': text,
+                'voice': voice,
+                'language_type': language_type,
+            },
+        }
+        data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        request = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json',
+            },
+            method='POST',
+        )
         try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        audio_b64 = parsed.get('audio') or parsed.get('data')
-        if not audio_b64:
-            return None
-        return base64.b64decode(audio_b64)
+            with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                body = response.read().decode('utf-8')
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode('utf-8', errors='replace')
+            raise QwenClientError(f'DashScope TTS HTTP {exc.code}: {detail}') from exc
+        except Exception as exc:
+            raise QwenClientError(str(exc)) from exc
+
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise QwenClientError(f'Unexpected DashScope TTS response: {body[:500]}') from exc
+
+        audio_url = self._extract_audio_url(parsed)
+        if not audio_url:
+            raise QwenClientError(f'DashScope TTS response has no audio url: {body[:500]}')
+        return self._download_url(audio_url, timeout_sec)
 
     def _image_data_url(self, image_path: str) -> str:
         mime = mimetypes.guess_type(image_path)[0] or 'image/png'
@@ -167,7 +205,47 @@ class QwenClient:
     def _audio_data_url(self, audio_path: str) -> str:
         with open(audio_path, 'rb') as f:
             encoded = base64.b64encode(f.read()).decode('ascii')
-        return encoded
+        return f'data:audio/wav;base64,{encoded}'
+
+    def _dashscope_generation_url(self) -> str:
+        if '/compatible-mode/' in self.base_url:
+            root = self.base_url.split('/compatible-mode/', 1)[0]
+        else:
+            root = self.base_url
+        return root.rstrip('/') + '/api/v1/services/aigc/multimodal-generation/generation'
+
+    def _extract_audio_url(self, parsed: Dict[str, Any]) -> str:
+        output = parsed.get('output')
+        if isinstance(output, dict):
+            audio = output.get('audio')
+            if isinstance(audio, dict) and isinstance(audio.get('url'), str):
+                return audio['url']
+            if isinstance(audio, str):
+                return audio
+            choices = output.get('choices')
+            if isinstance(choices, list):
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        continue
+                    message = choice.get('message')
+                    if isinstance(message, dict):
+                        audio = message.get('audio')
+                        if isinstance(audio, dict) and isinstance(audio.get('url'), str):
+                            return audio['url']
+        audio = parsed.get('audio')
+        if isinstance(audio, dict) and isinstance(audio.get('url'), str):
+            return audio['url']
+        if isinstance(audio, str):
+            return audio
+        return ''
+
+    def _download_url(self, url: str, timeout_sec: float) -> bytes:
+        request = urllib.request.Request(url, method='GET')
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                return response.read()
+        except Exception as exc:
+            raise QwenClientError(f'Failed to download TTS audio: {exc}') from exc
 
 
 def parse_json_object(text: str) -> Dict[str, Any]:

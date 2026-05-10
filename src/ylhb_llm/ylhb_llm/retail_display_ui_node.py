@@ -94,6 +94,7 @@ class UiSignals(QObject):
     system_status = pyqtSignal(object)
     system_mode = pyqtSignal(str)
     b1_result = pyqtSignal(bool, str)
+    voice_capture_result = pyqtSignal(bool, str)
     ros_error = pyqtSignal(str)
 
 
@@ -111,6 +112,7 @@ class RetailDisplayRosBridge(Node):
         self.declare_parameter('say_text_topic', '/retail_ai/say_text')
         self.declare_parameter('cart_topic', '/retail_ai/cart')
         self.declare_parameter('voice_status_topic', '/retail_ai/voice_status')
+        self.declare_parameter('capture_voice_service_name', '/retail_ai/capture_voice')
         self.declare_parameter('localized_objects_topic', '/perception/localized_objects')
         self.declare_parameter('start_b1_service_name', '/retail_ai/start_b1_task')
         self.declare_parameter('task_image_dir', workspace_path('src', 'ylhb_llm', 'test_images'))
@@ -135,6 +137,8 @@ class RetailDisplayRosBridge(Node):
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
         self.b1_client = self.create_client(
             Trigger, self.get_parameter('start_b1_service_name').value)
+        self.capture_voice_client = self.create_client(
+            Trigger, self.get_parameter('capture_voice_service_name').value)
         self.b1_service_ready = False
 
         self.create_subscription(TaskEvent, self.get_parameter('task_event_topic').value,
@@ -199,6 +203,13 @@ class RetailDisplayRosBridge(Node):
             daemon=True,
         ).start()
 
+    def call_capture_voice_service(self, wait_timeout_sec: float = 2.0) -> None:
+        threading.Thread(
+            target=self._call_capture_voice_service_after_wait,
+            args=(wait_timeout_sec,),
+            daemon=True,
+        ).start()
+
     def _call_b1_service_after_wait(self, wait_timeout_sec: float) -> None:
         deadline = time.monotonic() + wait_timeout_sec
         asked_supervisor = False
@@ -223,6 +234,24 @@ class RetailDisplayRosBridge(Node):
             return
         self.signals.b1_result.emit(bool(result.success), str(result.message))
 
+    def _call_capture_voice_service_after_wait(self, wait_timeout_sec: float) -> None:
+        if not self.capture_voice_client.wait_for_service(timeout_sec=wait_timeout_sec):
+            self.signals.voice_capture_result.emit(
+                False,
+                '语音输入服务未就绪：/retail_ai/capture_voice。请确认 AI 任务层已启动且 enable_voice:=true。',
+            )
+            return
+        future = self.capture_voice_client.call_async(Trigger.Request())
+        future.add_done_callback(self._capture_voice_done)
+
+    def _capture_voice_done(self, future: Any) -> None:
+        try:
+            result = future.result()
+        except Exception as exc:
+            self.signals.voice_capture_result.emit(False, f'语音输入服务调用失败：{exc}')
+            return
+        self.signals.voice_capture_result.emit(bool(result.success), str(result.message))
+
 
 class RetailDisplayWindow(QWidget):
     def __init__(self, bridge: RetailDisplayRosBridge, signals: UiSignals) -> None:
@@ -233,6 +262,8 @@ class RetailDisplayWindow(QWidget):
         self.task_phase = 'idle'
         self.current_task_id = ''
         self.last_update_ts = 0.0
+        self.voice_capture_active = False
+        self.voice_speaking = False
         self.latest_task_image = ''
         self.latest_objects_payload: Dict[str, Any] = {}
         self.objects_dirty = False
@@ -402,6 +433,9 @@ class RetailDisplayWindow(QWidget):
         b2_row.addWidget(self.shopping_input, 1)
         b2_row.addWidget(self.b2_button)
         task_b_layout.addLayout(b2_row)
+        self.voice_input_button = QPushButton('语音输入')
+        self.voice_input_button.clicked.connect(self.capture_voice)
+        task_b_layout.addWidget(self.voice_input_button)
         layout.addWidget(task_b)
 
         task_c = QGroupBox('任务 C 结算')
@@ -567,6 +601,7 @@ class RetailDisplayWindow(QWidget):
         self.signals.system_status.connect(self.on_system_status)
         self.signals.system_mode.connect(self.on_system_mode)
         self.signals.b1_result.connect(self.on_b1_result)
+        self.signals.voice_capture_result.connect(self.on_voice_capture_result)
         self.signals.ros_error.connect(self.show_error)
 
     def apply_style(self) -> None:
@@ -686,6 +721,8 @@ class RetailDisplayWindow(QWidget):
         can_start = self.system_mode == 'ready'
         for button in (self.b1_button, self.b2_button, self.checkout_button):
             button.setEnabled(can_start)
+        self.voice_input_button.setEnabled(can_start and not self.voice_capture_active and not self.voice_speaking)
+        self.voice_input_button.setText('录音/识别中' if self.voice_capture_active else '语音输入')
         self.complete_button.setEnabled(
             self.system_mode == 'running' and self.task_phase == 'completed'
         )
@@ -753,6 +790,18 @@ class RetailDisplayWindow(QWidget):
         self.set_mode('running', publish=True)
         self.bridge.publish_text_command(text)
         self.add_timeline(f'B-2 购物指令: {text}')
+
+    def capture_voice(self) -> None:
+        if self.system_mode != 'ready':
+            self.show_error('当前系统不在运行准备状态，不能录入语音指令。')
+            return
+        if self.voice_speaking:
+            self.show_error('机器人正在播报，请等播报结束后再录音。')
+            return
+        self.voice_capture_active = True
+        self.refresh_controls()
+        self.add_timeline('语音输入: 开始录音识别')
+        self.bridge.call_capture_voice_service()
 
     def start_checkout(self) -> None:
         if not self.confirm_start('确认启动 C', '开始结算并识别结算区商品？'):
@@ -838,6 +887,16 @@ class RetailDisplayWindow(QWidget):
             self.set_mode('ready', publish=True)
             self.show_error(str(payload.get('error') or message))
 
+    def on_voice_capture_result(self, success: bool, message: str) -> None:
+        self.voice_capture_active = False
+        self.refresh_controls()
+        if success:
+            text = message.strip()
+            self.shopping_input.setText(text)
+            self.add_timeline(f'语音识别: {text}')
+        else:
+            self.show_error(message)
+
     def on_task_event(self, msg: TaskEvent) -> None:
         self.current_task_id = msg.task_id
         self.task_label.setText(f'当前任务: {msg.task_id}')
@@ -885,7 +944,9 @@ class RetailDisplayWindow(QWidget):
         self.touch_update()
 
     def on_voice_status(self, msg: VoiceStatus) -> None:
+        self.voice_speaking = bool(msg.speaking)
         self.voice_label.setText('语音: 播报中' if msg.speaking else '语音: 空闲')
+        self.refresh_controls()
         self.touch_update()
 
     def on_localized_objects(self, msg: String) -> None:

@@ -21,14 +21,21 @@ class VoiceOutputNode(Node):
         self.declare_parameter('enabled', False)
         self.declare_parameter('tts_enabled', False)
         self.declare_parameter('audio_device', 'default')
+        self.declare_parameter('audio_output_device', 'default')
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
         self.declare_parameter('tts_model', 'qwen3-tts-flash')
+        self.declare_parameter('tts_voice', 'Cherry')
+        self.declare_parameter('tts_language_type', 'Chinese')
         self.declare_parameter('request_timeout_sec', 5.0)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         self.tts_enabled = bool(self.get_parameter('tts_enabled').value)
-        self.audio_device = self.get_parameter('audio_device').value
+        output_device = str(self.get_parameter('audio_output_device').value)
+        legacy_device = str(self.get_parameter('audio_device').value)
+        self.audio_device = output_device if output_device and output_device != 'default' else legacy_device
         self.tts_model = self.get_parameter('tts_model').value
+        self.tts_voice = str(self.get_parameter('tts_voice').value)
+        self.tts_language_type = str(self.get_parameter('tts_language_type').value)
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
         self.queue: 'queue.PriorityQueue[tuple[int, float, SayText]]' = queue.PriorityQueue()
@@ -73,10 +80,12 @@ class VoiceOutputNode(Node):
             self.get_logger().warn('DASHSCOPE_API_KEY is not set; skipping TTS playback.')
             return
         try:
-            audio = self.qwen.synthesize_speech(
+            audio = self.qwen.synthesize_speech_bytes(
                 text=text,
                 model=self.tts_model,
                 timeout_sec=self.request_timeout_sec,
+                voice=self.tts_voice,
+                language_type=self.tts_language_type,
             )
         except QwenClientError as exc:
             self.get_logger().warn(f'TTS failed: {exc}')
@@ -92,7 +101,11 @@ class VoiceOutputNode(Node):
             if self.audio_device and self.audio_device != 'default':
                 cmd.extend(['-D', self.audio_device])
             cmd.append(audio_path)
-            subprocess.run(cmd, check=False, timeout=self.request_timeout_sec + 10.0)
+            result = subprocess.run(cmd, check=False, timeout=self.request_timeout_sec + 10.0)
+            if result.returncode != 0:
+                self.get_logger().warn(f'aplay failed with exit code {result.returncode}')
+        except Exception as exc:
+            self.get_logger().warn(f'aplay failed: {exc}')
         finally:
             try:
                 os.unlink(audio_path)

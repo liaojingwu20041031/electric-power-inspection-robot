@@ -28,6 +28,10 @@ def generate_launch_description():
     asr_model = LaunchConfiguration('asr_model')
     tts_model = LaunchConfiguration('tts_model')
     audio_device = LaunchConfiguration('audio_device')
+    audio_input_device = LaunchConfiguration('audio_input_device')
+    audio_output_device = LaunchConfiguration('audio_output_device')
+    tts_voice = LaunchConfiguration('tts_voice')
+    tts_language_type = LaunchConfiguration('tts_language_type')
     enable_voice = LaunchConfiguration('enable_voice')
     enable_tts = LaunchConfiguration('enable_tts')
     enable_task_layer = LaunchConfiguration('enable_task_layer')
@@ -52,6 +56,10 @@ def generate_launch_description():
         DeclareLaunchArgument('asr_model', default_value='qwen3-asr-flash'),
         DeclareLaunchArgument('tts_model', default_value='qwen3-tts-flash'),
         DeclareLaunchArgument('audio_device', default_value='default'),
+        DeclareLaunchArgument('audio_input_device', default_value='default'),
+        DeclareLaunchArgument('audio_output_device', default_value='default'),
+        DeclareLaunchArgument('tts_voice', default_value='Cherry'),
+        DeclareLaunchArgument('tts_language_type', default_value='Chinese'),
         DeclareLaunchArgument('enable_voice', default_value='false'),
         DeclareLaunchArgument('enable_tts', default_value='false'),
         DeclareLaunchArgument('enable_task_layer', default_value='true'),
@@ -104,6 +112,7 @@ def generate_launch_description():
                     'dashscope_base_url': dashscope_base_url,
                     'asr_model': asr_model,
                     'audio_device': audio_device,
+                    'audio_input_device': audio_input_device,
                     'enabled': ParameterValue(enable_voice, value_type=bool),
                 },
             ],
@@ -120,6 +129,9 @@ def generate_launch_description():
                     'dashscope_base_url': dashscope_base_url,
                     'tts_model': tts_model,
                     'audio_device': audio_device,
+                    'audio_output_device': audio_output_device,
+                    'tts_voice': tts_voice,
+                    'tts_language_type': tts_language_type,
                     'enabled': ParameterValue(enable_voice, value_type=bool),
                     'tts_enabled': ParameterValue(enable_tts, value_type=bool),
                 },

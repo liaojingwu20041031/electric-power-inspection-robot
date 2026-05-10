@@ -117,6 +117,31 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
 ./scripts/run_on_jetson.sh llm enable_voice:=false enable_tts:=false
 ```
 
+接入 eMeet Luna 一体式音箱/麦克风后，先确认系统能看到声卡：
+
+```bash
+lsusb | grep -i emeet
+arecord -l
+aplay -l
+```
+
+当前项目推荐使用按钮触发式语音输入，避免连续录音把机器人自己的播报再次识别成指令。eMeet Luna 枚举为 `CARD=Luna` 时启动：
+
+```bash
+export DASHSCOPE_API_KEY=你的DashScopeKey
+./scripts/run_on_jetson.sh llm \
+  enable_voice:=true \
+  enable_tts:=true \
+  audio_input_device:=plughw:CARD=Luna,DEV=0 \
+  audio_output_device:=plughw:CARD=Luna,DEV=0
+```
+
+也可以直接调用一次录音识别服务：
+
+```bash
+ros2 service call /retail_ai/capture_voice std_srvs/srv/Trigger "{}"
+```
+
 启动比赛现场显示屏 UI / 总控台：
 
 ```bash
