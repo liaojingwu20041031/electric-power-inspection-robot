@@ -179,7 +179,7 @@ ros2 service call /retail_ai/capture_voice std_srvs/srv/Trigger "{}"
 
 - 任务 A：语音、文字或键盘命令转换为 `/cmd_vel`，完成前进、后退、转向、停止等基础动作。
 - 任务 B-1：导入任务书图片，大模型理解任务，导航到货架 A，识别真实商品，推荐商品，抓取后前往结算区 B。
-- 任务 B-2：接收购物指令，识别目标商品，导航到货架 A，抓取商品，前往结算区 B 并返回起点 S。
+- 任务 B-2：接收购物需求或商品指令，大模型像销售员一样给出主推和备选商品；用户确认后导航到货架 A，抓取商品，前往结算区 B 并返回起点 S。
 - 任务 C：识别结算区商品，播报商品清单，根据 `products.yaml` 计算总价并返回起点 S。
 - 任务 D：通过现场显示屏 UI 展示任务状态、识别结果、播报文本、购物车和结算信息。
 
@@ -189,11 +189,14 @@ ros2 service call /retail_ai/capture_voice std_srvs/srv/Trigger "{}"
 ros2 service call /retail_ai/start_b1_task std_srvs/srv/Trigger "{}"
 ```
 
-文字任务输入：
+文字/语音购物入口：
 
 ```bash
 ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '来瓶可乐'}"
+ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '我口渴了'}"
+ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '确认'}"
 ros2 topic echo /retail_ai/task_event
+ros2 topic echo /retail_ai/sales_dialogue_status
 ros2 topic echo /retail_ai/say_text
 ```
 

@@ -24,6 +24,9 @@ retail_task_node:
     # voice_output_node 负责排队、TTS 和播放。
     say_text_topic: /retail_ai/say_text
 
+    # B-2 销售对话状态。UI 订阅后显示主推商品、备选商品和最近回复。
+    sales_dialogue_status_topic: /retail_ai/sales_dialogue_status
+
     # 购物车状态话题。用于调试结算区识别出的商品、数量和本地计算出的总价。
     cart_topic: /retail_ai/cart
 
@@ -91,6 +94,7 @@ retail_display_ui_node:
     task_event_topic: /retail_ai/task_event
     task_status_topic: /retail_ai/task_status
     say_text_topic: /retail_ai/say_text
+    sales_dialogue_status_topic: /retail_ai/sales_dialogue_status
     cart_topic: /retail_ai/cart
     voice_status_topic: /retail_ai/voice_status
     localized_objects_topic: /perception/localized_objects

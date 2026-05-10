@@ -2186,13 +2186,37 @@ ros2 topic pub --once /retail_ai/task_status ylhb_interfaces/msg/TaskStatus \
 
 #### 6.7.6 任务 B-2：文字或语音购物
 
-文字输入是比赛现场最可靠的兜底方式，也用于语音 ASR 后的统一入口：
+文字输入是比赛现场最可靠的兜底方式，也用于语音 ASR 后的统一入口。B-2 现在采用销售式对话：明确商品名可直接执行；需求型表达会先推荐“主推商品 + 相关备选商品”，并等待用户用自然语言确认或继续补充偏好。
 
 ```bash
 ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '来瓶可乐'}"
+ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '我口渴了'}"
+ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '确认'}"
 ```
 
-查看 AI 层输出的任务事件：
+需求型表达先查看销售对话状态：
+
+```bash
+ros2 topic echo /retail_ai/sales_dialogue_status --once
+```
+
+典型内容：
+
+```json
+{
+  "active": true,
+  "state": "awaiting_confirmation",
+  "primary_product_name": "农夫山泉矿泉水",
+  "primary_price": 2.0,
+  "related_products": [
+    {"product_name": "纯牛奶", "price": 3.0},
+    {"product_name": "可口可乐", "price": 3.0}
+  ],
+  "last_reply": "您可能需要解渴，我主推农夫山泉矿泉水..."
+}
+```
+
+用户说“确认”或明确商品名后，查看 AI 层输出的任务事件：
 
 ```bash
 ros2 topic echo /retail_ai/task_event --once
@@ -2206,11 +2230,11 @@ intent: pick_item
 item_id: cola_coca 或 cola_pepsi
 item_name: 可口可乐 或 百事可乐
 destination: checkout
-source: text
+source: llm_sales
 requires_ack: true
 ```
 
-收到购物指令后，规则明确要求机器人语音播报相应信息。`retail_task_node` 会发布类似“好的，为您提取可乐。”的播报文本。
+收到购物指令后，规则明确要求机器人语音播报相应信息。`retail_task_node` 会发布类似“您可能需要解渴，我主推农夫山泉矿泉水...”或“好的，为您提取可口可乐。”的播报文本。
 
 导航/抓取层收到 `/retail_ai/task_event` 后，应开始导航到货架区 A，识别货架当前陈列商品，找到目标商品，抓取，导航到结算区 B，放置商品，然后返回起点 S。每个阶段完成后，通过 `/retail_ai/task_status` 回传状态。
 
@@ -2482,7 +2506,26 @@ ros2 service call /retail_ai/start_b1_task std_srvs/srv/Trigger "{}"
 左转
 ```
 
-### 7.10 `/retail_ai/task_event`
+### 7.10 `/retail_ai/sales_dialogue_status`
+
+类型：`std_msgs/msg/String`，内容为 JSON
+发布：`retail_task_node`
+订阅：比赛 UI
+作用：显示 B-2 销售对话的当前状态、主推商品、相关备选商品和机器人最近回复。UI 只展示该状态，不负责商品决策。
+
+关键字段：
+
+```text
+active
+state                 # idle / awaiting_confirmation / asking_clarification
+primary_product_id
+primary_product_name
+primary_price
+related_products
+last_reply
+```
+
+### 7.11 `/retail_ai/task_event`
 
 类型：`ylhb_interfaces/msg/TaskEvent`  
 发布：`retail_task_node`  
@@ -2500,7 +2543,7 @@ destination    # shelf / checkout / start
 requires_ack
 ```
 
-### 7.11 `/retail_ai/task_status`
+### 7.12 `/retail_ai/task_status`
 
 类型：`ylhb_interfaces/msg/TaskStatus`  
 发布：导航/抓取层、比赛上层控制脚本  

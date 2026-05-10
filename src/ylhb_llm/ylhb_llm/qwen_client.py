@@ -126,6 +126,58 @@ class QwenClient:
         )
         return parse_json_object(out)
 
+    def parse_sales_dialogue(
+        self,
+        text: str,
+        model: str,
+        timeout_sec: float,
+        products: List[Dict[str, Any]],
+        dialogue: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        system_prompt = (
+            '你是智慧零售比赛机器人的销售对话决策器。'
+            '你的任务是根据用户中文口语、历史对话和商品清单，判断是否执行购买、推荐商品、追问、取消或未知。'
+            '你不是只给一个商品，而是像真实销售员一样：如果用户需求明确但商品未明确，给出一个主推商品，'
+            '同时给出1到2个相关备选商品。主推商品必须最符合用户当前需求，备选商品必须和需求相关。'
+            '如果用户明确说出商品名或别名，action=execute_pick。'
+            '如果用户表达需求但没有明确商品，action=propose_product。'
+            '如果信息不足，action=ask_clarification。'
+            '如果用户确认上一轮推荐，action=execute_pick，并选择当前主推商品。'
+            '如果用户说换一个，避开 rejected_product_ids 和 last_product_id，优先从 related_products 或同类商品中重新推荐。'
+            '如果用户说不要碳酸的、便宜点、健康点等约束，根据上下文和约束重新排序推荐。'
+            '如果用户取消，action=cancel。'
+            '不要处理前进、后退、左转、右转、停止、结算等控制类任务，这些会由系统外部处理。'
+            '只能从给定商品清单中选择商品，禁止创造商品。'
+            '输出必须是 JSON，不要 Markdown，不要额外解释。'
+            '允许的 action：execute_pick/propose_product/ask_clarification/cancel/unknown。'
+            '字段：task, action, need, primary_product_id, primary_product_name, related_products, '
+            'reply_cn, confidence, requires_confirmation, reason_cn。'
+            'related_products 中每项字段：product_id, product_name, reason_cn。'
+        )
+        user_payload = {
+            'current_user_text': text,
+            'dialogue': dialogue,
+            'products': products,
+            'allowed_actions': [
+                'execute_pick',
+                'propose_product',
+                'ask_clarification',
+                'cancel',
+                'unknown',
+            ],
+        }
+        out = self.chat_completion(
+            model=model,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            timeout_sec=timeout_sec,
+            temperature=0.0,
+            extra_body={'enable_thinking': False},
+        )
+        return parse_json_object(out)
+
     def transcribe_audio(self, audio_path: str, model: str, timeout_sec: float) -> str:
         audio_url = self._audio_data_url(audio_path)
         endpoint = self._dashscope_generation_url()

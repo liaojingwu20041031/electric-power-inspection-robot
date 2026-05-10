@@ -12,6 +12,8 @@ class Product:
     price: float
     aliases: List[str] = field(default_factory=list)
     priority_for_intents: Dict[str, float] = field(default_factory=dict)
+    selling_points: List[str] = field(default_factory=list)
+    suitable_needs: List[str] = field(default_factory=list)
 
 
 class ProductCatalog:
@@ -35,6 +37,8 @@ class ProductCatalog:
                     str(k): float(v)
                     for k, v in (item.get('priority_for_intents', {}) or {}).items()
                 },
+                selling_points=[str(v) for v in item.get('selling_points', [])],
+                suitable_needs=[str(v) for v in item.get('suitable_needs', [])],
             ))
         return cls(products)
 
@@ -78,4 +82,8 @@ def product_to_dict(product: Product) -> Dict[str, Any]:
         'item_name': product.name,
         'category': product.category,
         'price': product.price,
+        'aliases': list(product.aliases),
+        'priority_for_intents': dict(product.priority_for_intents),
+        'selling_points': list(product.selling_points),
+        'suitable_needs': list(product.suitable_needs),
     }

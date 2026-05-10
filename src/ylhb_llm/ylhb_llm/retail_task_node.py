@@ -43,6 +43,7 @@ class RetailTaskNode(Node):
         self.declare_parameter('task_event_topic', '/retail_ai/task_event')
         self.declare_parameter('task_status_topic', '/retail_ai/task_status')
         self.declare_parameter('say_text_topic', '/retail_ai/say_text')
+        self.declare_parameter('sales_dialogue_status_topic', '/retail_ai/sales_dialogue_status')
         self.declare_parameter('cart_topic', '/retail_ai/cart')
         self.declare_parameter('start_b1_service_name', '/retail_ai/start_b1_task')
         self.declare_parameter('task_image_dir', workspace_path('src', 'ylhb_llm', 'test_images'))
@@ -74,11 +75,14 @@ class RetailTaskNode(Node):
         self.pending_tasks: Dict[str, Dict[str, Any]] = {}
         self.completed_task_ids = set()
         self.cart_items: Dict[str, Dict[str, Any]] = {}
+        self.sales_dialogue: Dict[str, Any] = self.default_sales_dialogue()
 
         self.task_event_pub = self.create_publisher(
             TaskEvent, self.get_parameter('task_event_topic').value, 10)
         self.say_text_pub = self.create_publisher(
             SayText, self.get_parameter('say_text_topic').value, 10)
+        self.sales_status_pub = self.create_publisher(
+            String, self.get_parameter('sales_dialogue_status_topic').value, system_mode_qos())
         self.cart_pub = self.create_publisher(
             CartState, self.get_parameter('cart_topic').value, 10)
 
@@ -114,6 +118,7 @@ class RetailTaskNode(Node):
         )
 
         self.publish_cart()
+        self.publish_sales_dialogue_status()
         self.get_logger().info(
             f"Retail task node started with {len(self.catalog.products)} products. "
             f"B1 service={start_b1_service_name}, task_image_dir={self.task_image_dir}"
@@ -230,6 +235,23 @@ class RetailTaskNode(Node):
         text = msg.data.strip()
         if not text:
             return
+        task_id = self.new_task_id('text')
+        parsed = self.parse_text_command(text)
+        intent = parsed.get('intent', 'unknown')
+
+        if intent == 'motion':
+            return
+
+        if intent == 'checkout':
+            self.clear_sales_dialogue()
+            self.handle_checkout(task_id)
+            return
+
+        if intent == 'cancel' and self.sales_dialogue.get('active'):
+            self.clear_sales_dialogue()
+            self.say(task_id, '好的，已取消本次选购。', priority=6)
+            return
+
         if self.system_mode in ('sleep', 'mapping', 'fault'):
             self.get_logger().info(
                 f'Ignoring text command while system_mode={self.system_mode}: {text}'
@@ -240,49 +262,27 @@ class RetailTaskNode(Node):
                 f'Ignoring text command while another task is pending: {text}'
             )
             return
-        task_id = self.new_task_id('text')
-        parsed = self.parse_text_command(text)
-        intent = parsed.get('intent', 'unknown')
 
-        if intent == 'motion':
+        if self.sales_dialogue_expired():
+            self.clear_sales_dialogue()
+
+        if not self.qwen.available():
+            self.handle_sales_fallback(task_id, text)
             return
 
-        if intent == 'checkout':
-            self.handle_checkout(task_id)
+        try:
+            decision = self.qwen.parse_sales_dialogue(
+                text=text,
+                model=self.chat_model,
+                timeout_sec=self.request_timeout_sec,
+                products=self.sales_products_payload(),
+                dialogue=self.sales_dialogue_payload(),
+            )
+        except QwenClientError as exc:
+            self.get_logger().warn(f'LLM sales dialogue failed: {exc}')
+            self.handle_sales_fallback(task_id, text)
             return
-
-        if intent == 'pick_item':
-            product = self.catalog.match_text(str(parsed.get('item_name') or text))
-            if product is None and self.qwen.available():
-                try:
-                    llm = self.qwen.parse_command(
-                        text=text,
-                        model=self.chat_model,
-                        timeout_sec=self.request_timeout_sec,
-                        product_names=self.catalog.names(),
-                    )
-                    product = self.catalog.match_text(str(llm.get('item_name') or ''))
-                    parsed.update(llm)
-                except QwenClientError as exc:
-                    self.get_logger().warn(f'LLM command parse failed, using local rules: {exc}')
-            if product is None:
-                self.say(task_id, '没有识别到要选购的商品，请重新输入商品名称。', priority=6)
-                return
-            payload = {
-                'schema_version': '1.0',
-                'task_id': task_id,
-                'timestamp': time.time(),
-                'source': 'text',
-                'intent': 'pick_item',
-                'selected_product': product_to_dict(product),
-                'raw_text': text,
-            }
-            self.say(task_id, f'好的，为您提取{product.name}。', priority=6)
-            self.publish_task_event(task_id, 'pick_item', product, 'checkout', 'text',
-                                    float(parsed.get('confidence', 0.9)), payload)
-            return
-
-        self.say(task_id, '我还没有理解这条任务指令，请重新输入。', priority=5)
+        self.handle_sales_decision(task_id, text, decision)
 
     def parse_text_command(self, text: str) -> Dict[str, Any]:
         checkout_keywords = ('多少钱', '结算', '总价', '一共', '付款')
@@ -291,13 +291,245 @@ class RetailTaskNode(Node):
         motion_keywords = ('前进', '后退', '左转', '右转', '停止', '停下', '刹车')
         if any(k in text for k in motion_keywords):
             return {'intent': 'motion', 'confidence': 1.0}
+        cancel_keywords = ('取消', '算了', '不要了', '不买了')
+        if any(k in text for k in cancel_keywords):
+            return {'intent': 'cancel', 'confidence': 1.0}
+        return {'intent': 'unknown', 'confidence': 0.0}
+
+    def handle_sales_fallback(self, task_id: str, text: str) -> None:
         product = self.catalog.match_text(text)
         if product is not None:
-            return {'intent': 'pick_item', 'item_name': product.name, 'confidence': 1.0}
-        pick_keywords = ('来', '拿', '取', '买', '要', '给我')
-        if any(k in text for k in pick_keywords):
-            return {'intent': 'pick_item', 'item_name': text, 'confidence': 0.5}
-        return {'intent': 'unknown', 'confidence': 0.0}
+            self.clear_sales_dialogue()
+            self.execute_b2_pick(task_id, product, text, 'local_fallback', 0.8)
+            return
+        self.say(task_id, '云端理解失败，请直接说出商品名称，例如可乐、矿泉水或纸巾。', priority=7)
+
+    def handle_sales_decision(self, task_id: str, text: str, decision: Dict[str, Any]) -> None:
+        action = str(decision.get('action') or 'unknown').strip()
+        confidence = self.safe_float(decision.get('confidence'), 0.0)
+        product = self.product_from_decision(decision)
+        reply = str(decision.get('reply_cn') or '').strip()
+
+        if self.decision_has_unknown_product(decision):
+            self.clear_sales_dialogue()
+            self.say(task_id, '当前商品清单中没有该商品，请重新说明需要购买的商品。', priority=7)
+            return
+
+        if action == 'execute_pick':
+            if product is None:
+                self.say(task_id, '我还没有确定要购买的商品，请再说明一下。', priority=6)
+                return
+            self.clear_sales_dialogue()
+            self.execute_b2_pick(task_id, product, text, 'llm_sales', confidence or 0.9)
+            return
+
+        if action == 'propose_product':
+            if product is None:
+                self.update_sales_dialogue(text, decision, state='asking_clarification')
+                self.say(task_id, reply or '我理解了您的需求，但还不能确定商品，请再说明一下。', priority=6)
+                return
+            self.update_sales_dialogue(text, decision, state='awaiting_confirmation')
+            self.say(task_id, reply or self.default_proposal_reply(product), priority=7)
+            return
+
+        if action == 'ask_clarification':
+            self.update_sales_dialogue(text, decision, state='asking_clarification')
+            self.say(task_id, reply or '请问您想购买哪一类商品？', priority=7)
+            return
+
+        if action == 'cancel':
+            self.clear_sales_dialogue()
+            self.say(task_id, reply or '好的，已取消本次选购。', priority=6)
+            return
+
+        self.update_sales_dialogue(text, decision, state='idle')
+        self.say(task_id, reply or '我还没有理解您的需求，请重新说明要购买的商品。', priority=5)
+
+    def execute_b2_pick(
+        self,
+        task_id: str,
+        product: Product,
+        raw_text: str,
+        source: str,
+        confidence: float,
+    ) -> None:
+        payload = {
+            'schema_version': '1.0',
+            'task_id': task_id,
+            'timestamp': time.time(),
+            'source': source,
+            'intent': 'pick_item',
+            'flow': 'task_b_2',
+            'selected_product': product_to_dict(product),
+            'target_product_id': product.id,
+            'target_product_name': product.name,
+            'raw_text': raw_text,
+            'next_step': 'navigate_to_shelf_inspect_pick_checkout_return_start',
+        }
+        self.say(task_id, f'好的，为您提取{product.name}。', priority=6)
+        self.publish_task_event(task_id, 'pick_item', product, 'checkout', source, confidence, payload)
+
+    def default_sales_dialogue(self) -> Dict[str, Any]:
+        return {
+            'active': False,
+            'state': 'idle',
+            'history': [],
+            'last_action': '',
+            'last_product_id': '',
+            'last_product_name': '',
+            'need': '',
+            'related_products': [],
+            'rejected_product_ids': [],
+            'last_reply': '',
+            'expires_at': 0.0,
+        }
+
+    def sales_dialogue_expired(self) -> bool:
+        expires_at = self.safe_float(self.sales_dialogue.get('expires_at'), 0.0)
+        return bool(self.sales_dialogue.get('active')) and expires_at > 0.0 and time.time() > expires_at
+
+    def clear_sales_dialogue(self) -> None:
+        if self.sales_dialogue.get('last_product_id'):
+            rejected = set(str(v) for v in self.sales_dialogue.get('rejected_product_ids', []))
+            rejected.add(str(self.sales_dialogue.get('last_product_id')))
+        else:
+            rejected = set()
+        self.sales_dialogue = self.default_sales_dialogue()
+        self.sales_dialogue['rejected_product_ids'] = sorted(rejected)
+        self.publish_sales_dialogue_status()
+
+    def update_sales_dialogue(self, text: str, decision: Dict[str, Any], state: str) -> None:
+        action = str(decision.get('action') or 'unknown')
+        product = self.product_from_decision(decision)
+        related = self.related_products_from_decision(decision, exclude_id=product.id if product else '')
+        history = list(self.sales_dialogue.get('history') or [])
+        history.append({'role': 'user', 'text': text})
+        reply = str(decision.get('reply_cn') or '').strip()
+        if reply:
+            history.append({'role': 'assistant', 'text': reply})
+        history = history[-8:]
+
+        rejected = [str(v) for v in self.sales_dialogue.get('rejected_product_ids', []) if v]
+        if action == 'propose_product' and self.sales_dialogue.get('last_product_id') and (
+            product is not None and product.id != self.sales_dialogue.get('last_product_id')
+        ):
+            rejected.append(str(self.sales_dialogue.get('last_product_id')))
+
+        self.sales_dialogue = {
+            'active': state in ('awaiting_confirmation', 'asking_clarification'),
+            'state': state,
+            'history': history,
+            'last_action': action,
+            'last_product_id': product.id if product is not None else '',
+            'last_product_name': product.name if product is not None else '',
+            'need': str(decision.get('need') or self.sales_dialogue.get('need') or ''),
+            'related_products': related,
+            'rejected_product_ids': sorted(set(rejected)),
+            'last_reply': reply,
+            'expires_at': time.time() + 120.0 if state in ('awaiting_confirmation', 'asking_clarification') else 0.0,
+        }
+        self.publish_sales_dialogue_status()
+
+    def publish_sales_dialogue_status(self) -> None:
+        product = self.catalog.get(str(self.sales_dialogue.get('last_product_id') or ''))
+        payload = {
+            'active': bool(self.sales_dialogue.get('active')),
+            'state': str(self.sales_dialogue.get('state') or 'idle'),
+            'last_action': str(self.sales_dialogue.get('last_action') or ''),
+            'need': str(self.sales_dialogue.get('need') or ''),
+            'primary_product_id': product.id if product is not None else '',
+            'primary_product_name': product.name if product is not None else '',
+            'primary_price': product.price if product is not None else 0.0,
+            'related_products': self.sales_dialogue.get('related_products') or [],
+            'last_reply': str(self.sales_dialogue.get('last_reply') or ''),
+        }
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.sales_status_pub.publish(msg)
+
+    def sales_dialogue_payload(self) -> Dict[str, Any]:
+        return {
+            'active': bool(self.sales_dialogue.get('active')),
+            'state': str(self.sales_dialogue.get('state') or 'idle'),
+            'conversation_history': list(self.sales_dialogue.get('history') or []),
+            'last_action': str(self.sales_dialogue.get('last_action') or ''),
+            'last_product_id': str(self.sales_dialogue.get('last_product_id') or ''),
+            'last_product_name': str(self.sales_dialogue.get('last_product_name') or ''),
+            'need': str(self.sales_dialogue.get('need') or ''),
+            'related_products': list(self.sales_dialogue.get('related_products') or []),
+            'rejected_product_ids': list(self.sales_dialogue.get('rejected_product_ids') or []),
+        }
+
+    def sales_products_payload(self) -> List[Dict[str, Any]]:
+        products = []
+        for product in self.catalog.products:
+            products.append({
+                'id': product.id,
+                'name': product.name,
+                'category': product.category,
+                'price': product.price,
+                'aliases': list(product.aliases),
+                'priority_for_intents': dict(product.priority_for_intents),
+                'selling_points': list(product.selling_points),
+                'suitable_needs': list(product.suitable_needs),
+            })
+        return products
+
+    def product_from_decision(self, decision: Dict[str, Any]) -> Optional[Product]:
+        product_id = str(
+            decision.get('primary_product_id') or decision.get('product_id') or ''
+        ).strip()
+        if product_id:
+            return self.catalog.get(product_id)
+        product_name = str(
+            decision.get('primary_product_name') or decision.get('product_name') or ''
+        ).strip()
+        return self.catalog.match_text(product_name) if product_name else None
+
+    def decision_has_unknown_product(self, decision: Dict[str, Any]) -> bool:
+        product_id = str(decision.get('primary_product_id') or decision.get('product_id') or '').strip()
+        if product_id and self.catalog.get(product_id) is None:
+            return True
+        for item in decision.get('related_products') or []:
+            if not isinstance(item, dict):
+                continue
+            related_id = str(item.get('product_id') or '').strip()
+            if related_id and self.catalog.get(related_id) is None:
+                return True
+        return False
+
+    def related_products_from_decision(self, decision: Dict[str, Any], exclude_id: str = '') -> List[Dict[str, Any]]:
+        related: List[Dict[str, Any]] = []
+        seen = set([exclude_id] if exclude_id else [])
+        for item in decision.get('related_products') or []:
+            if not isinstance(item, dict):
+                continue
+            product_id = str(item.get('product_id') or '').strip()
+            product = self.catalog.get(product_id) if product_id else None
+            if product is None:
+                product_name = str(item.get('product_name') or '').strip()
+                product = self.catalog.match_text(product_name) if product_name else None
+            if product is None or product.id in seen:
+                continue
+            seen.add(product.id)
+            related.append({
+                'product_id': product.id,
+                'product_name': product.name,
+                'price': product.price,
+                'reason_cn': str(item.get('reason_cn') or ''),
+            })
+            if len(related) >= 2:
+                break
+        return related
+
+    def default_proposal_reply(self, product: Product) -> str:
+        return f'我主推{product.name}，价格{self.format_price(product.price)}元。确认购买请说确认，想换商品请说换一个。'
+
+    def safe_float(self, value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     def localized_objects_callback(self, msg: String) -> None:
         try:

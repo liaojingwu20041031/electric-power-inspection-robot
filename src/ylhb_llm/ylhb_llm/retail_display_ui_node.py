@@ -90,6 +90,7 @@ class UiSignals(QObject):
     say_text = pyqtSignal(object)
     cart = pyqtSignal(object)
     voice_status = pyqtSignal(object)
+    sales_dialogue_status = pyqtSignal(object)
     localized_objects = pyqtSignal(object)
     system_status = pyqtSignal(object)
     system_mode = pyqtSignal(str)
@@ -110,6 +111,7 @@ class RetailDisplayRosBridge(Node):
         self.declare_parameter('task_event_topic', '/retail_ai/task_event')
         self.declare_parameter('task_status_topic', '/retail_ai/task_status')
         self.declare_parameter('say_text_topic', '/retail_ai/say_text')
+        self.declare_parameter('sales_dialogue_status_topic', '/retail_ai/sales_dialogue_status')
         self.declare_parameter('cart_topic', '/retail_ai/cart')
         self.declare_parameter('voice_status_topic', '/retail_ai/voice_status')
         self.declare_parameter('capture_voice_service_name', '/retail_ai/capture_voice')
@@ -147,6 +149,8 @@ class RetailDisplayRosBridge(Node):
                                  lambda msg: self.signals.task_status.emit(msg), 10)
         self.create_subscription(SayText, self.get_parameter('say_text_topic').value,
                                  lambda msg: self.signals.say_text.emit(msg), 10)
+        self.create_subscription(String, self.get_parameter('sales_dialogue_status_topic').value,
+                                 lambda msg: self.signals.sales_dialogue_status.emit(msg), system_mode_qos())
         self.create_subscription(CartState, self.get_parameter('cart_topic').value,
                                  lambda msg: self.signals.cart.emit(msg), 10)
         self.create_subscription(VoiceStatus, self.get_parameter('voice_status_topic').value,
@@ -266,6 +270,7 @@ class RetailDisplayWindow(QWidget):
         self.voice_speaking = False
         self.latest_task_image = ''
         self.latest_objects_payload: Dict[str, Any] = {}
+        self.sales_dialogue_payload: Dict[str, Any] = {}
         self.objects_dirty = False
         self.cached_pixmap_path = ''
         self.cached_pixmap = QPixmap()
@@ -425,17 +430,41 @@ class RetailDisplayWindow(QWidget):
         self.b1_button = QPushButton('导入任务书图片 / 开始 B-1')
         self.b1_button.clicked.connect(self.start_b1)
         task_b_layout.addWidget(self.b1_button)
+
+        b2_box = QGroupBox('B-2 销售对话')
+        b2_layout = QVBoxLayout(b2_box)
+        self.configure_layout(b2_layout)
         b2_row = QHBoxLayout()
         self.shopping_input = QLineEdit()
-        self.shopping_input.setPlaceholderText('例如：来瓶可乐')
-        self.b2_button = QPushButton('确认 B-2')
+        self.shopping_input.setPlaceholderText('例如：来瓶可乐 / 我口渴了 / 想买个便宜点的喝的 / 不要碳酸的')
+        self.shopping_input.returnPressed.connect(self.start_b2)
+        self.b2_button = QPushButton('发送')
         self.b2_button.clicked.connect(self.start_b2)
+        self.voice_input_button = QPushButton('语音')
+        self.voice_input_button.clicked.connect(self.capture_voice)
         b2_row.addWidget(self.shopping_input, 1)
         b2_row.addWidget(self.b2_button)
-        task_b_layout.addLayout(b2_row)
-        self.voice_input_button = QPushButton('语音输入')
-        self.voice_input_button.clicked.connect(self.capture_voice)
-        task_b_layout.addWidget(self.voice_input_button)
+        b2_row.addWidget(self.voice_input_button)
+        b2_layout.addLayout(b2_row)
+        self.sales_state_label = QLabel('状态: 空闲')
+        self.sales_primary_label = QLabel('主推: -')
+        self.sales_related_label = QLabel('备选: -')
+        self.sales_reply_label = QLabel('机器人: -')
+        self.sales_reply_label.setWordWrap(True)
+        for label in (
+            self.sales_state_label,
+            self.sales_primary_label,
+            self.sales_related_label,
+            self.sales_reply_label,
+        ):
+            label.setFrameShape(QFrame.Panel)
+            label.setFrameShadow(QFrame.Sunken)
+            label.setMinimumHeight(24 if self.compact_ui else 28)
+        b2_layout.addWidget(self.sales_state_label)
+        b2_layout.addWidget(self.sales_primary_label)
+        b2_layout.addWidget(self.sales_related_label)
+        b2_layout.addWidget(self.sales_reply_label)
+        task_b_layout.addWidget(b2_box)
         layout.addWidget(task_b)
 
         task_c = QGroupBox('任务 C 结算')
@@ -601,6 +630,7 @@ class RetailDisplayWindow(QWidget):
         self.signals.task_event.connect(self.on_task_event)
         self.signals.task_status.connect(self.on_task_status)
         self.signals.say_text.connect(self.on_say_text)
+        self.signals.sales_dialogue_status.connect(self.on_sales_dialogue_status)
         self.signals.cart.connect(self.on_cart)
         self.signals.voice_status.connect(self.on_voice_status)
         self.signals.localized_objects.connect(self.on_localized_objects)
@@ -728,7 +758,7 @@ class RetailDisplayWindow(QWidget):
         for button in (self.b1_button, self.b2_button, self.checkout_button):
             button.setEnabled(can_start)
         self.voice_input_button.setEnabled(can_start and not self.voice_capture_active and not self.voice_speaking)
-        self.voice_input_button.setText('录音/识别中' if self.voice_capture_active else '语音输入')
+        self.voice_input_button.setText('录音中' if self.voice_capture_active else '语音')
         self.complete_button.setEnabled(
             self.system_mode == 'running' and self.task_phase == 'completed'
         )
@@ -788,14 +818,13 @@ class RetailDisplayWindow(QWidget):
     def start_b2(self) -> None:
         text = self.shopping_input.text().strip()
         if not text:
-            self.show_error('请输入购物指令。')
+            self.show_error('请输入购物需求或商品名称。')
             return
-        if not self.confirm_start('确认启动 B-2', f'发送购物指令：{text}？'):
+        if self.system_mode != 'ready':
+            self.show_error('当前系统不在运行准备状态，不能发送 B-2 销售对话。')
             return
-        self.task_phase = 'executing'
-        self.set_mode('running', publish=True)
         self.bridge.publish_text_command(text)
-        self.add_timeline(f'B-2 购物指令: {text}')
+        self.add_timeline(f'B-2 销售对话: {text}')
 
     def capture_voice(self) -> None:
         if self.system_mode != 'ready':
@@ -935,6 +964,40 @@ class RetailDisplayWindow(QWidget):
     def on_say_text(self, msg: SayText) -> None:
         self.say_text_view.appendPlainText(f'[{msg.task_id}] {msg.text}')
         self.add_cockpit_line(f'播报: {msg.text}')
+        self.touch_update()
+
+    def on_sales_dialogue_status(self, msg: String) -> None:
+        payload = self.parse_json_message(msg.data)
+        self.sales_dialogue_payload = payload
+        state = str(payload.get('state') or 'idle')
+        state_text = {
+            'idle': '空闲',
+            'awaiting_confirmation': '等待确认',
+            'asking_clarification': '需要补充',
+        }.get(state, state)
+        primary_name = str(payload.get('primary_product_name') or '')
+        primary_price = float(payload.get('primary_price', 0.0) or 0.0)
+        if primary_name:
+            primary = f'{primary_name} {self.format_price(primary_price)}元'
+        else:
+            primary = '-'
+        related_items = []
+        for item in payload.get('related_products') or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('product_name') or '')
+            if not name:
+                continue
+            price = self.format_price(float(item.get('price', 0.0) or 0.0))
+            related_items.append(f'{name} {price}元')
+        related = ' / '.join(related_items) if related_items else '-'
+        reply = str(payload.get('last_reply') or '-')
+
+        self.sales_state_label.setText(f'状态: {state_text}')
+        self.sales_primary_label.setText(f'主推: {primary}')
+        self.sales_related_label.setText(f'备选: {related}')
+        self.sales_reply_label.setText(f'机器人: {reply}')
+        self.add_cockpit_line(f'销售对话: {state_text} 主推={primary} 备选={related}')
         self.touch_update()
 
     def on_cart(self, msg: CartState) -> None:
