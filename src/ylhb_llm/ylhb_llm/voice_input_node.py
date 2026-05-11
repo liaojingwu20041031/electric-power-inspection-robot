@@ -89,7 +89,7 @@ class VoiceInputNode(Node):
                     timeout_sec=self.request_timeout_sec,
                 ).strip()
             except QwenClientError as exc:
-                self.get_logger().warn(f'ASR failed: {exc}')
+                self.get_logger().warn(f'语音识别失败：{exc}')
                 return ''
         finally:
             try:

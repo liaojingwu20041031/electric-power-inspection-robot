@@ -272,6 +272,14 @@ class RetailTaskNode(Node):
         if route in ('voice_close', 'global_safety'):
             return
 
+        if route == 'system_feedback':
+            self.say(
+                task_id,
+                '我已经收到您的语音，但当前扬声器可能没有成功播放。请检查音频输出设备是否被占用，或切换到默认输出设备。',
+                priority=8,
+            )
+            return
+
         if intent == 'motion':
             return
 

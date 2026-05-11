@@ -63,8 +63,8 @@ class VoiceOutputNode(Node):
         self.worker.start()
         self.create_timer(0.5, self.publish_status)
         self.get_logger().info(
-            f'Voice output started: enabled={self.enabled}, tts_enabled={self.tts_enabled}, '
-            f'device={self.audio_device}'
+            f'语音输出节点已启动：enabled={self.enabled}, tts_enabled={self.tts_enabled}, '
+            f'播放设备={self.audio_device}'
         )
 
     def say_callback(self, msg: SayText) -> None:
@@ -78,27 +78,30 @@ class VoiceOutputNode(Node):
                 _priority, _ts, msg = self.queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            self.current_task_id = msg.task_id
-            self.publish_status()
-            text = msg.text.strip()
-            if text:
-                self.get_logger().info(f'SAY[{msg.task_id}]: {text}')
-            if self.enabled and self.tts_enabled and text:
-                if self.should_split_tts(msg.task_id, text):
-                    segments = self.split_tts_segments(text, self.tts_segment_max_chars)
-                else:
-                    segments = [text]
-                for segment in segments:
-                    if self.stop_event.is_set():
-                        break
-                    self.speak(segment)
-            self.current_task_id = ''
-            self.publish_status()
-            self.queue.task_done()
+            try:
+                self.current_task_id = msg.task_id
+                self.publish_status_once()
+                time.sleep(0.25)
+                text = msg.text.strip()
+                if text:
+                    self.get_logger().info(f'播报请求[{msg.task_id}]：{text}')
+                if self.enabled and self.tts_enabled and text:
+                    if self.should_split_tts(msg.task_id, text):
+                        segments = self.split_tts_segments(text, self.tts_segment_max_chars)
+                    else:
+                        segments = [text]
+                    for segment in segments:
+                        if self.stop_event.is_set():
+                            break
+                        self.speak(segment)
+            finally:
+                self.current_task_id = ''
+                self.publish_status_once()
+                self.queue.task_done()
 
     def speak(self, text: str) -> None:
         if not self.qwen.available():
-            self.get_logger().warn('DASHSCOPE_API_KEY is not set; skipping TTS playback.')
+            self.get_logger().warn('DASHSCOPE_API_KEY 未设置，跳过 TTS 播放。')
             return
         cache_key = (self.tts_model, self.tts_voice, self.tts_language_type, text)
         try:
@@ -114,10 +117,10 @@ class VoiceOutputNode(Node):
                 if audio and self.enable_tts_cache:
                     self.remember_tts_cache(cache_key, audio)
         except QwenClientError as exc:
-            self.get_logger().warn(f'TTS failed: {exc}')
+            self.get_logger().warn(f'TTS 合成失败：{exc}')
             return
         if not audio:
-            self.get_logger().warn('TTS returned no audio; text was logged only.')
+            self.get_logger().warn('TTS 未返回音频，仅记录播报文本。')
             return
         with tempfile.NamedTemporaryFile(prefix='ylhb_tts_', suffix='.wav', delete=False) as f:
             f.write(audio)
@@ -131,11 +134,16 @@ class VoiceOutputNode(Node):
             play_timeout = min(45.0, max(8.0, duration + 5.0))
             result = subprocess.run(cmd, check=False, timeout=play_timeout)
             if result.returncode != 0:
-                self.get_logger().warn(f'aplay failed with exit code {result.returncode}')
+                self.get_logger().warn(
+                    f'音频播放失败：aplay 退出码={result.returncode}，设备={self.audio_device}，'
+                    '可能是录音节点正在占用同一个声卡。'
+                )
         except subprocess.TimeoutExpired:
-            self.get_logger().warn(f'aplay timed out, killing playback: {audio_path}')
+            self.get_logger().warn(f'音频播放超时，已停止播放进程：{audio_path}')
         except Exception as exc:
-            self.get_logger().warn(f'aplay failed: {exc}')
+            self.get_logger().warn(
+                f'音频播放异常：{exc}。如果出现 Device or resource busy，请检查输入输出设备是否都使用了 plughw。'
+            )
         finally:
             try:
                 os.unlink(audio_path)
@@ -211,6 +219,9 @@ class VoiceOutputNode(Node):
         msg.speaking = bool(self.current_task_id)
         msg.current_task_id = self.current_task_id
         self.status_pub.publish(msg)
+
+    def publish_status_once(self) -> None:
+        self.publish_status()
 
     def clear_queue(self) -> None:
         while True:

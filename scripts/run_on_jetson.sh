@@ -98,7 +98,7 @@ case "${MODE}" in
       enable_voice:=true \
       enable_tts:=true \
       audio_input_device:=plughw:CARD=Luna,DEV=0 \
-      audio_output_device:=plughw:CARD=Luna,DEV=0 \
+      audio_output_device:=default \
       tts_voice:=Serena \
       display:="${DISPLAY}" \
       "$@"

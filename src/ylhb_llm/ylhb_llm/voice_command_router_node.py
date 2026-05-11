@@ -26,6 +26,15 @@ VOICE_CLOSE_WORDS = (
 CANCEL_WORDS = ('取消任务', '取消当前任务', '不要了')
 CHECKOUT_WORDS = ('多少钱', '结算', '总价', '一共', '付款')
 MOTION_WORDS = ('前进', '后退', '左转', '右转')
+SYSTEM_FEEDBACK_WORDS = (
+    '怎么不说话',
+    '你怎么不说话',
+    '没声音',
+    '听不到',
+    '没有声音',
+    '你没说话',
+    '语音坏了',
+)
 
 
 def transient_qos() -> QoSProfile:
@@ -78,7 +87,7 @@ class VoiceCommandRouterNode(Node):
             self.task_status_callback,
             10,
         )
-        self.get_logger().info('Voice command router started.')
+        self.get_logger().info('语音命令路由节点已启动。')
 
     def voice_event_callback(self, msg: String) -> None:
         try:
@@ -115,6 +124,9 @@ class VoiceCommandRouterNode(Node):
         if self.contains_any(text, MOTION_WORDS):
             self.publish_text_command(text, event, 'task_a_motion')
             return
+        if self.contains_any(text, SYSTEM_FEEDBACK_WORDS):
+            self.publish_text_command(text, event, 'system_feedback')
+            return
 
         sales_state = str(self.sales_status.get('state') or 'idle')
         has_pending = bool(self.sales_status.get('primary_product_id')) and sales_state == 'awaiting_confirmation'
@@ -148,7 +160,7 @@ class VoiceCommandRouterNode(Node):
         msg = String()
         msg.data = json.dumps(command, ensure_ascii=False)
         self.text_pub.publish(msg)
-        self.get_logger().info(f'Voice routed to text_command: {msg.data}')
+        self.get_logger().info(f'语音命令已路由到文本指令：{msg.data}')
 
     def task_request_id(self, event: Dict[str, Any]) -> str:
         session_id = str(event.get('session_id') or 'voice')

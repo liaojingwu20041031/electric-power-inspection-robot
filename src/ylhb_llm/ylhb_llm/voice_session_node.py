@@ -145,8 +145,8 @@ class VoiceSessionNode(Node):
         self.worker.start()
         self.create_timer(0.5, self.publish_status)
         self.get_logger().info(
-            f'Voice session started: enabled={self.enabled}, device={self.audio_device}, '
-            f'wake_phrase={self.wake_phrase}'
+            f'连续语音节点已启动：enabled={self.enabled}, 录音设备={self.audio_device}, '
+            f'唤醒词={self.wake_phrase}'
         )
 
     def start_callback(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
@@ -183,8 +183,12 @@ class VoiceSessionNode(Node):
 
     def voice_status_callback(self, msg: VoiceStatus) -> None:
         speaking = bool(msg.speaking)
+        now = time.monotonic()
+        if speaking:
+            self.pause_listen_until = max(self.pause_listen_until, now + 0.5)
         if self.last_tts_speaking and not speaking:
-            self.last_active_at = time.monotonic()
+            self.last_active_at = now
+            self.pause_listen_until = max(self.pause_listen_until, now + 0.3)
         self.is_tts_playing = speaking
         self.last_tts_speaking = speaking
 
@@ -345,7 +349,7 @@ class VoiceSessionNode(Node):
             try:
                 return self.qwen.transcribe_audio(path, self.asr_model, self.request_timeout_sec).strip()
             except QwenClientError as exc:
-                self.last_error = f'ASR failed: {exc}'
+                self.last_error = f'语音识别失败：{exc}'
                 self.get_logger().warn(self.last_error)
                 error_text = str(exc).lower()
                 if 'timed out' in error_text or 'timeout' in error_text:
@@ -403,7 +407,7 @@ class VoiceSessionNode(Node):
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.event_pub.publish(msg)
         self.last_published_text = text
-        self.get_logger().info(f'Voice command event: {msg.data}')
+        self.get_logger().info(f'发布语音命令事件：{msg.data}')
         now = time.monotonic()
         self.last_event_published_at = now
         self.pause_listen_until = now + self.post_event_listen_pause_sec
