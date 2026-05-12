@@ -297,14 +297,11 @@ class RetailTaskNode(Node):
             self.handle_checkout(task_id)
             return
 
-        if intent == 'cancel' and self.sales_dialogue.get('active'):
-            self.handle_negative_or_cancel(task_id, text)
-            return
         if route == 'global_cancel':
             self.clear_sales_dialogue()
             return
 
-        if self.is_status_query_text(text):
+        if self.is_status_query_text(text) and not self.sales_dialogue.get('active'):
             self.say(task_id, self.status_query_reply(), priority=7)
             return
 
@@ -321,6 +318,10 @@ class RetailTaskNode(Node):
 
         if self.sales_dialogue_expired():
             self.clear_sales_dialogue()
+
+        if self.sales_dialogue.get('active'):
+            self.handle_active_semantic_dialogue(task_id, text, command_meta)
+            return
 
         if self.is_confirm_text(text):
             self.handle_confirm(task_id, text, command_meta)
@@ -440,6 +441,283 @@ class RetailTaskNode(Node):
             self.execute_b2_pick(task_id, product, text, 'local_fallback', 0.8, command_meta)
             return
         self.say(task_id, '云端理解失败，请直接说出商品名称，例如可乐、矿泉水或纸巾。', priority=7)
+
+    def handle_active_semantic_dialogue(
+        self,
+        task_id: str,
+        text: str,
+        command_meta: Dict[str, Any],
+    ) -> None:
+        source = str(command_meta.get('source') or 'text')
+        patch: Optional[Dict[str, Any]] = None
+        if self.qwen.available():
+            try:
+                patch = self.qwen.parse_dialogue_state_patch(
+                    text=text,
+                    model=self.fast_classifier_model,
+                    timeout_sec=self.classifier_timeout_sec,
+                    products=self.sales_products_payload(),
+                    dialogue=self.sales_dialogue_payload(current_source=source),
+                )
+                self.log_semantic_patch(patch)
+            except QwenClientError as exc:
+                self.get_logger().warn(f'B-2 semantic state patch failed: {exc}')
+        if patch is None:
+            patch = self.local_semantic_fallback_patch(text)
+            self.log_semantic_patch(patch)
+
+        if self.can_execute_from_semantic(patch):
+            product_id = str(self.sales_dialogue.get('pending_product_id') or '')
+            product = self.catalog.get(product_id)
+            if product is None:
+                self.say(task_id, '当前没有待确认商品，请先说出您的需求。', priority=6)
+                return
+            execute_meta = dict(command_meta)
+            execute_meta['task_request_id'] = self.semantic_task_request_id(command_meta, product.id)
+            self.append_semantic_user_history(text, patch)
+            self.clear_sales_dialogue()
+            self.execute_b2_pick(
+                task_id,
+                product,
+                text,
+                'semantic_confirm',
+                self.safe_float(patch.get('confidence'), 0.9),
+                execute_meta,
+            )
+            return
+
+        handled = self.apply_semantic_state_ops(task_id, text, patch, command_meta)
+        if handled:
+            return
+        self.say(task_id, self.semantic_reply(patch) or '请明确说明是确认当前商品，还是需要重新推荐。', priority=6)
+
+    def log_semantic_patch(self, patch: Dict[str, Any]) -> None:
+        self.get_logger().info(
+            'B-2 semantic patch: '
+            f"policy={patch.get('policy_version')}, "
+            f"confidence={self.safe_float(patch.get('confidence'), 0.0):.2f}, "
+            f"ops={self.semantic_op_names(patch)}, "
+            f"understanding={str(patch.get('understanding_cn') or '')[:120]}"
+        )
+
+    def can_execute_from_semantic(self, patch: Dict[str, Any]) -> bool:
+        ops = self.semantic_op_names(patch)
+        if 'confirm_pending_product' not in ops:
+            return False
+        blocked_ops = {
+            'reject_pending_product',
+            'cancel_dialogue',
+            'request_recommendation',
+            'ask_explanation',
+            'clarify_user_need',
+        }
+        if any(op in ops for op in blocked_ops):
+            return False
+        props = patch.get('utterance_properties') if isinstance(patch.get('utterance_properties'), dict) else {}
+        if any(bool(props.get(key)) for key in (
+            'is_question',
+            'is_negation',
+            'is_correction',
+            'has_new_constraints',
+            'later_intent_overrides_confirmation',
+        )):
+            return False
+        if bool(props.get('has_conflicting_intents')) and bool(props.get('later_intent_overrides_confirmation')):
+            return False
+        ref = patch.get('context_reference') if isinstance(patch.get('context_reference'), dict) else {}
+        if not bool(ref.get('refers_to_pending_product')):
+            return False
+        if self.safe_float(patch.get('confidence'), 0.0) < 0.78:
+            return False
+        if self.sales_dialogue.get('state') != 'awaiting_confirmation':
+            return False
+        if str(self.sales_dialogue.get('waiting_for') or '') != WAIT_CONFIRM_PRODUCT:
+            return False
+        pending_id = str(self.sales_dialogue.get('pending_product_id') or '')
+        if not pending_id:
+            return False
+        execution = patch.get('execution') if isinstance(patch.get('execution'), dict) else {}
+        if not bool(execution.get('should_execute')):
+            return False
+        execute_product_id = str(execution.get('execute_product_id') or '').strip()
+        return not execute_product_id or execute_product_id == pending_id
+
+    def apply_semantic_state_ops(
+        self,
+        task_id: str,
+        text: str,
+        patch: Dict[str, Any],
+        command_meta: Dict[str, Any],
+    ) -> bool:
+        del command_meta
+        ops = self.semantic_ops(patch)
+        op_names = [str(op.get('op') or '') for op in ops]
+        reply = self.semantic_reply(patch)
+        handled = False
+
+        for op in ops:
+            name = str(op.get('op') or '')
+            if name == 'reject_pending_product':
+                self.reject_pending_product()
+                handled = True
+            elif name == 'add_constraints':
+                self.merge_sales_constraints(op.get('constraints') if isinstance(op.get('constraints'), dict) else {})
+                handled = True
+            elif name == 'clear_constraints':
+                self.sales_dialogue['constraints'] = {}
+                handled = True
+
+        if 'cancel_dialogue' in op_names:
+            self.append_semantic_user_history(text, patch, reply or '好的，已取消当前推荐。')
+            self.clear_sales_dialogue()
+            self.say(task_id, reply or '好的，已取消当前推荐。您可以重新说出需求。', priority=6)
+            return True
+
+        if 'reject_pending_product' in op_names and 'request_recommendation' not in op_names:
+            self.append_semantic_user_history(text, patch, reply or '好的，不选择刚才推荐的商品。')
+            self.sales_dialogue = {
+                **self.sales_dialogue,
+                'active': True,
+                'state': 'asking_clarification',
+                'last_action': 'reject_pending_product',
+                'pending_product_id': '',
+                'pending_product_name': '',
+                'waiting_for': WAIT_CLARIFY_PRODUCT,
+                'proposal_id': '',
+                'pending_proposal': {},
+                'last_reply': reply or '好的，不选择刚才推荐的商品。您可以继续说明新的偏好或商品名。',
+                'expires_at': time.time() + 120.0,
+            }
+            self.say(task_id, reply or '好的，不选择刚才推荐的商品。您可以继续说明新的偏好或商品名。', priority=6)
+            self.publish_sales_dialogue_status()
+            return True
+
+        for op in ops:
+            name = str(op.get('op') or '')
+            if name == 'select_related_product':
+                product = self.product_from_related_op(op)
+                if product is not None:
+                    decision = self.build_propose_decision(
+                        product=product,
+                        alternatives=[p for p in self.products_from_related(self.sales_dialogue.get('related_products') or []) if p.id != product.id],
+                        need=str(self.sales_dialogue.get('need') or 'unknown'),
+                        reason=str(op.get('reason_cn') or '用户选择了相关备选商品。'),
+                        reply=reply or self.default_proposal_reply(product),
+                        confidence=self.safe_float(patch.get('confidence'), 0.82),
+                    )
+                    decision['constraints'] = dict(self.sales_dialogue.get('constraints') or {})
+                    self.update_sales_dialogue(text, decision, state='awaiting_confirmation', waiting_for=WAIT_CONFIRM_PRODUCT)
+                    self.say(task_id, decision['reply_cn'], priority=7)
+                    return True
+            elif name == 'select_mentioned_product':
+                product = self.catalog.get(str(op.get('product_id') or '')) or self.catalog.match_text(text)
+                if product is not None:
+                    decision = self.build_propose_decision(
+                        product=product,
+                        alternatives=[],
+                        need='explicit_product',
+                        reason=str(op.get('reason_cn') or '用户提到了具体商品。'),
+                        reply=reply or self.default_proposal_reply(product),
+                        confidence=self.safe_float(patch.get('confidence'), 0.82),
+                    )
+                    decision['constraints'] = dict(self.sales_dialogue.get('constraints') or {})
+                    self.update_sales_dialogue(text, decision, state='awaiting_confirmation', waiting_for=WAIT_CONFIRM_PRODUCT)
+                    self.say(task_id, decision['reply_cn'], priority=7)
+                    return True
+
+        if any(name in op_names for name in ('request_recommendation', 'add_constraints', 'clear_constraints')):
+            decision = self.recommend_from_current_semantic_state(patch)
+            if decision is not None:
+                if reply:
+                    decision['reply_cn'] = reply
+                decision['constraints'] = dict(self.sales_dialogue.get('constraints') or {})
+                self.update_sales_dialogue(text, decision, state='awaiting_confirmation', waiting_for=WAIT_CONFIRM_PRODUCT)
+                self.say(task_id, decision['reply_cn'], priority=7)
+                return True
+
+        if any(name in op_names for name in ('ask_explanation', 'request_status', 'request_catalog', 'clarify_user_need')):
+            fallback = {
+                'ask_explanation': '我会先推荐商品，只有在您明确确认后才开始取货。',
+                'request_status': self.status_query_reply(),
+                'request_catalog': self.catalog_intro_reply(),
+                'clarify_user_need': '请再说明一下您想要的商品类型或偏好。',
+            }
+            chosen = next((fallback[name] for name in op_names if name in fallback), '')
+            self.append_semantic_user_history(text, patch, reply or chosen)
+            self.say(task_id, reply or chosen, priority=7)
+            self.publish_sales_dialogue_status()
+            return True
+
+        if 'confirm_pending_product' in op_names:
+            product_name = str(self.sales_dialogue.get('pending_product_name') or self.sales_dialogue.get('last_product_name') or '')
+            self.append_semantic_user_history(text, patch, reply or '')
+            self.say(task_id, reply or f'如果需要{product_name}，请明确说“确认”开始取货。', priority=6)
+            self.publish_sales_dialogue_status()
+            return True
+
+        if handled or 'no_state_change' in op_names:
+            self.append_semantic_user_history(text, patch, reply or '')
+            self.say(task_id, reply or '我已收到，请继续说明您的需求。', priority=6)
+            self.publish_sales_dialogue_status()
+            return True
+        return False
+
+    def local_semantic_fallback_patch(self, text: str) -> Dict[str, Any]:
+        normalized = self.normalize_cn(text)
+        ops: List[Dict[str, Any]] = []
+        props = {
+            'is_question': any(k in normalized for k in ('吗', '怎么', '为什么', '如何', '?', '？')),
+            'is_negation': self.is_negative_text(normalized),
+            'is_correction': any(k in normalized for k in ('不对', '错了', '不是')),
+            'has_conflicting_intents': False,
+            'later_intent_overrides_confirmation': False,
+            'has_new_constraints': any(k in normalized for k in ('便宜', '健康', '不要碳酸', '不碳酸', '甜', '咸')),
+        }
+        contextual_confirm = (
+            normalized in ('对呀', '对啊', '对的', '行', '行吧')
+            or any(k in normalized for k in ('就刚才那个', '拿这个', '要这个', '就它'))
+        )
+        if self.is_confirm_text(normalized) or contextual_confirm:
+            ops.append({'op': 'confirm_pending_product', 'reason_cn': '本地精确确认词。'})
+        if props['is_negation'] or props['is_correction']:
+            ops.append({'op': 'reject_pending_product', 'reason_cn': '本地检测到否定或纠正。'})
+        constraints = self.constraints_from_text(normalized)
+        if constraints:
+            ops.append({'op': 'add_constraints', 'constraints': constraints, 'reason_cn': '本地检测到新增偏好约束。'})
+            ops.append({'op': 'request_recommendation', 'reason_cn': '根据新增约束重新推荐。'})
+        if self.is_modify_text(normalized):
+            ops.append({'op': 'reject_pending_product', 'reason_cn': '用户要求更换当前推荐。'})
+            ops.append({'op': 'request_recommendation', 'reason_cn': '用户要求重新推荐。'})
+        if props['is_question'] and not constraints:
+            ops = [{'op': 'ask_explanation', 'reason_cn': '本地检测到疑问句。'}]
+        if not ops:
+            ops = [{'op': 'no_state_change', 'reason_cn': '本地无法可靠解释。'}]
+        if 'confirm_pending_product' in [op['op'] for op in ops] and len(ops) > 1:
+            props['has_conflicting_intents'] = True
+            props['later_intent_overrides_confirmation'] = True
+        pending_id = str(self.sales_dialogue.get('pending_product_id') or '')
+        confirm_only = [op['op'] for op in ops] == ['confirm_pending_product']
+        return {
+            'schema_version': '2.1',
+            'policy_version': 'b2_state_patch_v2.1_local_fallback',
+            'understanding_cn': '本地兜底语义解释。',
+            'user_intent_summary': '',
+            'context_reference': {
+                'refers_to_pending_product': bool(pending_id and (confirm_only or any(k in normalized for k in ('这个', '刚才', '它')))),
+                'referenced_product_id': pending_id if pending_id else '',
+                'referenced_related_index': 0,
+            },
+            'utterance_properties': props,
+            'state_ops': ops,
+            'execution': {
+                'should_execute': confirm_only,
+                'execute_product_id': pending_id if confirm_only else '',
+                'reason_cn': '本地精确确认可进入 guard。' if confirm_only else '本地兜底不执行。',
+            },
+            'response_plan': {'reply_cn': ''},
+            'confidence': 0.86 if confirm_only else 0.7,
+            'needs_clarification': not confirm_only,
+        }
 
     def handle_confirm(self, task_id: str, text: str, command_meta: Dict[str, Any]) -> None:
         product_id = str(
@@ -1093,6 +1371,126 @@ class RetailTaskNode(Node):
         self.say(task_id, f'好的，为您提取{product.name}。', priority=6)
         self.publish_task_event(task_id, 'pick_item', product, 'checkout', source, confidence, payload)
 
+    def semantic_ops(self, patch: Dict[str, Any]) -> List[Dict[str, Any]]:
+        raw_ops = patch.get('state_ops') or []
+        ops: List[Dict[str, Any]] = []
+        if not isinstance(raw_ops, list):
+            return ops
+        for item in raw_ops:
+            if isinstance(item, str):
+                ops.append({'op': item})
+            elif isinstance(item, dict):
+                ops.append(item)
+        return ops
+
+    def semantic_op_names(self, patch: Dict[str, Any]) -> List[str]:
+        return [str(op.get('op') or '') for op in self.semantic_ops(patch) if str(op.get('op') or '')]
+
+    def semantic_reply(self, patch: Dict[str, Any]) -> str:
+        response_plan = patch.get('response_plan') if isinstance(patch.get('response_plan'), dict) else {}
+        return str(response_plan.get('reply_cn') or '').strip()
+
+    def semantic_task_request_id(self, command_meta: Dict[str, Any], product_id: str) -> str:
+        session_id = str(command_meta.get('session_id') or 'voice')
+        utterance_id = str(command_meta.get('utterance_id') or int(time.time() * 1000))
+        return f'b2_pick_{session_id}_{utterance_id}_{product_id}'
+
+    def append_semantic_user_history(
+        self,
+        text: str,
+        patch: Dict[str, Any],
+        reply: str = '',
+    ) -> None:
+        history = list(self.sales_dialogue.get('history') or [])
+        history.append({
+            'role': 'user',
+            'text': text,
+            'semantic_summary': str(patch.get('user_intent_summary') or patch.get('understanding_cn') or ''),
+            'state_ops': self.semantic_op_names(patch),
+        })
+        if reply:
+            history.append({'role': 'assistant', 'text': reply})
+            self.sales_dialogue['last_reply'] = reply
+        self.sales_dialogue['history'] = history[-8:]
+        self.sales_dialogue['expires_at'] = time.time() + 120.0
+
+    def reject_pending_product(self) -> None:
+        product_id = str(
+            self.sales_dialogue.get('pending_product_id')
+            or self.sales_dialogue.get('last_product_id')
+            or ''
+        )
+        if not product_id:
+            return
+        rejected = set(str(v) for v in self.sales_dialogue.get('rejected_product_ids', []) if v)
+        rejected.add(product_id)
+        self.sales_dialogue['rejected_product_ids'] = sorted(rejected)
+
+    def merge_sales_constraints(self, constraints: Dict[str, Any]) -> None:
+        current = dict(self.sales_dialogue.get('constraints') or {})
+        for key, value in constraints.items():
+            if isinstance(value, list):
+                existing = [str(v) for v in current.get(key, []) if v] if isinstance(current.get(key), list) else []
+                existing.extend(str(v) for v in value if v)
+                current[key] = sorted(set(existing))
+            elif value not in (None, ''):
+                current[key] = value
+        self.sales_dialogue['constraints'] = current
+
+    def product_from_related_op(self, op: Dict[str, Any]) -> Optional[Product]:
+        product_id = str(op.get('product_id') or '').strip()
+        if product_id:
+            return self.catalog.get(product_id)
+        index = int(self.safe_float(op.get('related_index') or op.get('referenced_related_index'), 0.0))
+        related = self.products_from_related(self.sales_dialogue.get('related_products') or [])
+        if 1 <= index <= len(related):
+            return related[index - 1]
+        if related:
+            return related[0]
+        return None
+
+    def recommend_from_current_semantic_state(self, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        del patch
+        constraints = dict(self.sales_dialogue.get('constraints') or {})
+        positive = [str(v) for v in constraints.get('positive_constraints', []) if v]
+        negative = [str(v) for v in constraints.get('negative_constraints', []) if v]
+        need = str(self.sales_dialogue.get('need') or 'unknown')
+        decision = self.decision_by_need_category(
+            need,
+            '',
+            positive_constraints=positive,
+            negative_constraints=negative,
+            confidence=0.86,
+        )
+        if decision is not None:
+            return decision
+        return self.modify_current_proposal()
+
+    def constraints_from_text(self, text: str) -> Dict[str, List[str]]:
+        normalized = self.normalize_cn(text)
+        positive: List[str] = []
+        negative: List[str] = []
+        if '便宜' in normalized:
+            positive.append('cheap')
+            negative.append('expensive')
+        if '健康' in normalized:
+            positive.append('healthy')
+        if any(k in normalized for k in ('不要碳酸', '不碳酸', '非碳酸')):
+            positive.append('non_carbonated')
+            negative.append('carbonated')
+        if '甜' in normalized and not any(k in normalized for k in ('不要甜', '不甜')):
+            positive.append('sweet')
+        if any(k in normalized for k in ('不要甜', '不甜')):
+            negative.append('sweet')
+        if '咸' in normalized:
+            positive.append('salty')
+        result: Dict[str, List[str]] = {}
+        if positive:
+            result['positive_constraints'] = sorted(set(positive))
+        if negative:
+            result['negative_constraints'] = sorted(set(negative))
+        return result
+
     def default_sales_dialogue(self) -> Dict[str, Any]:
         return {
             'active': False,
@@ -1139,18 +1537,26 @@ class RetailTaskNode(Node):
         product = self.product_from_decision(decision)
         related = self.related_products_from_decision(decision, exclude_id=product.id if product else '')
         history = list(self.sales_dialogue.get('history') or [])
-        history.append({'role': 'user', 'text': text})
         reply = str(decision.get('reply_cn') or '').strip()
-        if reply:
-            history.append({'role': 'assistant', 'text': reply})
-        history = history[-8:]
-
         rejected = [str(v) for v in self.sales_dialogue.get('rejected_product_ids', []) if v]
         if action == 'propose_product' and self.sales_dialogue.get('last_product_id') and (
             product is not None and product.id != self.sales_dialogue.get('last_product_id')
         ):
             rejected.append(str(self.sales_dialogue.get('last_product_id')))
         proposal_id = f"proposal_{int(time.time() * 1000)}" if product is not None and state == 'awaiting_confirmation' else ''
+        history.append({'role': 'user', 'text': text})
+        if reply:
+            assistant_event = {'role': 'assistant', 'text': reply}
+            if proposal_id:
+                assistant_event.update({
+                    'event': 'proposal',
+                    'pending_product_id': product.id if product is not None else '',
+                    'related_products': related,
+                    'waiting_for': waiting_for or WAIT_CONFIRM_PRODUCT,
+                    'proposal_id': proposal_id,
+                })
+            history.append(assistant_event)
+        history = history[-8:]
 
         self.sales_dialogue = {
             'active': state in ('awaiting_confirmation', 'asking_clarification'),
@@ -1198,6 +1604,8 @@ class RetailTaskNode(Node):
             'related_products': self.sales_dialogue.get('related_products') or [],
             'pending_proposal': self.sales_dialogue.get('pending_proposal') or {},
             'last_reply': str(self.sales_dialogue.get('last_reply') or ''),
+            'constraints': dict(self.sales_dialogue.get('constraints') or {}),
+            'rejected_product_ids': list(self.sales_dialogue.get('rejected_product_ids') or []),
         }
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
@@ -1220,6 +1628,7 @@ class RetailTaskNode(Node):
             'pending_proposal': dict(self.sales_dialogue.get('pending_proposal') or {}),
             'constraints': dict(self.sales_dialogue.get('constraints') or {}),
             'rejected_product_ids': list(self.sales_dialogue.get('rejected_product_ids') or []),
+            'last_reply': str(self.sales_dialogue.get('last_reply') or ''),
         }
 
     def sales_products_payload(self) -> List[Dict[str, Any]]:

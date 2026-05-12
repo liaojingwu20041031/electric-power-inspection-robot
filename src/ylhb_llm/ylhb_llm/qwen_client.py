@@ -184,6 +184,74 @@ class QwenClient:
         )
         return parse_json_object(out)
 
+    def parse_dialogue_state_patch(
+        self,
+        text: str,
+        model: str,
+        timeout_sec: float,
+        products: List[Dict[str, Any]],
+        dialogue: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        system_prompt = (
+            '你是智慧零售机器人 B-2 销售对话的上下文语义解释器。'
+            '你的任务不是做动作分类，也不是直接下发执行，而是解释当前用户话语对已有 sales_dialogue 状态的有序影响。'
+            '必须结合当前 pending_product、related_products、rejected_product_ids、constraints、waiting_for、last_reply 和 history。'
+            '不要按关键词机械判断，要解释整句话的最终有效意图。'
+            '当确认与否定、反悔、纠正、新约束、疑问冲突时，后出现或更具体的否定/反悔/纠正/新约束优先。'
+            '只要有疑问、不确定、反悔、纠正或新约束，execution.should_execute 必须为 false。'
+            '只有用户明确肯定当前待确认商品，且无疑问/否定/反悔/纠正/新约束时，才可以建议执行。'
+            '你只输出状态操作和回复计划，不拥有执行权；本地 guard 会最终决定是否取货。'
+            '只能从给定商品清单中引用商品，禁止创造商品。'
+            '输出必须是 JSON，不要 Markdown，不要额外解释。'
+            'schema_version 固定为 "2.1"，policy_version 固定为 "b2_state_patch_v2.1"。'
+            '字段：schema_version, policy_version, understanding_cn, user_intent_summary, context_reference, '
+            'utterance_properties, state_ops, execution, response_plan, confidence, needs_clarification。'
+            'context_reference 字段：refers_to_pending_product, referenced_product_id, referenced_related_index。'
+            'utterance_properties 字段：is_question, is_negation, is_correction, has_conflicting_intents, later_intent_overrides_confirmation, has_new_constraints。'
+            'state_ops 是有序数组，每项字段 op, product_id, constraints, reason_cn。'
+            '允许 op：confirm_pending_product, reject_pending_product, cancel_dialogue, ask_explanation, '
+            'add_constraints, clear_constraints, request_recommendation, request_catalog, request_status, '
+            'select_related_product, select_mentioned_product, clarify_user_need, close_voice_request, no_state_change。'
+            'constraints 可包含 positive_constraints 和 negative_constraints 数组，元素可用 cheap/healthy/sweet/salty/filling/refreshing/non_carbonated/carbonated/expensive/cold。'
+            'execution 字段：should_execute, execute_product_id, reason_cn。'
+            'response_plan 字段：reply_cn。'
+        )
+        user_payload = {
+            'current_user_text': text,
+            'dialogue': dialogue,
+            'products': products,
+            'allowed_state_ops': [
+                'confirm_pending_product',
+                'reject_pending_product',
+                'cancel_dialogue',
+                'ask_explanation',
+                'add_constraints',
+                'clear_constraints',
+                'request_recommendation',
+                'request_catalog',
+                'request_status',
+                'select_related_product',
+                'select_mentioned_product',
+                'clarify_user_need',
+                'close_voice_request',
+                'no_state_change',
+            ],
+        }
+        out = self.chat_completion(
+            model=model,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            timeout_sec=timeout_sec,
+            temperature=0.0,
+            extra_body={'enable_thinking': False},
+        )
+        parsed = parse_json_object(out)
+        parsed.setdefault('schema_version', '2.1')
+        parsed.setdefault('policy_version', 'b2_state_patch_v2.1')
+        return parsed
+
     def classify_sales_category(
         self,
         text: str,

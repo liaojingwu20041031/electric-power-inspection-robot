@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import rclpy
 from rclpy.node import Node
@@ -10,8 +10,6 @@ from std_msgs.msg import String
 from ylhb_interfaces.msg import SayText, TaskStatus
 
 
-CONFIRM_WORDS = ('确认', '确定', '就这个', '我要这个', '开始取货', '帮我拿这个')
-MODIFY_WORDS = ('换一个', '不对', '不要这个', '重新推荐')
 SAFETY_WORDS = ('急停', '停止', '停下', '别动', '刹车')
 VOICE_CLOSE_WORDS = (
     '关闭语音模式',
@@ -128,18 +126,11 @@ class VoiceCommandRouterNode(Node):
             self.publish_text_command(text, event, 'system_feedback')
             return
 
-        sales_state = str(self.sales_status.get('state') or 'idle')
-        has_pending = bool(self.sales_status.get('primary_product_id')) and sales_state == 'awaiting_confirmation'
-        if self.is_confirm(text) and not has_pending:
-            self.say('voice_router', '当前没有待确认商品，请先说出您的需求。', priority=6)
-            return
-
         if self.system_mode == 'running':
             self.say('voice_router', '当前正在执行任务，请等待完成，或说取消任务。', priority=6)
             return
 
-        route = 'b2_confirm' if self.is_confirm(text) else 'b2_sales'
-        self.publish_text_command(text, event, route)
+        self.publish_text_command(text, event, 'b2_dialogue')
 
     def publish_text_command(self, text: str, event: Dict[str, Any], route: str) -> None:
         command = {
@@ -155,17 +146,10 @@ class VoiceCommandRouterNode(Node):
             'confidence': float(event.get('confidence') or 0.0),
             'timestamp': float(event.get('timestamp') or time.time()),
         }
-        if route == 'b2_confirm':
-            command['task_request_id'] = self.task_request_id(event)
         msg = String()
         msg.data = json.dumps(command, ensure_ascii=False)
         self.text_pub.publish(msg)
         self.get_logger().info(f'语音命令已路由到文本指令：{msg.data}')
-
-    def task_request_id(self, event: Dict[str, Any]) -> str:
-        session_id = str(event.get('session_id') or 'voice')
-        utterance_id = str(event.get('utterance_id') or int(time.time() * 1000))
-        return f'b2_pick_{session_id}_{utterance_id}'
 
     def sales_status_callback(self, msg: String) -> None:
         try:
@@ -201,9 +185,6 @@ class VoiceCommandRouterNode(Node):
 
     def is_close_voice_session(self, text: str) -> bool:
         return any(word == text or word in text for word in VOICE_CLOSE_WORDS)
-
-    def is_confirm(self, text: str) -> bool:
-        return any(word in text for word in CONFIRM_WORDS)
 
     def say(self, task_id: str, text: str, priority: int = 5) -> None:
         msg = SayText()
