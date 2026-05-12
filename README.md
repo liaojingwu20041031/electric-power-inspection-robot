@@ -131,13 +131,22 @@ aplay -l
 export DASHSCOPE_API_KEY=你的DashScopeKey
 ./scripts/run_on_jetson.sh llm \
   enable_voice:=true \
+  enable_voice_session:=true \
   enable_tts:=true \
   audio_input_device:=plughw:CARD=Luna,DEV=0 \
   audio_output_device:=plughw:CARD=Luna,DEV=0 \
   tts_voice:=Serena
 ```
 
-也可以直接调用一次录音识别服务，作为 ASR 调试入口：
+也可以开启按键式单次录音服务，作为 ASR 调试入口：
+
+```bash
+./scripts/run_on_jetson.sh llm \
+  enable_voice:=false \
+  enable_capture_voice:=true \
+  enable_tts:=false \
+  audio_input_device:=plughw:CARD=Luna,DEV=0
+```
 
 ```bash
 ros2 service call /retail_ai/capture_voice std_srvs/srv/Trigger "{}"
@@ -158,7 +167,9 @@ ros2 topic echo /retail_ai/voice_command_event
 ./scripts/run_on_jetson.sh competition
 ```
 
-`competition` 默认启用 eMeet Luna 语音输入和播报，设备为 `plughw:CARD=Luna,DEV=0`，播报默认使用 `Serena` 女声音色。启动后在 UI 的“系统控制”页点击“一键启动比赛节点”，由总控台启动底盘/雷达、ZED、感知和导航；不需要再手动开其它终端。若现场需要临时静音：
+`competition` 默认启用 eMeet Luna 连续语音会话和 TTS 播报，播报默认使用 `Serena` 女声音色。启动后在 UI 的“系统控制”页点击“一键启动比赛节点”，由总控台启动底盘/雷达、ZED、感知和导航；不需要再手动开其它终端。若现场需要临时静音：
+
+`competition` 的实际默认参数是：`enable_voice:=true`、`enable_voice_session:=true`、`enable_capture_voice:=false`、`enable_tts:=true`、`audio_input_device:=plughw:CARD=Luna,DEV=0`、`audio_output_device:=default`。按键式 `/retail_ai/capture_voice` 默认关闭，比赛交互走唤醒式连续语音。
 
 ```bash
 ./scripts/run_on_jetson.sh competition enable_tts:=false
@@ -182,20 +193,37 @@ ros2 topic echo /retail_ai/voice_command_event
 ~/ros2_ws/src/my_map.yaml
 ```
 
+UI 的“保存地图”默认写入 `~/ros2_ws/src/maps/<map_name>.yaml/.pgm`；导航默认仍读取 `~/ros2_ws/src/my_map.yaml`。要使用新保存的地图，需要复制成默认地图或启动导航时覆盖 `map:=...`。
+
 ## 比赛任务流程
 
 项目按比赛任务 A/B/C/D 组织运行：
 
 - 任务 A：语音、文字或键盘命令转换为 `/cmd_vel`，完成前进、后退、转向、停止等基础动作。
 - 任务 B-1：导入任务书图片，大模型理解任务，导航到货架 A，识别真实商品，推荐商品，抓取后前往结算区 B。
-- 任务 B-2：接收购物需求或商品指令，大模型像销售员一样给出主推和备选商品；用户确认后导航到货架 A，抓取商品，前往结算区 B 并返回起点 S。
+- 任务 B-2：接收购物需求或商品指令，大模型像销售员一样给出主推和备选商品；连续语音模式需要用户确认后才发布取货事件，然后导航到货架 A，抓取商品，前往结算区 B 并返回起点 S。
 - 任务 C：识别结算区商品，播报商品清单，根据 `products.yaml` 计算总价并返回起点 S。
 - 任务 D：通过现场显示屏 UI 展示任务状态、识别结果、播报文本、购物车和结算信息。
 
 任务书图片分析服务：
 
+任务书图片放在 `/home/nvidia/ros2_ws/src/ylhb_llm/test_images`，目录内只保留一张 `.jpg/.jpeg/.png`：
+
 ```bash
 ros2 service call /retail_ai/start_b1_task std_srvs/srv/Trigger "{}"
+```
+
+主要 AI/语音/UI 话题和服务：
+
+```text
+/retail_ai/task_event              # TaskEvent，inspect_shelf_for_recommendation / pick_item / checkout / return_start
+/retail_ai/task_status             # TaskStatus，执行层回传 started/succeeded/failed/rejected
+/retail_ai/sales_dialogue_status   # B-2 销售对话状态 JSON
+/retail_ai/voice_command_event     # 连续语音 ASR 事件 JSON
+/retail_ai/voice_session_status    # 连续语音会话状态 JSON
+/retail_ai/capture_voice           # 单次录音 ASR service，competition 默认关闭
+/retail_ai/start_voice_session     # 开启连续语音 service
+/retail_ai/stop_voice_session      # 关闭连续语音 service
 ```
 
 文字入口仍兼容纯文本；连续语音模式会先生成结构化事件，再由路由器发布结构化 `/retail_ai/text_command`：
