@@ -130,6 +130,7 @@ class VoiceSessionNode(Node):
         self.session_id = ''
         self.utterance_seq = 0
         self.state = 'OFF'
+        self.last_logged_state = ''
         self.is_tts_playing = False
         self.last_tts_speaking = False
         self.is_recording = False
@@ -168,7 +169,7 @@ class VoiceSessionNode(Node):
             self.last_active_at = time.monotonic()
             self.pause_listen_until = 0.0
             self.last_event_published_at = 0.0
-            self.state = 'WAIT_WAKE'
+            self.set_state('WAIT_WAKE')
         self.say('voice_session', f'语音模式已开启，请先说{self.wake_phrase}。', priority=6)
         self.publish_status()
         response.success = True
@@ -192,27 +193,35 @@ class VoiceSessionNode(Node):
         self.is_tts_playing = speaking
         self.last_tts_speaking = speaking
 
+    def set_state(self, state: str) -> None:
+        if self.state == state:
+            return
+        self.state = state
+        if self.last_logged_state != state:
+            self.get_logger().info(f'连续语音状态切换：{state}')
+            self.last_logged_state = state
+
     def session_loop(self) -> None:
         while not self.stop_event.is_set():
             if not self.session_enabled:
                 time.sleep(0.1)
                 continue
             if self.is_tts_playing:
-                self.state = 'TTS_PAUSED'
+                self.set_state('TTS_PAUSED')
                 time.sleep(0.1)
                 continue
             if time.monotonic() < self.pause_listen_until:
-                self.state = 'WAITING_RESPONSE'
+                self.set_state('WAITING_RESPONSE')
                 time.sleep(0.05)
                 continue
             if self.awakened and time.monotonic() - self.last_active_at > self.session_idle_timeout_sec:
                 with self.lock:
                     self.awakened = False
-                    self.state = 'WAIT_WAKE'
+                    self.set_state('WAIT_WAKE')
                 self.say('voice_session', f'语音会话已待机，请说{self.wake_phrase}重新唤醒。', priority=4)
                 continue
 
-            self.state = 'LISTENING' if self.awakened else 'WAIT_WAKE'
+            self.set_state('LISTENING' if self.awakened else 'WAIT_WAKE')
             idle_deadline = (
                 self.last_active_at + self.session_idle_timeout_sec
                 if self.awakened else 0.0
@@ -220,10 +229,10 @@ class VoiceSessionNode(Node):
             audio = self.wait_and_record_by_vad(idle_deadline=idle_deadline)
             if not audio:
                 continue
-            self.state = 'ASR_PROCESSING'
+            self.set_state('ASR_PROCESSING')
             text = self.transcribe_pcm(audio)
             if text == ASR_TIMEOUT_MARKER:
-                self.state = 'AWAKENED_IDLE' if self.awakened else 'WAIT_WAKE'
+                self.set_state('AWAKENED_IDLE' if self.awakened else 'WAIT_WAKE')
                 self.get_logger().info('Ignoring ASR timeout audio segment.')
                 continue
             if not text:
@@ -238,21 +247,21 @@ class VoiceSessionNode(Node):
         if self.last_event_published_at > 0.0 and (
             now - self.last_event_published_at < self.ignore_empty_asr_after_event_sec
         ):
-            self.state = 'AWAKENED_IDLE'
+            self.set_state('AWAKENED_IDLE')
             self.get_logger().info('Ignoring empty ASR shortly after valid voice event.')
             return
         if not self.awakened:
             self.asr_fail_count = 0
-            self.state = 'WAIT_WAKE'
+            self.set_state('WAIT_WAKE')
             return
         self.asr_fail_count += 1
         if self.asr_fail_count >= self.asr_fail_standby_threshold:
             self.awakened = False
-            self.state = 'WAIT_WAKE'
+            self.set_state('WAIT_WAKE')
             self.say('voice_session', f'多次没有听清，已回到待唤醒。请说{self.wake_phrase}。', priority=5)
             return
         if self.asr_empty_silent_first and self.asr_fail_count < self.asr_fail_prompt_threshold:
-            self.state = 'AWAKENED_IDLE'
+            self.set_state('AWAKENED_IDLE')
             return
         self.say('voice_session', '我没有听清，请再说一遍。', priority=5)
 
@@ -321,7 +330,7 @@ class VoiceSessionNode(Node):
                 else:
                     quiet += 1
                 if active:
-                    self.state = 'RECORDING'
+                    self.set_state('RECORDING')
                     self.is_recording = True
                     frames.append(chunk)
                     if len(frames) >= max_frames or quiet >= silence_frames:
@@ -371,12 +380,12 @@ class VoiceSessionNode(Node):
 
         if not self.awakened:
             if not contains_wake:
-                self.state = 'WAIT_WAKE'
+                self.set_state('WAIT_WAKE')
                 return
             self.awakened = True
             self.last_active_at = time.monotonic()
             if not command:
-                self.state = 'AWAKENED_IDLE'
+                self.set_state('AWAKENED_IDLE')
                 self.say('voice_session', '我在，请说。', priority=6)
                 self.publish_status()
                 return
@@ -384,10 +393,10 @@ class VoiceSessionNode(Node):
             self.last_active_at = time.monotonic()
 
         if not command:
-            self.state = 'AWAKENED_IDLE'
+            self.set_state('AWAKENED_IDLE')
             return
         self.publish_voice_event(command, raw_text, contains_wake)
-        self.state = 'AWAKENED_IDLE'
+        self.set_state('AWAKENED_IDLE')
 
     def publish_voice_event(self, text: str, raw_text: str, contains_wake: bool) -> None:
         self.utterance_seq += 1
@@ -417,7 +426,7 @@ class VoiceSessionNode(Node):
         with self.lock:
             self.session_enabled = False
             self.awakened = False
-            self.state = 'OFF'
+            self.set_state('OFF')
             self.is_recording = False
             self.pause_listen_until = 0.0
             self.last_event_published_at = 0.0

@@ -33,6 +33,8 @@ def generate_launch_description():
     tts_voice = LaunchConfiguration('tts_voice')
     tts_language_type = LaunchConfiguration('tts_language_type')
     enable_voice = LaunchConfiguration('enable_voice')
+    enable_voice_session = LaunchConfiguration('enable_voice_session')
+    enable_capture_voice = LaunchConfiguration('enable_capture_voice')
     enable_tts = LaunchConfiguration('enable_tts')
     enable_task_layer = LaunchConfiguration('enable_task_layer')
     enable_display_ui = LaunchConfiguration('enable_display_ui')
@@ -61,6 +63,8 @@ def generate_launch_description():
         DeclareLaunchArgument('tts_voice', default_value='Serena'),
         DeclareLaunchArgument('tts_language_type', default_value='Chinese'),
         DeclareLaunchArgument('enable_voice', default_value='false'),
+        DeclareLaunchArgument('enable_voice_session', default_value=enable_voice),
+        DeclareLaunchArgument('enable_capture_voice', default_value=enable_voice),
         DeclareLaunchArgument('enable_tts', default_value='false'),
         DeclareLaunchArgument('enable_task_layer', default_value='true'),
         DeclareLaunchArgument('enable_display_ui', default_value='true'),
@@ -113,7 +117,7 @@ def generate_launch_description():
                     'asr_model': asr_model,
                     'audio_device': audio_device,
                     'audio_input_device': audio_input_device,
-                    'enabled': ParameterValue(enable_voice, value_type=bool),
+                    'enabled': ParameterValue(enable_capture_voice, value_type=bool),
                 },
             ],
         ),
@@ -130,7 +134,7 @@ def generate_launch_description():
                     'asr_model': asr_model,
                     'audio_device': audio_device,
                     'audio_input_device': audio_input_device,
-                    'enabled': ParameterValue(enable_voice, value_type=bool),
+                    'enabled': ParameterValue(enable_voice_session, value_type=bool),
                 },
             ],
         ),
@@ -177,6 +181,8 @@ def generate_launch_description():
                     'perception_model_path': perception_model_path,
                     'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool),
                     'enable_voice': ParameterValue(enable_voice, value_type=bool),
+                    'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool),
+                    'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool),
                     'enable_tts': ParameterValue(enable_tts, value_type=bool),
                     'audio_device': audio_device,
                     'audio_input_device': audio_input_device,

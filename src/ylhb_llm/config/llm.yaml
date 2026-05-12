@@ -135,6 +135,8 @@ system_supervisor_node:
     perception_model_path: /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine
     embedded_task_layer: true
     enable_voice: false
+    enable_voice_session: false
+    enable_capture_voice: false
     enable_tts: false
     audio_device: default
     audio_input_device: default

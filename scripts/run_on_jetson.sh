@@ -96,6 +96,8 @@ case "${MODE}" in
       enable_display_ui:=true \
       enable_system_supervisor:=true \
       enable_voice:=true \
+      enable_voice_session:=true \
+      enable_capture_voice:=false \
       enable_tts:=true \
       audio_input_device:=plughw:CARD=Luna,DEV=0 \
       audio_output_device:=default \

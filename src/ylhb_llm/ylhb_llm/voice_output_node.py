@@ -79,9 +79,6 @@ class VoiceOutputNode(Node):
             except queue.Empty:
                 continue
             try:
-                self.current_task_id = msg.task_id
-                self.publish_status_once()
-                time.sleep(0.25)
                 text = msg.text.strip()
                 if text:
                     self.get_logger().info(f'播报请求[{msg.task_id}]：{text}')
@@ -93,13 +90,13 @@ class VoiceOutputNode(Node):
                     for segment in segments:
                         if self.stop_event.is_set():
                             break
-                        self.speak(segment)
+                        self.speak(segment, msg.task_id)
             finally:
                 self.current_task_id = ''
                 self.publish_status_once()
                 self.queue.task_done()
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, task_id: str) -> None:
         if not self.qwen.available():
             self.get_logger().warn('DASHSCOPE_API_KEY 未设置，跳过 TTS 播放。')
             return
@@ -126,6 +123,10 @@ class VoiceOutputNode(Node):
             f.write(audio)
             audio_path = f.name
         try:
+            self.current_task_id = task_id
+            self.publish_status_once()
+            time.sleep(0.25)
+
             cmd = ['aplay', '-q']
             if self.audio_device and self.audio_device != 'default':
                 cmd.extend(['-D', self.audio_device])
@@ -145,6 +146,8 @@ class VoiceOutputNode(Node):
                 f'音频播放异常：{exc}。如果出现 Device or resource busy，请检查输入输出设备是否都使用了 plughw。'
             )
         finally:
+            self.current_task_id = ''
+            self.publish_status_once()
             try:
                 os.unlink(audio_path)
             except OSError:

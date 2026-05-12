@@ -52,6 +52,8 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
         self.declare_parameter('embedded_task_layer', True)
         self.declare_parameter('enable_voice', False)
+        self.declare_parameter('enable_voice_session', False)
+        self.declare_parameter('enable_capture_voice', False)
         self.declare_parameter('enable_tts', False)
         self.declare_parameter('audio_device', 'default')
         self.declare_parameter('audio_input_device', 'default')
@@ -69,6 +71,8 @@ class SystemSupervisorNode(Node):
         self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
         self.embedded_task_layer = bool(self.get_parameter('embedded_task_layer').value)
         self.enable_voice = bool(self.get_parameter('enable_voice').value)
+        self.enable_voice_session = bool(self.get_parameter('enable_voice_session').value)
+        self.enable_capture_voice = bool(self.get_parameter('enable_capture_voice').value)
         self.enable_tts = bool(self.get_parameter('enable_tts').value)
         self.audio_device = str(self.get_parameter('audio_device').value)
         self.audio_input_device = str(self.get_parameter('audio_input_device').value)
@@ -294,6 +298,8 @@ class SystemSupervisorNode(Node):
             'ros2 launch ylhb_llm llm.launch.py '
             'enable_display_ui:=false enable_system_supervisor:=false '
             f'enable_voice:={str(self.enable_voice).lower()} '
+            f'enable_voice_session:={str(self.enable_voice_session).lower()} '
+            f'enable_capture_voice:={str(self.enable_capture_voice).lower()} '
             f'enable_tts:={str(self.enable_tts).lower()} '
             f'audio_device:={self.audio_device} '
             f'audio_input_device:={self.audio_input_device} '
@@ -307,7 +313,8 @@ class SystemSupervisorNode(Node):
 
     def voice_summary(self, prefix: str) -> str:
         return (
-            f'{prefix}; voice={self.enable_voice}, tts={self.enable_tts}, '
+            f'{prefix}; voice={self.enable_voice}, session={self.enable_voice_session}, '
+            f'capture={self.enable_capture_voice}, tts={self.enable_tts}, '
             f'input={self.audio_input_device}, output={self.audio_output_device}'
         )
 
