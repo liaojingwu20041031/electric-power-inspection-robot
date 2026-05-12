@@ -41,14 +41,35 @@ export WS_DIR=/path/to/ros2_ws
 
 ## 硬件与软件环境
 
-- 主控：Jetson Orin Nano Super
-- 系统：Ubuntu + ROS 2 Humble
-- 相机：ZED 2i
-- 雷达：RPLidar
-- 推理：CUDA / TensorRT
-- AI 服务：DashScope API
+本项目以 Jetson 本机部署为主，ROS 2 节点、视觉推理、显示屏 UI 和大模型任务层都在 Jetson 侧运行。
 
-> DashScope API Key 不写入代码。运行大模型任务层前在终端设置 `DASHSCOPE_API_KEY`。
+硬件组成：
+
+| 模块 | 设备 | 用途 |
+|---|---|---|
+| 主控 | Jetson Orin Nano Super | 运行 ROS 2、Nav2、感知节点、AI 任务层和显示屏 UI |
+| 底盘控制 | STM32 大脑底板 | 接收 `/cmd_vel`，控制电机并回传轮式里程计 |
+| 雷达 | RPLidar | 发布 `/scan`，用于 SLAM 建图、AMCL 定位和 Nav2 避障 |
+| 相机 | ZED 2i | 发布 RGB 图、深度图和相机内参，供 YOLO 和 3D 粗定位使用 |
+| IMU | 底盘 IMU | 与轮式里程计进入 EKF，提高短时位姿稳定性 |
+| 语音 | eMeet Luna | 麦克风输入、TTS 播放；推荐使用 `plughw:CARD=Luna,DEV=0` 作为录音设备 |
+| 显示 | Jetson 本机 HDMI/触摸屏 | 比赛 UI、任务 D 驾驶舱和现场总控台 |
+
+软件与服务：
+
+| 类型 | 组件 |
+|---|---|
+| 系统 | Ubuntu 22.04 / ROS 2 Humble |
+| 导航 | SLAM Toolbox、Nav2、AMCL、robot_localization |
+| 视觉 | ZED ROS 2 wrapper、OpenCV、CUDA、TensorRT、YOLO26 |
+| AI | DashScope OpenAI 兼容接口、Qwen 视觉/文本/ASR/TTS 模型 |
+| UI | PyQt 显示屏总控台 |
+
+DashScope API Key 不写入代码。运行图片理解、云端 ASR 或云端 TTS 前，在终端设置：
+
+```bash
+export DASHSCOPE_API_KEY=你的DashScopeKey
+```
 
 ## 快速开始
 
@@ -82,6 +103,55 @@ PYTHONNOUSERSITE=1 colcon test \
 仓库包含 ZED/RPLidar 第三方源码。第三方包用于部署构建，默认不把 vendor lint 作为项目质量门槛；完整 `colcon test` 可能因第三方包格式规则或离线 schema 校验失败。
 
 ## 常用启动命令
+
+`scripts/run_on_jetson.sh` 是 Jetson 现场推荐入口，会自动加载 ROS 环境和工作区环境。支持的模式：
+
+```text
+bringup       启动底盘、IMU、雷达、URDF、EKF
+mapping       启动 SLAM Toolbox 建图
+navigation    启动 Nav2，默认地图为 ~/ros2_ws/src/my_map.yaml
+zed           启动 ZED 2i wrapper
+perception    启动 TensorRT YOLO 感知节点
+llm           启动 AI 任务层、语音节点和可选 UI
+competition   启动比赛显示屏 UI、system supervisor 和内嵌 AI 任务层
+teleop        启动键盘遥控
+```
+
+### 比赛现场一键入口
+
+```bash
+./scripts/run_on_jetson.sh competition
+```
+
+`competition` 默认启动显示屏 UI、系统 supervisor、AI 任务层、连续语音会话和 TTS 播报。进入 UI 的“系统控制”页后，点击“一键启动比赛节点”，supervisor 会按 `bringup -> zed -> perception -> navigation -> llm` 顺序启动比赛栈；其中 AI 任务层已随 competition 内嵌运行，状态会显示为 `embedded`，不会重复启动。
+
+实际默认参数：
+
+```text
+enable_voice:=true
+enable_voice_session:=true
+enable_capture_voice:=false
+enable_tts:=true
+audio_input_device:=plughw:CARD=Luna,DEV=0
+audio_output_device:=default
+tts_voice:=Serena
+```
+
+现场临时静音：
+
+```bash
+./scripts/run_on_jetson.sh competition enable_tts:=false
+```
+
+比赛现场物理屏幕使用 `DISPLAY=:0`。`competition` 脚本会自动把 SSH X11 转发的 `DISPLAY=localhost:10.0` 切换为本机显示，并关闭 X11 屏保、空白屏和 DPMS 省电息屏。
+
+远程 X11 调试时使用窗口模式：
+
+```bash
+./scripts/run_on_jetson.sh competition force_local_display:=false fullscreen:=false
+```
+
+### 单模块调试
 
 启动底盘、IMU、雷达、URDF 和 EKF：
 
@@ -117,6 +187,8 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
 ./scripts/run_on_jetson.sh llm enable_voice:=false enable_tts:=false
 ```
 
+### 语音调试
+
 接入 eMeet Luna 一体式音箱/麦克风后，先确认系统能看到声卡：
 
 ```bash
@@ -125,7 +197,9 @@ arecord -l
 aplay -l
 ```
 
-当前项目推荐使用唤醒式连续语音模式。UI 中点击“开启语音模式”后，机器人本地监听人声，听到“小零小零”或“小玲小玲”等唤醒词后进入会话；后续语音会先发布结构化事件，再由路由器过滤后进入 `/retail_ai/text_command`。eMeet Luna 枚举为 `CARD=Luna` 时启动：
+当前项目推荐使用唤醒式连续语音模式。UI 中点击“开启语音模式”后，机器人本地监听人声；听到“小零小零”“小玲小玲”等唤醒词后进入会话。后续语音会先发布结构化事件，再由 `voice_command_router_node` 过滤并转发到 `/retail_ai/text_command`。
+
+eMeet Luna 枚举为 `CARD=Luna` 时，可以这样启动连续语音和 TTS：
 
 ```bash
 export DASHSCOPE_API_KEY=你的DashScopeKey
@@ -138,7 +212,7 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
   tts_voice:=Serena
 ```
 
-也可以开启按键式单次录音服务，作为 ASR 调试入口：
+按键式单次录音服务只作为 ASR 调试入口。它在 `competition` 模式下默认关闭，如需调试需显式开启：
 
 ```bash
 ./scripts/run_on_jetson.sh llm \
@@ -161,19 +235,7 @@ ros2 topic echo /retail_ai/voice_session_status
 ros2 topic echo /retail_ai/voice_command_event
 ```
 
-启动比赛现场显示屏 UI / 总控台：
-
-```bash
-./scripts/run_on_jetson.sh competition
-```
-
-`competition` 默认启用 eMeet Luna 连续语音会话和 TTS 播报，播报默认使用 `Serena` 女声音色。启动后在 UI 的“系统控制”页点击“一键启动比赛节点”，由总控台启动底盘/雷达、ZED、感知和导航；不需要再手动开其它终端。若现场需要临时静音：
-
-`competition` 的实际默认参数是：`enable_voice:=true`、`enable_voice_session:=true`、`enable_capture_voice:=false`、`enable_tts:=true`、`audio_input_device:=plughw:CARD=Luna,DEV=0`、`audio_output_device:=default`。按键式 `/retail_ai/capture_voice` 默认关闭，比赛交互走唤醒式连续语音。
-
-```bash
-./scripts/run_on_jetson.sh competition enable_tts:=false
-```
+### 建图和导航
 
 启动建图：
 
