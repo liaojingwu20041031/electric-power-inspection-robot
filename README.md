@@ -15,7 +15,7 @@
   <img alt="Stars" src="https://img.shields.io/github/stars/liaojingwu20041031/ylhb-smart-retail-robot?style=social">
 </p>
 
-[项目亮点](#-项目亮点) · [系统架构](#-系统架构) · [快速开始](#-快速开始) · [比赛任务](#-比赛任务流程) · [详细文档](#-详细文档) · [传播素材](docs/PROMOTION_KIT.md)
+[项目亮点](#-项目亮点) · [系统架构](#-系统架构) · [快速开始](#-快速开始) · [比赛任务](#-比赛任务流程) · [详细文档](#-详细文档)
 
 </div>
 
@@ -120,8 +120,7 @@ flowchart TB
 │   ├── my_map.yaml
 │   └── my_map.pgm
 ├── MIGRATION_JETSON.md                  # Jetson 本机化迁移说明
-├── SECURITY.md                          # 安全与密钥规范
-└── docs/PROMOTION_KIT.md                # 项目传播素材包
+└── SECURITY.md                          # 安全与密钥规范
 ```
 
 ---
@@ -413,7 +412,7 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
 
 ## 🖼️ Demo 展示建议
 
-为了让仓库更容易被 Star，建议后续补充以下素材到 `docs/assets/`：
+为了让仓库更直观，建议后续补充以下素材到 `docs/assets/`：
 
 | 素材 | 建议文件名 | 用途 |
 |---|---|---|
@@ -422,8 +421,6 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
 | 导航动图 | `docs/assets/nav2-demo.gif` | 展示建图、定位、导航效果 |
 | 商品识别截图 | `docs/assets/yolo-detection.png` | 展示 YOLO/TensorRT 感知能力 |
 | 语音交互片段 | `docs/assets/voice-demo.mp4` | 展示唤醒词和销售对话流程 |
-
-传播文案、视频脚本和平台标签见：[docs/PROMOTION_KIT.md](docs/PROMOTION_KIT.md)。
 
 ---
 
@@ -464,7 +461,6 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
 
 - [src/PROJECT_DOC_zh.md](src/PROJECT_DOC_zh.md)：比赛调试顺序、节点关系、话题流向、启动命令和常见问题。
 - [MIGRATION_JETSON.md](MIGRATION_JETSON.md)：从旧 PC 推流识别流程迁移到 Jetson 本机开发、本机构建、本机运行。
-- [docs/PROMOTION_KIT.md](docs/PROMOTION_KIT.md)：项目传播素材、视频脚本、标题和标签建议。
 
 ---
 
