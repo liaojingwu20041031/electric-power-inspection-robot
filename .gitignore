@@ -45,6 +45,3 @@ core.*
 *.pfx
 id_rsa
 id_ed25519
-
-# Local vendor protocol PDFs; keep off git/remotes.
-官方通信协议/
