@@ -34,7 +34,7 @@
 </p>
 
 ```bash
-./scripts/setup_zlac_can.sh can0 500000
+./scripts/setup_zlac_can.sh can1 500000
 ./scripts/run_on_jetson.sh competition
 ```
 
@@ -48,6 +48,8 @@
 
 默认底盘后端是 **ZLAC8015D V4 + SocketCAN/CANopen**；保留 STM32 串口后端作为回退方案。比赛现场推荐从 `./scripts/run_on_jetson.sh competition` 进入，由 UI 和 system supervisor 编排底层、视觉、导航和 AI 节点。
 
+当前版本重点解决的是“能在 Jetson 本机独立跑完整比赛链路”：显示屏 UI 负责现场操作和状态展示，system supervisor 负责按顺序拉起 ROS 2 节点，AI 任务层负责把图片、文字和语音输入转换成机器人可执行事件，底盘/导航/视觉栈负责完成移动和商品识别。
+
 ## ✨ 项目亮点
 
 | 方向 | 能力 |
@@ -60,6 +62,20 @@
 | 🖥️ 比赛 UI | A/B/C/D 任务入口、B-1 图片预览、识别结果、购物车、总价、系统总控台 |
 
 > 本仓库不提交 `build/`、`install/`、`log/`、API Key 和模型二进制文件。克隆后需要在目标 Jetson 上本机构建。
+
+## ✅ 当前交付范围
+
+| 模块 | 状态 | 说明 |
+|---|---|---|
+| Jetson 本机部署 | ✅ 可用 | 依赖安装、构建、运行入口集中在 `scripts/` |
+| ZLAC8015D 底盘 | ✅ 默认 | 默认使用 PEAK PCAN-USB 暴露的 SocketCAN `can1`，速率 500000 |
+| STM32 底盘 | ✅ 回退 | `base_backend:=stm32` 可切换到旧串口链路 |
+| SLAM / Nav2 | ✅ 可用 | 默认地图为 `src/my_map.yaml`，UI 可保存新地图到 `src/maps/` |
+| ZED + YOLO26 | ✅ 可用 | 默认加载 Jetson 本机 TensorRT engine |
+| 多模态任务层 | ✅ 可用 | 支持任务书图片、文字指令、商品推荐和购物车状态 |
+| 连续语音 / TTS | ✅ 可用 | 默认面向 eMeet Luna，唤醒后进入连续对话 |
+| 比赛总控 UI | ✅ 可用 | 提供任务入口、节点控制、地图保存、识别和结算展示 |
+| 演示素材 | ⏳ 补充中 | 后续补充高质量截图、GIF、实机视频和英文 README |
 
 ---
 
@@ -203,6 +219,13 @@ cd ~/ros2_ws
 
 `scripts/run_on_jetson.sh` 会自动加载 `/opt/ros/$ROS_DISTRO/setup.bash` 和 `install/setup.bash`，日常启动不需要手动 `source`。
 
+首次连接 ZLAC8015D 前，先配置 CAN 口：
+
+```bash
+./scripts/setup_zlac_can.sh can1 500000
+ip -br link show can1
+```
+
 自研包验证命令：
 
 ```bash
@@ -272,7 +295,7 @@ tts_voice:=Serena
 
 ```bash
 # 底盘、IMU、雷达、URDF 和 EKF
-./scripts/setup_zlac_can.sh can0 500000
+./scripts/setup_zlac_can.sh can1 500000
 ./scripts/run_on_jetson.sh bringup
 
 # STM32 串口回退底盘
@@ -385,6 +408,57 @@ ros2 topic echo /retail_ai/say_text
 
 ---
 
+## 🧰 现场运行自检
+
+比赛前建议按从硬件到任务层的顺序检查，能更快定位是设备、驱动、模型还是 AI Key 问题。
+
+### 设备检查
+
+```bash
+# CAN 与 ZLAC8015D
+ip -details link show can1
+
+# USB 设备与音频设备
+lsusb
+arecord -l
+aplay -l
+
+# ROS 2 包是否已构建并可见
+source install/setup.bash
+ros2 pkg list | grep -E 'ylhb_base|ylhb_perception|ylhb_llm|ylhb_interfaces'
+```
+
+### 节点与话题检查
+
+```bash
+# 底盘与传感器
+ros2 topic echo /odom
+ros2 topic echo /scan
+ros2 topic echo /imu/data
+
+# ZED 与视觉检测
+ros2 topic hz /zed/zed_node/rgb/color/rect/image
+ros2 topic echo /detections
+
+# AI 任务层与语音
+ros2 topic echo /retail_ai/task_event
+ros2 topic echo /retail_ai/task_status
+ros2 topic echo /retail_ai/voice_session_status
+```
+
+### 常见现场处理
+
+| 现象 | 优先检查 |
+|---|---|
+| 底盘不响应 `/cmd_vel` | `can1` 是否 `UP`、ZLAC 是否上电、急停/使能状态、`/zlac8015d/fault` |
+| 雷达无 `/scan` | `/dev/robot_lidar` 绑定、串口权限、RPLidar 电源和转速 |
+| UI 无法显示 | Jetson 本机 `DISPLAY=:0`、HDMI/触摸屏连接、远程调试时加 `force_local_display:=false fullscreen:=false` |
+| 视觉节点退出 | `yolo26.engine` 是否存在、engine 是否在当前 Jetson 编译、ZED 图像话题是否有帧 |
+| 大模型无响应 | `DASHSCOPE_API_KEY` 是否已导出、网络是否可用、模型参数是否被覆盖 |
+| 语音无输入/输出 | eMeet Luna 声卡编号、`audio_input_device` / `audio_output_device`、系统音量和默认声卡 |
+
+---
+
 ## 🗺️ 建图与导航
 
 启动建图：
@@ -438,6 +512,8 @@ DashScope API Key 不写入代码。运行图片理解、云端 ASR 或云端 TT
 ```bash
 export DASHSCOPE_API_KEY=你的DashScopeKey
 ```
+
+推荐把 API Key 放在本机 shell 配置或现场启动脚本外部注入，不要写进 launch 文件、Python 源码、README 示例之外的配置文件或 Git 跟踪文件。
 
 ## 🧪 适合谁参考？
 
