@@ -29,6 +29,7 @@
   <a href="#-快速开始">快速开始</a> ·
   <a href="#-常用启动命令">启动命令</a> ·
   <a href="#-比赛任务流程">比赛任务</a> ·
+  <a href="#-机械与-cad-资料">机械 CAD</a> ·
   <a href="#-系统架构">系统架构</a> ·
   <a href="src/PROJECT_DOC_zh.md">详细文档</a>
 </p>
@@ -75,6 +76,7 @@
 | 多模态任务层 | ✅ 可用 | 支持任务书图片、文字指令、商品推荐和购物车状态 |
 | 连续语音 / TTS | ✅ 可用 | 默认面向 eMeet Luna，唤醒后进入连续对话 |
 | 比赛总控 UI | ✅ 可用 | 提供任务入口、节点控制、地图保存、识别和结算展示 |
+| 机械 CAD 资料 | ✅ 已归档 | 小车底盘、万向轮、支架、顶板、Jetson 固定板和语音模块支架等结构件 |
 | 演示素材 | ⏳ 补充中 | 后续补充高质量截图、GIF、实机视频和英文 README |
 
 ---
@@ -151,6 +153,8 @@ flowchart TB
 │   ├── build_on_jetson.sh               # 本机构建入口
 │   ├── setup_zlac_can.sh                # ZLAC8015D SocketCAN 配置
 │   └── run_on_jetson.sh                 # 现场运行入口
+├── CAD/
+│   └── Retail-Cart-3D-Model/            # 机械同学提供的小车结构 CAD 与 STL 文件
 ├── src/
 │   ├── ylhb_base/                       # 底盘、IMU、URDF、EKF、SLAM、Nav2
 │   ├── ylhb_perception/                 # ZED、YOLO/TensorRT、深度定位
@@ -181,6 +185,7 @@ flowchart TB
 | IMU | 底盘 IMU | 与轮式里程计进入 EKF，提高短时位姿稳定性 |
 | 语音 | eMeet Luna | 麦克风输入、TTS 播放；推荐录音设备 `plughw:CARD=Luna,DEV=0` |
 | 显示 | Jetson 本机 HDMI / 触摸屏 | 比赛 UI、任务 D 驾驶舱和现场总控台 |
+| 机械结构 | 自研零售小车底盘与支架 | CAD 文件已归档到 `CAD/Retail-Cart-3D-Model/`，包含底盘、万向轮、顶板、Jetson 固定板和语音模块支架 |
 
 ### 软件栈
 
@@ -191,6 +196,21 @@ flowchart TB
 | 视觉 | ZED ROS 2 wrapper、OpenCV、CUDA、TensorRT、YOLO26 |
 | AI | DashScope OpenAI 兼容接口、Qwen 视觉/文本/ASR/TTS 模型 |
 | UI | PyQt 比赛显示屏总控台 |
+
+---
+
+## 🧱 机械与 CAD 资料
+
+机械结构文件位于 [CAD/Retail-Cart-3D-Model](CAD/Retail-Cart-3D-Model)，用于复现或修改智慧零售小车的物理结构。
+
+| 路径 | 内容 |
+|---|---|
+| `CAD/Retail-Cart-3D-Model/sldasm/` | SolidWorks 装配文件，包括小车底盘和万向轮装配 |
+| `CAD/Retail-Cart-3D-Model/stp/` | SolidWorks 零件文件，包括上底盘、顶板、支撑杆、伸缩柱、电机轮、电池、驱动器、Jetson 固定板、语音模块支架等 |
+| `CAD/Retail-Cart-3D-Model/stl/` | 可用于 3D 打印的结构件 STL 文件 |
+| `CAD/Retail-Cart-3D-Model/readme.txt` | 3D 打印数量备注 |
+
+当前 3D 打印备注：`支架垫片` 4 个，`固定盖` 2 个，`底盘连接处支架` 2 个。机械件用于承载 Jetson、语音模块、驱动器、电池、底盘连接件和上层展示/交互结构。
 
 ---
 
