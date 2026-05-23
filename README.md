@@ -315,6 +315,9 @@ tts_voice:=Serena
 
 ```bash
 # 底盘、IMU、雷达、URDF 和 EKF
+./scripts/install_ch341_safe.sh --precheck
+./scripts/install_ch341_safe.sh --test-load
+sudo ./src/bind_usb.sh
 ./scripts/setup_zlac_can.sh can1 500000
 ./scripts/run_on_jetson.sh bringup
 
@@ -452,9 +455,13 @@ ros2 pkg list | grep -E 'ylhb_base|ylhb_perception|ylhb_llm|ylhb_interfaces'
 
 ```bash
 # 底盘与传感器
+lsmod | grep -E 'ch341|ch34x'
+lsusb
+dmesg | grep -i ch34
+ls -l /dev/robot_imu /dev/ttyCH341USB* /dev/ttyUSB*
 ros2 topic echo /odom
 ros2 topic echo /scan
-ros2 topic echo /imu/data
+ros2 topic echo /imu/data --once
 
 # ZED 与视觉检测
 ros2 topic hz /zed/zed_node/rgb/color/rect/image

@@ -64,11 +64,8 @@
 cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-# 一键启动底盘、雷达、URDF、EKF。当前 Jetson 内核未启用 CH340 时，IMU 默认不强启。
+# 一键启动底盘、IMU、雷达、URDF、EKF。IMU 默认必启，缺失会直接报错退出。
 ros2 launch ylhb_base bringup.launch.py
-
-# 若已经补好 CH340/ch341 驱动并出现 IMU 串口，再显式启用 IMU：
-ros2 launch ylhb_base bringup.launch.py enable_imu:=true imu_port:=/dev/ttyUSB1
 
 # 无 USB-CAN 线或需要回退旧底盘板时：
 ros2 launch ylhb_base bringup.launch.py base_backend:=stm32
@@ -84,11 +81,42 @@ Jetson Orin Nano Super 当前硬件连接约定：
 0c72:000c PEAK PCAN-USB        -> ZLAC8015D CANopen 底盘
 ```
 
-`bringup.launch.py` 中雷达默认使用 CP2102 的稳定 by-id 端口：
+比赛机上不要手动 `insmod pcan.ko`、手动运行 `setup_zlac_can.sh`，也不要在每次启动时临时传 `lidar_port:=...`。统一执行一次：
+
+```bash
+sudo ./src/bind_usb.sh
+```
+
+该脚本会安装并启用 `robot-hardware-guard.service`，循环恢复以下状态：
 
 ```text
-/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
+/dev/robot_lidar -> ttyUSBx       # CP2102 LiDAR，驱动 cp210x
+/dev/robot_imu   -> ttyCH341USBx  # CH340 IMU，驱动 usb_ch341
+can1             -> PEAK PCAN-USB # 500000 bit/s, berr-reporting on, restart-ms 100, UP
 ```
+
+安装验收：
+
+```bash
+systemctl status robot-hardware-guard.service --no-pager
+tail -n 120 /var/log/robot-hardware-guard.log
+lsusb -t
+ls -l /dev/robot_lidar /dev/robot_imu /dev/ttyUSB* /dev/ttyCH341USB*
+ip -details link show can1
+```
+
+期望结果：
+
+```text
+10c4:ea60 -> Driver=cp210x
+1a86:7523 -> Driver=usb_ch341
+0c72:000c -> Driver=pcan
+/dev/robot_lidar -> ttyUSB0 或其他 ttyUSBx
+/dev/robot_imu -> ttyCH341USB0 或其他 ttyCH341USBx
+can1 state UP, bitrate 500000, ERROR-ACTIVE
+```
+
+`bringup.launch.py` 中 LiDAR 默认使用 `/dev/robot_lidar`。如果 alias 短暂不存在，launch 会按 USB ID `10c4:ea60` 自动查找 CP2102 的 `/dev/ttyUSB*` 作为回退；硬件修复仍然交给 `robot-hardware-guard.service`，ROS launch 只负责检测和报错。
 
 RPLidar A2M8 固定按 `115200` 启动，launch 中将 `lidar_baudrate` 强制作为 int 传给 `rplidar_node`，避免参数类型错误导致节点回退到源码默认的 `1000000` 波特率。正常启动时必须看到类似日志：
 
@@ -105,13 +133,28 @@ current scan mode: Sensitivity ... scan frequency:10.0 Hz
 ros2 topic echo /scan --once
 ```
 
-如果雷达再次出现 `SL_RESULT_OPERATION_TIMEOUT`，先看日志中的 `RPLidar serial config`，确认端口是 CP210x by-id 且 `baudrate=115200`；不要再把 CH340 当成雷达端口排查。
+如果雷达再次出现 `SL_RESULT_OPERATION_TIMEOUT`，先看日志中的 `RPLidar serial config`，确认端口是 `/dev/robot_lidar` 或 CP2102 回退端口且 `baudrate=115200`；不要再把 CH340 当成雷达端口排查。
 
-IMU 当前注意事项：CH340 能出现在 `lsusb` 里只表示 USB 枚举成功，不等于 Linux 已经创建 tty 串口。当前 Jetson 内核配置为 `# CONFIG_USB_SERIAL_CH341 is not set` 时，`1a86:7523` 不会生成 `/dev/ttyUSB*`，IMU 节点无法打开串口。解决方式是给当前 Jetson 内核补 `ch341` 驱动，或临时改用 CP210x/FTDI USB 转 TTL 模块。驱动补好后再运行：
+IMU 当前注意事项：CH340 能出现在 `lsusb` 里只表示 USB 枚举成功，不等于 Linux 已经创建 tty 串口。当前 Jetson 内核配置为 `# CONFIG_USB_SERIAL_CH341 is not set` 时，`1a86:7523` 不会生成 `/dev/ttyUSB*`。本仓库使用 WCH `usb_ch341` 驱动，正常设备名是 `/dev/ttyCH341USB*`，稳定别名是 `/dev/robot_imu`。标准修复顺序：
 
 ```bash
-ls -l /dev/serial/by-id/ /dev/ttyUSB*
-ros2 launch ylhb_base bringup.launch.py enable_imu:=true imu_port:=/dev/ttyUSB1
+./scripts/install_ch341_safe.sh --precheck
+./scripts/install_ch341_safe.sh --test-load
+sudo ./src/bind_usb.sh
+ls -l /dev/robot_imu /dev/ttyCH341USB* /dev/ttyUSB*
+ros2 launch ylhb_base bringup.launch.py
+```
+
+当前 IMU 实测为 WIT 协议 `9600` 波特率。`imu_driver` 默认 `baud_rate:=9600`，并保留自动探测常见波特率能力；默认不在每次启动时改写 IMU 模块配置，避免现场设备参数被反复写入。
+
+IMU 验收命令：
+
+```bash
+lsmod | grep -E 'ch341|ch34x'
+lsusb
+dmesg | grep -i ch34
+ls -l /dev/robot_imu /dev/ttyCH341USB* /dev/ttyUSB*
+ros2 topic echo /imu/data --once
 ```
 
 > **📷 核心指令：启动 ZED 2i 相机节点**
@@ -551,6 +594,7 @@ flowchart TB
 │   ├── build_on_jetson.sh               # 一键编译
 │   ├── diagnose_pcan.sh                 # 只读诊断 PEAK PCAN-USB 和内核 CAN 状态
 │   ├── install_peak_pcan_safe.sh        # 安全编译/临时加载 PEAK PCAN-USB SocketCAN 驱动
+│   ├── install_ch341_safe.sh            # 安全检查/编译/临时加载 CH340/CH341 IMU 串口驱动
 │   ├── setup_zlac_can.sh                # 配置 can1/PEAK PCAN-USB SocketCAN 给 ZLAC8015D
 │   └── run_on_jetson.sh                 # 常用启动包装
 ├── docs/
@@ -980,6 +1024,25 @@ ros2 topic echo /zlac8015d/fault
 
 `imu_driver` 把 IMU 串口数据转换成 ROS 标准 IMU 消息。
 
+当前现场 IMU 是 WIT 协议串口模块，实测输出为 `9600` 波特率，原始帧包含：
+
+```text
+0x55 0x51  # 加速度
+0x55 0x52  # 角速度
+0x55 0x53  # 姿态角
+```
+
+默认启动参数：
+
+```text
+serial_port:=/dev/robot_imu
+baud_rate:=9600
+auto_detect_baud:=true
+configure_on_start:=false
+```
+
+`auto_detect_baud` 会在需要时尝试 `115200/9600/57600/38400/19200`，确认能解析 WIT 帧后再进入正常读取。`configure_on_start` 默认关闭，不在每次 ROS 启动时向 IMU 写入解锁、改波特率、保存等配置命令；只有明确需要重新配置 IMU 模块时才手动打开。
+
 发布：
 
 ```text
@@ -1009,6 +1072,7 @@ ekf_filter_node      # 与 /odom 融合
 ```bash
 ros2 topic echo /imu/data --once
 ros2 topic hz /imu/data
+ros2 topic info /imu/data --no-daemon
 ```
 
 比赛调试重点：
@@ -1016,6 +1080,8 @@ ros2 topic hz /imu/data
 ```text
 IMU yaw 方向如果反了，机器人转向估计会错。
 IMU 数据剧烈跳动，EKF 输出也会不稳定。
+如果 Foxglove 能看到 /imu/data，但 ros2 topic echo 偶发抓不到，先用 --no-daemon 查真实 ROS 图，避免 daemon 缓存误判。
+如果 /dev/robot_imu 存在但没有 /imu/data，先检查 imu_driver 是否启动，再确认波特率是否为 9600。
 ```
 
 #### 3.6.3 `rplidar_node`
