@@ -3,7 +3,7 @@
     <RecoveryNode number_of_retries="6" name="NavigateWaitRetry">
       <PipelineSequence name="NavigateWithRetry">
         <NormalizeGoal input_goal="{goal}" output_goal="{map_goal}" global_frame="map"/>
-        <RateController hz="1.0">
+        <RateController hz="2.0">
           <RecoveryNode number_of_retries="2" name="ComputePathToPose">
             <ComputePathToPose goal="{map_goal}" path="{path}" planner_id="GridBased"/>
             <ClearEntireCostmap name="ClearGlobalCostmap" service_name="global_costmap/clear_entirely_global_costmap"/>
@@ -14,9 +14,12 @@
           <ClearEntireCostmap name="ClearLocalCostmap" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>
-      <ReactiveFallback name="WaitOnlyRecovery">
+      <ReactiveFallback name="SmallBackupRecovery">
         <GoalUpdated/>
-        <Wait wait_duration="1"/>
+        <Sequence name="SmallBackupAndWait">
+          <BackUp backup_dist="0.08" backup_speed="0.03"/>
+          <Wait wait_duration="0.2"/>
+        </Sequence>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

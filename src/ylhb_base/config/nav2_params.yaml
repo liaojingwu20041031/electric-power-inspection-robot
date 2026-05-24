@@ -142,8 +142,8 @@ controller_server:
     FollowPath:
       # DWB 局部规划器：根据路径、障碍物和目标方向采样速度。
       plugin: "dwb_core::DWBLocalPlanner"
-      # 打开轨迹调试，便于看 DWB 为什么选择某条速度轨迹。
-      debug_trajectory_details: True
+      # 关闭轨迹调试，降低控制循环日志和计算开销。
+      debug_trajectory_details: False
       # 差速底盘不使用横向速度 y。
       min_vel_x: 0.0
       min_vel_y: 0.0
@@ -164,9 +164,9 @@ controller_server:
       decel_lim_y: 0.0
       decel_lim_theta: -0.50
       # 速度采样数量；越高越细，但计算更重。
-      vx_samples: 20
+      vx_samples: 16
       vy_samples: 5
-      vtheta_samples: 20
+      vtheta_samples: 24
       # DWB 前向仿真时间和采样分辨率。
       sim_time: 1.2
       linear_granularity: 0.05
@@ -179,7 +179,7 @@ controller_server:
       trans_stopped_velocity: 0.03
       # 轨迹评分器：避障、贴近路径、朝向目标、抑制振荡等。
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.08
+      BaseObstacle.scale: 0.10
       PathAlign.scale: 24.0
       PathDist.scale: 24.0
       GoalAlign.scale: 16.0
@@ -189,10 +189,10 @@ controller_server:
       RotateToGoal.lookahead_time: -1.0
 
     progress_checker:
-      # 进度检查器：15 秒内至少移动 0.15m，否则认为卡住。
+      # 进度检查器：窄通道和突角允许慢速微调，避免过早判定卡住。
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.15
-      movement_time_allowance: 15.0
+      required_movement_radius: 0.05
+      movement_time_allowance: 30.0
 
     goal_checker:
       # 目标检查器：明确使用 SimpleGoalChecker，消除默认 goal checker 警告。
@@ -205,8 +205,8 @@ local_costmap:
   local_costmap:
     ros__parameters:
       # 局部代价地图跟随机器人滚动，用于近距离避障。
-      update_frequency: 5.0
-      publish_frequency: 2.0
+      update_frequency: 10.0
+      publish_frequency: 5.0
       # 局部地图使用 odom 坐标系，不依赖全局定位跳变。
       global_frame: odom
       robot_base_frame: base_footprint
@@ -219,8 +219,8 @@ local_costmap:
       resolution: 0.05
       # 机器人矩形足迹，按 base_footprint 坐标填写。
       footprint: "[ [0.321, 0.235], [0.321, -0.235], [-0.144, -0.235], [-0.144, 0.235] ]"
-      # 给实车外廓保留 1cm 安全边界。
-      footprint_padding: 0.01
+      # 给实车外廓保留 5mm 安全边界，避免矩形 footprint 叠加过大余量。
+      footprint_padding: 0.005
       # 局部地图只使用障碍层和膨胀层。
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -235,14 +235,14 @@ local_costmap:
           marking: True
           data_type: "LaserScan"
           raytrace_max_range: 3.0
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.10
           obstacle_max_range: 2.5
-          obstacle_min_range: 0.0
+          obstacle_min_range: 0.10
       inflation_layer:
         # 障碍膨胀层只作为贴边惩罚，不再当作额外车体尺寸使用。
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.32
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.20
 
 global_costmap:
   global_costmap:
@@ -258,8 +258,8 @@ global_costmap:
       # 未知区域保留为未知，规划器是否可穿越由 allow_unknown 控制。
       track_unknown_space: true
       footprint: "[ [0.321, 0.235], [0.321, -0.235], [-0.144, -0.235], [-0.144, 0.235] ]"
-      # 给实车外廓保留 1cm 安全边界。
-      footprint_padding: 0.01
+      # 给实车外廓保留 5mm 安全边界，避免矩形 footprint 叠加过大余量。
+      footprint_padding: 0.005
       # 全局地图只使用静态地图和膨胀层；动态障碍交给 local_costmap。
       plugins: ["static_layer", "inflation_layer"]
       static_layer:
@@ -269,8 +269,8 @@ global_costmap:
       inflation_layer:
         # 障碍膨胀层只作为贴边惩罚，不再当作额外车体尺寸使用。
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.32
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.20
 
 map_server:
   ros__parameters:
@@ -302,10 +302,10 @@ planner_server:
 
 behavior_server:
   ros__parameters:
-    # Humble 使用 behavior_server；这里只保留 wait，禁用 spin/backup 恢复动作。
+    # Humble 使用 behavior_server；保留 wait，并加入小幅后退恢复。
     use_sim_time: False
     cycle_frequency: 10.0
-    behavior_plugins: ["wait"]
+    behavior_plugins: ["backup", "wait"]
     # 行为服务需要的局部/全局 costmap 和足迹话题。
     local_costmap_topic: local_costmap/costmap_raw
     global_costmap_topic: global_costmap/costmap_raw
@@ -318,6 +318,8 @@ behavior_server:
     transform_tolerance: 1.5
     # 行为仿真前视时间；当前只用于 wait 插件的通用参数兼容。
     simulate_ahead_time: 2.0
+    backup:
+      plugin: "nav2_behaviors/BackUp"
     wait:
       plugin: "nav2_behaviors/Wait"
 
