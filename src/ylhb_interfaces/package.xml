@@ -3,7 +3,7 @@
 <package format="3">
   <name>ylhb_interfaces</name>
   <version>0.1.0</version>
-  <description>Custom interfaces for the YLHB retail AI task layer.</description>
+  <description>Custom interfaces for the electric power inspection robot task layer.</description>
   <maintainer email="206929594+liaojingwu20041031@users.noreply.github.com">liaojingwu20041031</maintainer>
   <license>Apache-2.0</license>
 

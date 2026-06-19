@@ -3,7 +3,7 @@
 <package format="3">
   <name>ylhb_llm</name>
   <version>0.1.0</version>
-  <description>Retail competition AI task layer for image understanding, dialogue, recommendation, checkout, and voice I/O.</description>
+  <description>AI task layer for the electric power inspection robot, including image understanding, dialogue, inspection workflow, alarms, and voice I/O.</description>
   <maintainer email="206929594+liaojingwu20041031@users.noreply.github.com">liaojingwu20041031</maintainer>
   <license>Apache-2.0</license>
 

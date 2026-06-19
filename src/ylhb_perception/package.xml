@@ -3,7 +3,7 @@
 <package format="3">
   <name>ylhb_perception</name>
   <version>0.1.0</version>
-  <description>Jetson-native perception nodes for ZED image input, YOLO detection, and object localization.</description>
+  <description>Jetson-native perception nodes for ZED image input, inspection detection, and object localization.</description>
   <maintainer email="206929594+liaojingwu20041031@users.noreply.github.com">liaojingwu20041031</maintainer>
   <license>Apache-2.0</license>
 

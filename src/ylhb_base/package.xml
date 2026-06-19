@@ -3,7 +3,7 @@
 <package format="3">
   <name>ylhb_base</name>
   <version>0.0.0</version>
-  <description>Base control, robot model, sensor bringup, SLAM, and Nav2 launch files for the YLHB smart retail robot.</description>
+  <description>Base control, robot model, sensor bringup, SLAM, and Nav2 launch files for the electric power inspection robot.</description>
   <maintainer email="206929594+liaojingwu20041031@users.noreply.github.com">liaojingwu20041031</maintainer>
   <license>Apache-2.0</license>
 

@@ -182,7 +182,7 @@ class RetailDisplayRosBridge(Node):
             initial_mode = 'ready'
         self.publish_system_mode(initial_mode)
         self.get_logger().info(
-            f'Retail display UI bridge started. initial_system_mode={initial_mode}'
+            f'Inspection display UI bridge started. initial_system_mode={initial_mode}'
         )
 
     def publish_text_command(self, text: str) -> None:
@@ -319,7 +319,7 @@ class RetailDisplayWindow(QWidget):
         self.cached_pixmap = QPixmap()
         self.compact_ui = self.detect_compact_ui()
 
-        self.setWindowTitle('智慧零售机器人总控台')
+        self.setWindowTitle('电力巡检机器人总控台')
         self.resize_to_screen()
         self.build_ui()
         self.apply_style()
@@ -394,7 +394,7 @@ class RetailDisplayWindow(QWidget):
     def build_status_bar(self) -> Any:
         layout = QGridLayout() if self.compact_ui else QHBoxLayout()
         self.configure_layout(layout)
-        self.title_label = QLabel('智慧零售驾驶舱 / Competition Control')
+        self.title_label = QLabel('电力巡检驾驶舱 / Inspection Control')
         self.ros_label = QLabel('ROS: connected')
         self.mode_label = QLabel()
         self.task_label = QLabel('当前任务: -')
@@ -536,16 +536,16 @@ class RetailDisplayWindow(QWidget):
         task_b_layout.addWidget(b2_box)
         layout.addWidget(task_b)
 
-        task_c = QGroupBox('任务 C 结算')
+        task_c = QGroupBox('任务 C 巡检记录')
         task_c_layout = QVBoxLayout(task_c)
-        self.checkout_button = QPushButton('开始结算')
+        self.checkout_button = QPushButton('生成巡检记录')
         self.checkout_button.clicked.connect(self.start_checkout)
         task_c_layout.addWidget(self.checkout_button)
         layout.addWidget(task_c)
 
         task_d = QGroupBox('任务 D 创意展示')
         task_d_layout = QVBoxLayout(task_d)
-        self.demo_button = QPushButton('打开智慧零售驾驶舱')
+        self.demo_button = QPushButton('打开电力巡检驾驶舱')
         self.demo_button.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
         task_d_layout.addWidget(self.demo_button)
         layout.addWidget(task_d)
@@ -575,9 +575,9 @@ class RetailDisplayWindow(QWidget):
         self.cockpit_text.setReadOnly(True)
         self.cockpit_text.document().setMaximumBlockCount(100)
         self.cockpit_text.setPlainText(
-            '智慧零售驾驶舱\n'
-            '图片理解、货架识别、推荐、结算、语音播报和任务状态会在真实 ROS 链路中更新。\n'
-            '本页面不伪造推荐、不修改购物车、不绕过任务事件。'
+            '电力巡检驾驶舱\n'
+            '路线巡检、检查点识别、告警、语音播报和任务状态会在真实 ROS 链路中更新。\n'
+            '本页面不伪造检测结果、不绕过任务事件。'
         )
         guide_row = QHBoxLayout()
         guide_b1 = QPushButton('引导 B-1')
@@ -590,7 +590,7 @@ class RetailDisplayWindow(QWidget):
             guide_row.addWidget(button)
         cockpit_layout.addLayout(guide_row)
         cockpit_layout.addWidget(self.cockpit_text)
-        self.tabs.addTab(cockpit_page, '智慧零售驾驶舱')
+        self.tabs.addTab(cockpit_page, '电力巡检驾驶舱')
         return self.tabs
 
     def build_system_control_page(self) -> QWidget:
@@ -606,10 +606,10 @@ class RetailDisplayWindow(QWidget):
             self.system_status_table.setItem(row, 1, QTableWidgetItem('unknown'))
         layout.addWidget(self.system_status_table)
 
-        competition_box = QGroupBox('比赛一键控制')
+        competition_box = QGroupBox('巡检一键控制')
         competition_layout = QGridLayout(competition_box)
-        self.add_system_button(competition_layout, 0, 0, '一键启动比赛节点', 'start_competition_stack')
-        self.add_system_button(competition_layout, 0, 1, '一键停止比赛节点', 'stop_competition_stack', mode='ready')
+        self.add_system_button(competition_layout, 0, 0, '一键启动巡检节点', 'start_competition_stack')
+        self.add_system_button(competition_layout, 0, 1, '一键停止巡检节点', 'stop_competition_stack', mode='ready')
         layout.addWidget(competition_box)
 
         mapping_box = QGroupBox('建图控制')
@@ -665,7 +665,7 @@ class RetailDisplayWindow(QWidget):
         layout.addWidget(self.image_label)
 
         self.objects_table = QTableWidget(0, 4)
-        self.objects_table.setHorizontalHeaderLabels(['商品/类别', '置信度', '数量', '位置摘要'])
+        self.objects_table.setHorizontalHeaderLabels(['目标/类别', '置信度', '数量', '位置摘要'])
         self.configure_table(self.objects_table)
         layout.addWidget(self.objects_table, 1)
         return panel
@@ -683,13 +683,13 @@ class RetailDisplayWindow(QWidget):
         speech_layout.addWidget(self.say_text_view)
         layout.addWidget(speech_box, 2)
 
-        cart_box = QGroupBox('购物车 / 结算')
+        cart_box = QGroupBox('巡检结果 / 告警')
         cart_layout = QVBoxLayout(cart_box)
         self.configure_layout(cart_layout)
         self.cart_table = QTableWidget(0, 4)
-        self.cart_table.setHorizontalHeaderLabels(['商品', '数量', '单价', '小计'])
+        self.cart_table.setHorizontalHeaderLabels(['目标', '数量', '等级', '摘要'])
         self.configure_table(self.cart_table)
-        self.total_label = QLabel('总价: 0 元')
+        self.total_label = QLabel('告警数: 0')
         cart_layout.addWidget(self.cart_table)
         cart_layout.addWidget(self.total_label)
         layout.addWidget(cart_box, 3)
@@ -895,7 +895,7 @@ class RetailDisplayWindow(QWidget):
     def start_b2(self) -> None:
         text = self.shopping_input.text().strip()
         if not text:
-            self.show_error('请输入购物需求或商品名称。')
+            self.show_error('请输入巡检指令、检查点或检测目标。')
             return
         if self.system_mode != 'ready':
             self.show_error('当前系统不在运行准备状态，不能发送 B-2 销售对话。')
@@ -923,12 +923,12 @@ class RetailDisplayWindow(QWidget):
         self.add_timeline('语音模式: 请求关闭' if self.voice_session_enabled else '语音模式: 请求开启')
 
     def start_checkout(self) -> None:
-        if not self.confirm_start('确认启动 C', '开始结算并识别结算区商品？'):
+        if not self.confirm_start('确认启动 C', '生成巡检记录并汇总当前检测结果？'):
             return
         self.task_phase = 'executing'
         self.set_mode('running', publish=True)
         self.bridge.publish_text_command('一共多少钱')
-        self.add_timeline('C 结算指令: 一共多少钱')
+        self.add_timeline('C 巡检记录指令: 汇总当前检测结果')
 
     def software_stop(self) -> None:
         self.set_mode('fault', publish=True)
@@ -961,7 +961,7 @@ class RetailDisplayWindow(QWidget):
         self.add_timeline(f'系统命令: {command}')
 
     def save_map(self) -> None:
-        default_name = time.strftime('retail_map_%Y%m%d_%H%M')
+        default_name = time.strftime('inspection_map_%Y%m%d_%H%M')
         map_name, ok = QInputDialog.getText(self, '保存地图', '请输入地图名称：', text=default_name)
         if not ok:
             return
@@ -1125,8 +1125,8 @@ class RetailDisplayWindow(QWidget):
                       self.format_price(subtotal)]
             for col, value in enumerate(values):
                 self.cart_table.setItem(row, col, QTableWidgetItem(value))
-        self.total_label.setText(f'总价: {self.format_price(msg.total)} 元')
-        self.add_cockpit_line(f'购物车更新: {len(msg.items)} 类商品，总价 {self.format_price(msg.total)} 元')
+        self.total_label.setText(f'告警数: {len(msg.items)}')
+        self.add_cockpit_line(f'巡检结果更新: {len(msg.items)} 类目标/告警')
         self.touch_update()
 
     def on_voice_status(self, msg: VoiceStatus) -> None:

@@ -1,12 +1,12 @@
 <div align="center">
 
-# 🤖 YLHB Smart Retail Robot
+# 电力行业巡检机器人
 
-### ROS 2 + Jetson Orin Nano Super 驱动的多模态智慧零售机器人
+### ROS 2 + Jetson Orin Nano Super 驱动的变电站智能巡检机器人
 
-**一台会听、会看、会推荐、会导航的比赛级智能零售机器人。**
+**面向电力实训场景的移动巡检机器人系统，覆盖导航、建图、视觉检测、语音提示、任务执行和后台告警。**
 
-面向智慧零售竞赛场景，完整打通 **ZLAC8015D 底盘控制 / SLAM 建图 / Nav2 导航 / ZED 2i 视觉 / YOLO 商品识别 / 大模型任务理解 / 连续语音交互 / 现场 UI 总控台**。
+本项目由 `ylhb-smart-retail-robot` 迁移而来，保留原有 ROS 2 底盘、建图、导航、ZED 视觉、语音和 Jetson 本机部署能力，正在逐步把业务层从“智慧零售”改造为“电力行业巡检”。
 
 <p>
   <img alt="ROS 2 Humble" src="https://img.shields.io/badge/ROS%202-Humble-22314E?logo=ros&logoColor=white">
@@ -14,137 +14,151 @@
   <img alt="Jetson Orin Nano" src="https://img.shields.io/badge/Jetson-Orin%20Nano%20Super-76B900?logo=nvidia&logoColor=white">
   <img alt="SocketCAN" src="https://img.shields.io/badge/SocketCAN-ZLAC8015D-1F7A8C">
   <img alt="Nav2" src="https://img.shields.io/badge/Nav2-SLAM%20%2B%20Navigation-5E35B1">
-  <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-YOLO26-76B900?logo=nvidia&logoColor=white">
-  <img alt="Qwen" src="https://img.shields.io/badge/Qwen-Multimodal%20AI-111827">
+  <img alt="Vision" src="https://img.shields.io/badge/Vision-Inspection%20AI-0F766E">
   <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue">
-  <img alt="Stars" src="https://img.shields.io/github/stars/liaojingwu20041031/ylhb-smart-retail-robot?style=social">
+  <img alt="Stars" src="https://img.shields.io/github/stars/liaojingwu20041031/electric-power-inspection-robot?style=social">
 </p>
 
 <p>
-  <strong>比赛主线：</strong>
-  语音/文字任务理解 -> 货架导航 -> 商品识别 -> 推荐与确认 -> 取货/结算 -> 返回起点
+  <strong>巡检主线：</strong>
+  建图/定位 -> 创建站点区域 -> 规划路线和检查点 -> 下发巡检任务 -> 路线级安全检测 -> 到点采集 -> 检查点级识别 -> 告警与记录
 </p>
-
-<p>
-  <a href="#-快速开始">快速开始</a> ·
-  <a href="#-常用启动命令">启动命令</a> ·
-  <a href="#-比赛任务流程">比赛任务</a> ·
-  <a href="#-机械与-cad-资料">机械 CAD</a> ·
-  <a href="#-系统架构">系统架构</a> ·
-  <a href="src/PROJECT_DOC_zh.md">详细文档</a>
-</p>
-
-```bash
-./scripts/setup_zlac_can.sh can1 500000
-./scripts/run_on_jetson.sh competition
-```
 
 </div>
 
 ---
 
-## 🎯 项目定位
+## 项目目标
 
-这个仓库是一个面向 Jetson 本机部署的 ROS 2 工作区源码仓库，不是单节点 demo。它把底盘、传感器、导航、视觉检测、大模型任务理解、连续语音和比赛 UI 组织成一套可现场运行的机器人系统。
+本项目目标是把现有移动机器人能力改造成一个电力行业巡检机器人原型：
 
-默认底盘后端是 **ZLAC8015D V4 + SocketCAN/CANopen**；保留 STM32 串口后端作为回退方案。比赛现场推荐从 `./scripts/run_on_jetson.sh competition` 进入，由 UI 和 system supervisor 编排底层、视觉、导航和 AI 节点。
-
-当前版本重点解决的是“能在 Jetson 本机独立跑完整比赛链路”：显示屏 UI 负责现场操作和状态展示，system supervisor 负责按顺序拉起 ROS 2 节点，AI 任务层负责把图片、文字和语音输入转换成机器人可执行事件，底盘/导航/视觉栈负责完成移动和商品识别。
-
-## ✨ 项目亮点
-
-| 方向 | 能力 |
+| 方向 | 目标 |
 |---|---|
-| 🚗 机器人底盘 | ZLAC8015D SocketCAN 默认后端、STM32 串口回退、IMU 驱动、RPLidar 雷达、URDF 模型、EKF 融合 |
-| 🗺️ 建图与导航 | SLAM Toolbox 建图、AMCL 定位、Nav2 自主导航、地图保存与加载 |
-| 👁️ 视觉感知 | ZED 2i 图像订阅、YOLO26 商品检测、TensorRT 推理、检测结果发布 |
-| 🧠 多模态 AI | DashScope/Qwen 图片理解、文字/语音任务解析、商品推荐、结算播报 |
-| 🎙️ 连续语音 | eMeet Luna 麦克风输入、唤醒词连续语音会话、ASR 事件路由、TTS 播报 |
-| 🖥️ 比赛 UI | A/B/C/D 任务入口、B-1 图片预览、识别结果、购物车、总价、系统总控台 |
-
-> 本仓库不提交 `build/`、`install/`、`log/`、API Key 和模型二进制文件。克隆后需要在目标 Jetson 上本机构建。
-
-## ✅ 当前交付范围
-
-| 模块 | 状态 | 说明 |
-|---|---|---|
-| Jetson 本机部署 | ✅ 可用 | 依赖安装、构建、运行入口集中在 `scripts/` |
-| ZLAC8015D 底盘 | ✅ 默认 | 默认使用 PEAK PCAN-USB 暴露的 SocketCAN `can1`，速率 500000 |
-| STM32 底盘 | ✅ 回退 | `base_backend:=stm32` 可切换到旧串口链路 |
-| SLAM / Nav2 | ✅ 可用 | 比赛默认地图为 `maps/my_map.yaml`，`src/my_map.yaml` 仅作兼容回退；UI 和移动端保存地图已统一 10 秒等待超时 |
-| ZED + YOLO26 | ✅ 可用 | 默认加载 Jetson 本机 TensorRT engine |
-| 多模态任务层 | ✅ 可用 | 支持任务书图片、文字指令、商品推荐和购物车状态 |
-| 连续语音 / TTS | ✅ 可用 | 默认面向 eMeet Luna，唤醒后进入连续对话 |
-| 比赛总控 UI | ✅ 可用 | 提供任务入口、节点控制、地图保存、识别和结算展示 |
-| 机械 CAD 资料 | ✅ 已归档 | 小车底盘、万向轮、支架、顶板、Jetson 固定板和语音模块支架等结构件 |
-| 演示素材 | ⏳ 补充中 | 后续补充高质量截图、GIF、实机视频和英文 README |
+| 机器人移动 | 基于 ZLAC8015D 底盘、RPLidar、IMU、SLAM Toolbox、Nav2 完成建图、定位、路径规划和避障 |
+| 巡检任务 | 支持站点、区域、路线、检查点和检测项配置，机器人按路线执行任务 |
+| 路线级感知 | 巡航过程中持续检测人员、未戴安全帽、火源、烟雾、障碍物等风险 |
+| 检查点感知 | 到达检查点后调整相机/云台姿态，采集图像或视频，识别开关/刀闸状态、表计/指示灯、漏油、异物、烟火 |
+| 语音交互 | 到点播报“已到达指定位置，开始检查”，异常时播报告警或人工接管提示 |
+| 后台联动 | 实时展示机器人状态、巡检进度、检测结果、告警和巡检记录 |
+| 三维空间 | 预留 LingBot-Map 接入，用于三维重建、空间对齐、点位复用和后台三维可视化 |
 
 ---
 
-## 🧭 系统架构
+## 当前迁移状态
+
+| 模块 | 状态 | 说明 |
+|---|---|---|
+| 底盘控制 | 可复用 | `ylhb_base` 已支持 ZLAC8015D SocketCAN/CANopen、STM32 回退、IMU 和里程计 |
+| 建图导航 | 可复用 | `mapping`、`navigation`、`bringup` 启动模式继续可用 |
+| ZED / 感知框架 | 可复用 | `ylhb_perception` 可作为巡检检测服务入口，后续替换/扩展检测模型 |
+| 语音/TTS | 可复用 | 语音输入、到点播报、异常播报链路继续保留 |
+| 总控 UI | 迁移中 | 标题和项目身份已切换为电力巡检；任务按钮和业务逻辑仍需重构 |
+| 业务状态机 | 待重构 | 旧的商品推荐/购物车/结算逻辑需要替换为巡检任务/检查点/告警/记录 |
+| 模型方案 | 设计中 | 计划引入 LocateAnything-3B 做通用目标定位，同时保留 YOLO/TensorRT 做轻量实时检测 |
+| 三维建图 | 设计中 | 计划以 LingBot-Map 作为离线或后台三维重建能力，不直接阻塞机器人实时闭环 |
+
+> 重要说明：ROS 包名和部分话题暂时仍保留 `ylhb_*`、`/retail_ai/*`，这是为了避免第一阶段重命名破坏构建和启动链路。后续会按模块逐步迁移为 `inspection_*` 或 `/inspection/*`。
+
+---
+
+## 核心功能规划
+
+### 前端巡检规划
+
+计划提供以下后台能力：
+
+| 功能 | 说明 |
+|---|---|
+| 站点管理 | 创建变电站、厂区或实训场地 |
+| 区域管理 | 在站点下划分主变区、开关柜区、刀闸区、通道区等 |
+| 路线管理 | 在二维/三维地图上绘制巡检路线 |
+| 检查点管理 | 为每个检查点绑定位置、朝向、相机/云台姿态和检测项 |
+| 检测项配置 | 人员、安全帽、设备开关/刀闸状态、漏油、火源、烟雾、异物、表计/指示灯 |
+| 任务控制 | 下发、暂停、恢复、取消、人工接管、异常确认 |
+
+### 机器人执行流程
+
+```text
+1. 前端建模并规划巡检路线
+2. 后台下发巡检任务到机器人
+3. 机器人启动导航，沿路线移动
+4. 路线中持续检测人员、未戴安全帽、障碍物、火源和烟雾
+5. 到达检查点后语音提示：已到达指定位置，开始检查
+6. 调整相机/云台姿态并采集图像或视频
+7. 调用检测服务识别开关状态、漏油、火源、异物、表计/指示灯等
+8. 后台实时显示告警、检查结果和机器人状态
+9. 任务结束后生成巡检记录
+```
+
+### 检测设计
+
+| 类型 | 检测对象 | 推荐实现 |
+|---|---|---|
+| 路线级检测 | 人员、未戴安全帽、火源、烟雾、障碍物 | YOLO/TensorRT 实时检测优先，必要时叠加 LocateAnything |
+| 检查点级检测 | 开关状态、刀闸状态、表计/指示灯、漏油、异物、烟火 | LocateAnything 自然语言提示 + 专项分类/规则后处理 |
+| 空间定位 | 检测框、深度、机器人位姿、检查点坐标 | ZED 深度 + TF + Nav2 位姿 |
+| 三维复用 | 巡检点位对齐、视频复用、三维展示 | LingBot-Map 后台/离线处理 |
+
+---
+
+## 系统架构
 
 ```mermaid
 flowchart TB
-    subgraph Interaction[交互与比赛入口]
-      User["用户 / 裁判<br/>语音 · 文字 · 任务书图片"]
-      UI["比赛显示屏 UI<br/>A/B/C/D 任务入口 · 购物车 · 总控台"]
-      Voice["eMeet Luna<br/>唤醒词 · 连续语音 · ASR"]
-      TTS["TTS 播报<br/>推荐结果 · 结算状态 · 导航反馈"]
+    subgraph Plan[巡检规划后台]
+      Site["站点 / 区域"]
+      Route["路线 / 检查点"]
+      Task["任务下发 / 暂停 / 恢复 / 取消 / 人工接管"]
+      Alarm["告警 / 巡检记录"]
     end
 
-    subgraph Intelligence[AI 任务编排层]
-      TaskCore["ylhb_llm 任务核心<br/>意图解析 · 商品推荐 · 任务状态机"]
-      Qwen["DashScope / Qwen<br/>视觉理解 · 文本推理 · ASR/TTS"]
-      EventBus["/retail_ai/task_event/<br/>任务事件与 UI 状态同步"]
+    subgraph RobotAI[机器人任务层]
+      State["巡检状态机"]
+      Voice["语音提示 / TTS"]
+      DetectSvc["检测服务调度<br/>YOLO · LocateAnything · 规则后处理"]
     end
 
-    subgraph ROS[ROS 2 通信与运行时]
-      Topics["核心话题<br/>/cmd_vel · /odom · /scan · /image · /detections"]
-      Launch["run_on_jetson.sh<br/>bringup · zed · perception · navigation · llm"]
-      Supervisor["System Supervisor<br/>比赛节点编排与健康状态"]
+    subgraph ROS[ROS 2 运行时]
+      Topics["/cmd_vel · /odom · /scan · /image · /detections"]
+      Supervisor["System Supervisor"]
+      Launch["bringup · zed · perception · navigation · llm"]
     end
 
     subgraph Robot[机器人执行栈]
-      Base["底盘控制<br/>ZLAC8015D 默认 · STM32 回退 · 轮式里程计"]
-      IMU["IMU<br/>姿态与角速度"]
-      Lidar["RPLidar<br/>2D 激光扫描"]
-      ZED["ZED 2i<br/>RGB · Depth · Camera Info"]
-      EKF["robot_localization<br/>EKF 位姿融合"]
-      SLAM["SLAM Toolbox<br/>建图与地图保存"]
-      Nav2["Nav2 / AMCL<br/>定位 · 路径规划 · 避障"]
-      Perception["YOLO26 + TensorRT<br/>商品检测 · 调试图像"]
+      Base["ZLAC8015D 底盘"]
+      IMU["IMU"]
+      Lidar["RPLidar"]
+      ZED["ZED 2i"]
+      EKF["EKF 位姿融合"]
+      SLAM["SLAM Toolbox"]
+      Nav2["Nav2 / AMCL"]
+      Perception["视觉感知节点"]
     end
 
-    User --> UI
-    User --> Voice
-    UI --> TaskCore
-    Voice --> TaskCore
-    TaskCore <--> Qwen
-    TaskCore --> EventBus
-    EventBus --> UI
-    TaskCore --> TTS
+    subgraph Map3D[三维空间模块]
+      LingBot["LingBot-Map<br/>流式三维重建 / 点云 / 轨迹"]
+    end
 
-    UI --> Supervisor
-    Supervisor --> Launch
-    Launch --> Topics
-    EventBus --> Nav2
-
+    Site --> Route --> Task --> State
+    State --> Nav2
+    State --> Voice
+    State --> DetectSvc
+    DetectSvc --> Alarm
+    Supervisor --> Launch --> Topics
     Topics --> Base
-    Base --> Topics
-    IMU --> Topics
-    Lidar --> Topics
-    ZED --> Topics
-    Topics --> EKF
-    Topics --> SLAM
-    Topics --> Nav2
-    Topics --> Perception
-    Perception --> TaskCore
+    IMU --> EKF
+    Lidar --> SLAM
+    Lidar --> Nav2
+    ZED --> Perception
+    Perception --> DetectSvc
+    ZED --> LingBot
     Nav2 --> Base
+    EKF --> Nav2
 ```
 
 ---
 
-## 📦 目录结构
+## 目录结构
 
 ```text
 .
@@ -154,470 +168,126 @@ flowchart TB
 │   ├── setup_zlac_can.sh                # ZLAC8015D SocketCAN 配置
 │   └── run_on_jetson.sh                 # 现场运行入口
 ├── CAD/
-│   └── Retail-Cart-3D-Model/            # 机械同学提供的小车结构 CAD 与 STL 文件
+│   └── Retail-Cart-3D-Model/            # 旧结构 CAD，后续作为巡检车结构改造基础
+├── docs/
+│   ├── electric_power_inspection_plan.md # 电力巡检迁移计划
+│   ├── mobile_app_bridge_api.md
+│   └── pcan_peak_setup.md
 ├── maps/
-│   ├── my_map.yaml                      # 比赛推荐导航地图
+│   ├── my_map.yaml
 │   └── my_map.pgm
 ├── src/
 │   ├── ylhb_base/                       # 底盘、IMU、URDF、EKF、SLAM、Nav2
-│   ├── ylhb_perception/                 # ZED、YOLO/TensorRT、深度定位
-│   ├── ylhb_llm/                        # 大模型任务层、语音、TTS、比赛 UI
-│   ├── ylhb_interfaces/                 # 自定义 ROS 2 消息
+│   ├── ylhb_perception/                 # ZED、YOLO/TensorRT、深度定位、检测服务入口
+│   ├── ylhb_llm/                        # 任务层、语音、TTS、UI，业务迁移中
+│   ├── ylhb_interfaces/                 # 自定义 ROS 2 消息，业务接口迁移中
 │   ├── rplidar_ros-ros2/                # RPLidar ROS 2 驱动源码
 │   ├── zed-ros2-wrapper/                # ZED ROS 2 wrapper 源码
-│   ├── PROJECT_DOC_zh.md                # 详细中文开发与比赛调试文档
-│   ├── my_map.yaml
-│   └── my_map.pgm
-├── MIGRATION_JETSON.md                  # Jetson 本机化迁移说明
-└── SECURITY.md                          # 安全与密钥规范
+│   └── PROJECT_DOC_zh.md                # 详细开发文档，含旧零售逻辑说明和迁移提示
+├── MIGRATION_JETSON.md
+├── SECURITY.md
+└── README.md
 ```
 
 ---
 
-## 🧩 硬件与软件环境
+## 快速开始
 
-### 硬件组成
-
-| 模块 | 设备 | 用途 |
-|---|---|---|
-| 主控 | Jetson Orin Nano Super | 运行 ROS 2、Nav2、感知节点、AI 任务层和显示屏 UI |
-| 底盘控制 | ZLAC8015D V4 双轮毂伺服驱动器 | 默认后端；通过 SocketCAN/CANopen 接收 `/cmd_vel`，发布 `/odom`、`/zlac8015d/status`、`/zlac8015d/fault` |
-| 底盘回退 | STM32 大脑底板 | 串口回退后端；用于旧底盘链路调试和备用运行 |
-| 雷达 | RPLidar | 发布 `/scan`，用于 SLAM、AMCL 定位和 Nav2 避障 |
-| 相机 | ZED 2i | 发布 RGB 图、深度图和相机内参，供 YOLO 和 3D 粗定位使用 |
-| IMU | 底盘 IMU | 与轮式里程计进入 EKF，提高短时位姿稳定性 |
-| 语音 | eMeet Luna | 麦克风输入、TTS 播放；推荐录音设备 `plughw:CARD=Luna,DEV=0` |
-| 显示 | Jetson 本机 HDMI / 触摸屏 | 比赛 UI、任务 D 驾驶舱和现场总控台 |
-| 机械结构 | 自研零售小车底盘与支架 | CAD 文件已归档到 `CAD/Retail-Cart-3D-Model/`，包含底盘、万向轮、顶板、Jetson 固定板和语音模块支架 |
-
-### 软件栈
-
-| 类型 | 组件 |
-|---|---|
-| 系统 | Ubuntu 22.04 / ROS 2 Humble |
-| 导航 | SLAM Toolbox、Nav2、AMCL、robot_localization |
-| 视觉 | ZED ROS 2 wrapper、OpenCV、CUDA、TensorRT、YOLO26 |
-| AI | DashScope OpenAI 兼容接口、Qwen 视觉/文本/ASR/TTS 模型 |
-| UI | PyQt 比赛显示屏总控台 |
-
----
-
-## 🧱 机械与 CAD 资料
-
-机械结构文件位于 [CAD/Retail-Cart-3D-Model](CAD/Retail-Cart-3D-Model)，用于复现或修改智慧零售小车的物理结构。
-
-| 路径 | 内容 |
-|---|---|
-| `CAD/Retail-Cart-3D-Model/sldasm/` | SolidWorks 装配文件，包括小车底盘和万向轮装配 |
-| `CAD/Retail-Cart-3D-Model/stp/` | SolidWorks 零件文件，包括上底盘、顶板、支撑杆、伸缩柱、电机轮、电池、驱动器、Jetson 固定板、语音模块支架等 |
-| `CAD/Retail-Cart-3D-Model/stl/` | 可用于 3D 打印的结构件 STL 文件 |
-| `CAD/Retail-Cart-3D-Model/readme.txt` | 3D 打印数量备注 |
-
-当前 3D 打印备注：`支架垫片` 4 个，`固定盖` 2 个，`底盘连接处支架` 2 个。机械件用于承载 Jetson、语音模块、驱动器、电池、底盘连接件和上层展示/交互结构。
-
----
-
-## 🚀 快速开始
-
-默认工作区路径是 `~/ros2_ws`。如果克隆到其他目录，请先设置：
-
-```bash
-export WS_DIR=/path/to/ros2_ws
-```
-
-在 Jetson 上克隆仓库：
+默认工作区路径仍建议使用 `~/ros2_ws`，这样现有启动脚本不需要大改。
 
 ```bash
 cd ~
-git clone https://github.com/liaojingwu20041031/ylhb-smart-retail-robot.git ros2_ws
+git clone https://github.com/liaojingwu20041031/electric-power-inspection-robot.git ros2_ws
 cd ~/ros2_ws
-```
-
-安装依赖并构建：
-
-```bash
 ./scripts/install_jetson_dependencies.sh
 ./scripts/build_on_jetson.sh
 ```
 
-`scripts/run_on_jetson.sh` 会自动加载 `/opt/ros/$ROS_DISTRO/setup.bash` 和 `install/setup.bash`，日常启动不需要手动 `source`。
-
-首次连接 ZLAC8015D 前，先配置 CAN 口：
+首次连接 ZLAC8015D 前配置 CAN：
 
 ```bash
 ./scripts/setup_zlac_can.sh can1 500000
 ip -br link show can1
 ```
 
-自研包验证命令：
-
-```bash
-PYTHONNOUSERSITE=1 colcon test \
-  --packages-select ylhb_base ylhb_perception ylhb_llm ylhb_interfaces \
-  --event-handlers console_direct+
-```
-
-> 仓库包含 ZED/RPLidar 第三方源码。第三方包用于部署构建，默认不把 vendor lint 作为项目质量门槛；完整 `colcon test` 可能因第三方包格式规则或离线 schema 校验失败。
-
----
-
-## 🕹️ 常用启动命令
-
-`scripts/run_on_jetson.sh` 是 Jetson 现场推荐入口，支持以下模式：
+常用启动模式：
 
 ```text
 bringup       启动底盘、IMU、雷达、URDF、EKF
 mapping       启动 SLAM Toolbox 建图
-navigation    启动 Nav2，默认地图为 ~/ros2_ws/maps/my_map.yaml，缺失时回退到 ~/ros2_ws/src/my_map.yaml
+navigation    启动 Nav2 定位和导航
 zed           启动 ZED 2i wrapper
-perception    启动 TensorRT YOLO 感知节点
-llm           启动 AI 任务层、语音节点和可选 UI
-competition   启动比赛显示屏 UI、system supervisor 和内嵌 AI 任务层
+perception    启动视觉感知节点
+llm           启动任务层、语音和 UI 相关节点
+competition   启动总控 UI、system supervisor 和内嵌任务层
 teleop        启动键盘遥控
 ```
 
-### 比赛现场一键入口
+现场入口暂时沿用原脚本：
 
 ```bash
 ./scripts/run_on_jetson.sh competition
 ```
 
-`competition` 默认启动显示屏 UI、系统 supervisor、AI 任务层、连续语音会话和 TTS 播报。进入 UI 的“系统控制”页后，点击“一键启动比赛节点”，supervisor 会按：
-
-```text
-bringup -> zed -> perception -> navigation -> llm
-```
-
-顺序启动比赛栈。其中 AI 任务层已随 `competition` 内嵌运行，状态会显示为 `embedded`，不会重复启动。
-
-默认参数：
-
-```text
-enable_voice:=true
-enable_voice_session:=true
-enable_capture_voice:=false
-enable_tts:=true
-audio_input_device:=plughw:CARD=Luna,DEV=0
-audio_output_device:=default
-tts_voice:=Serena
-```
-
-现场临时静音：
-
-```bash
-./scripts/run_on_jetson.sh competition enable_tts:=false
-```
-
-远程 X11 调试窗口模式：
-
-```bash
-./scripts/run_on_jetson.sh competition force_local_display:=false fullscreen:=false
-```
-
-### 单模块调试
-
-```bash
-# 底盘、IMU、雷达、URDF 和 EKF
-./scripts/install_ch341_safe.sh --precheck
-./scripts/install_ch341_safe.sh --test-load
-sudo ./src/bind_usb.sh
-./scripts/setup_zlac_can.sh can1 500000
-./scripts/run_on_jetson.sh bringup
-
-# STM32 串口回退底盘
-./scripts/run_on_jetson.sh bringup base_backend:=stm32
-
-# ZED 2i
-./scripts/run_on_jetson.sh zed
-
-# 大模型任务层，无语音无 TTS
-export DASHSCOPE_API_KEY=你的DashScopeKey
-./scripts/run_on_jetson.sh llm enable_voice:=false enable_tts:=false
-```
-
-启动视觉检测：
-
-```bash
-./scripts/run_on_jetson.sh perception \
-  model_path:=/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine \
-  backend:=tensorrt \
-  imgsz:=960 \
-  confidence_threshold:=0.35 \
-  max_det:=20 \
-  half:=true \
-  publish_debug_image:=false \
-  log_interval_sec:=2.0 \
-  device:=cuda:0
-```
-
 ---
 
-## 🎙️ 语音交互
+## 机器人部分优先级
 
-项目推荐使用唤醒式连续语音模式。UI 中点击“开启语音模式”后，机器人本地监听人声；听到“小零小零”“小玲小玲”等唤醒词后进入会话。
+第一阶段先完成机器人端可演示闭环：
 
-接入 eMeet Luna 后，先确认系统能看到声卡：
-
-```bash
-lsusb | grep -i emeet
-arecord -l
-aplay -l
-```
-
-启动连续语音和 TTS：
-
-```bash
-export DASHSCOPE_API_KEY=你的DashScopeKey
-./scripts/run_on_jetson.sh llm \
-  enable_voice:=true \
-  enable_voice_session:=true \
-  enable_tts:=true \
-  audio_input_device:=plughw:CARD=Luna,DEV=0 \
-  audio_output_device:=plughw:CARD=Luna,DEV=0 \
-  tts_voice:=Serena
-```
-
-连续语音服务和调试话题：
-
-```bash
-ros2 service call /retail_ai/start_voice_session std_srvs/srv/Trigger "{}"
-ros2 service call /retail_ai/stop_voice_session std_srvs/srv/Trigger "{}"
-ros2 topic echo /retail_ai/voice_session_status
-ros2 topic echo /retail_ai/voice_command_event
-```
-
----
-
-## 🏁 比赛任务流程
-
-项目按比赛任务 A/B/C/D 组织运行：
-
-| 任务 | 流程 |
+| 优先级 | 任务 |
 |---|---|
-| A | 语音、文字或键盘命令转换为 `/cmd_vel`，完成前进、后退、转向、停止等基础动作 |
-| B-1 | 导入任务书图片，大模型理解任务，导航到货架 A，识别真实商品，推荐商品，抓取后前往结算区 B |
-| B-2 | 接收购物需求或商品指令，大模型像销售员一样给出主推和备选商品；用户确认后才发布取货事件 |
-| C | 识别结算区商品，播报商品清单，根据 `products.yaml` 计算总价并返回起点 S |
-| D | 通过现场显示屏 UI 展示任务状态、识别结果、播报文本、购物车和结算信息 |
+| P0 | 保证底盘、雷达、IMU、ZED、Nav2 能稳定启动 |
+| P0 | 将 UI 标题、项目说明、任务文案切换到电力巡检 |
+| P1 | 新增巡检检查点数据结构和任务状态机 |
+| P1 | 到点语音提示和检查点图像采集 |
+| P1 | 路线级实时检测：人员、安全帽、障碍物、火源/烟雾 |
+| P2 | 检查点级检测：开关/刀闸、表计/指示灯、漏油、异物 |
+| P2 | 告警 JSON 和巡检记录 JSON |
+| P3 | LingBot-Map 三维重建和后台三维展示 |
 
-任务书图片分析服务：
+---
 
-```bash
-# 图片放在 /home/nvidia/ros2_ws/src/ylhb_llm/test_images
-# 目录内只保留一张 .jpg/.jpeg/.png
-ros2 service call /retail_ai/start_b1_task std_srvs/srv/Trigger "{}"
-```
+## 模型接入建议
 
-主要 AI/语音/UI 话题和服务：
+LocateAnything-3B 适合做检查点级复杂目标定位，例如：
 
 ```text
-/retail_ai/task_event              # TaskEvent，inspect_shelf_for_recommendation / pick_item / checkout / return_start
-/retail_ai/task_status             # TaskStatus，执行层回传 started/succeeded/failed/rejected
-/retail_ai/sales_dialogue_status   # B-2 销售对话状态 JSON
-/retail_ai/voice_command_event     # 连续语音 ASR 事件 JSON
-/retail_ai/voice_session_status    # 连续语音会话状态 JSON
-/retail_ai/capture_voice           # 单次录音 ASR service，competition 默认关闭
-/retail_ai/start_voice_session     # 开启连续语音 service
-/retail_ai/stop_voice_session      # 关闭连续语音 service
+找到图中处于分闸状态的刀闸
+定位存在漏油痕迹的区域
+找到冒烟或火焰的位置
+找到未佩戴安全帽的人员
+找到仪表盘中的指针和读数区域
 ```
 
-文字入口：
+但路线级实时避障和安全检测建议保留轻量模型，优先使用 YOLO/TensorRT，避免 3B 模型拖慢机器人运动闭环。LocateAnything 更适合在到点后对关键帧做高价值识别。
 
-```bash
-ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '来瓶可乐'}"
-ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '我口渴了'}"
-ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '确认'}"
-ros2 topic echo /retail_ai/task_event
-ros2 topic echo /retail_ai/sales_dialogue_status
-ros2 topic echo /retail_ai/say_text
-```
-
----
-
-## 🧰 现场运行自检
-
-比赛前建议按从硬件到任务层的顺序检查，能更快定位是设备、驱动、模型还是 AI Key 问题。
-
-### 设备检查
-
-```bash
-# CAN 与 ZLAC8015D
-ip -details link show can1
-
-# USB 设备与音频设备
-lsusb
-arecord -l
-aplay -l
-
-# ROS 2 包是否已构建并可见
-source install/setup.bash
-ros2 pkg list | grep -E 'ylhb_base|ylhb_perception|ylhb_llm|ylhb_interfaces'
-```
-
-### 节点与话题检查
-
-```bash
-# 底盘与传感器
-lsmod | grep -E 'ch341|ch34x'
-lsusb
-dmesg | grep -i ch34
-ls -l /dev/robot_imu /dev/ttyCH341USB* /dev/ttyUSB*
-ros2 topic echo /odom
-ros2 topic echo /scan
-ros2 topic echo /imu/data --once
-
-# ZED 与视觉检测
-ros2 topic hz /zed/zed_node/rgb/color/rect/image
-ros2 topic echo /detections
-
-# AI 任务层与语音
-ros2 topic echo /retail_ai/task_event
-ros2 topic echo /retail_ai/task_status
-ros2 topic echo /retail_ai/voice_session_status
-```
-
-### 常见现场处理
-
-| 现象 | 优先检查 |
-|---|---|
-| 底盘不响应 `/cmd_vel` | `can1` 是否 `UP`、ZLAC 是否上电、急停/使能状态、`/zlac8015d/fault` |
-| 雷达无 `/scan` | `/dev/robot_lidar` 绑定、串口权限、RPLidar 电源和转速 |
-| UI 无法显示 | Jetson 本机 `DISPLAY=:0`、HDMI/触摸屏连接、远程调试时加 `force_local_display:=false fullscreen:=false` |
-| 视觉节点退出 | `yolo26.engine` 是否存在、engine 是否在当前 Jetson 编译、ZED 图像话题是否有帧 |
-| 大模型无响应 | `DASHSCOPE_API_KEY` 是否已导出、网络是否可用、模型参数是否被覆盖 |
-| 语音无输入/输出 | eMeet Luna 声卡编号、`audio_input_device` / `audio_output_device`、系统音量和默认声卡 |
-
----
-
-## 🗺️ 建图与导航
-
-启动建图：
-
-```bash
-./scripts/run_on_jetson.sh mapping
-```
-
-建图时推荐使用低速键盘遥控：
-
-```bash
-source /opt/ros/humble/setup.bash
-
-ros2 run teleop_twist_keyboard teleop_twist_keyboard \
-  --ros-args \
-  -p speed:=0.08 \
-  -p turn:=0.25
-```
-
-其中 `speed` 是线速度，单位 `m/s`；`turn` 是角速度，单位 `rad/s`。
-
-启动导航：
-
-```bash
-./scripts/run_on_jetson.sh navigation
-```
-
-比赛默认把机器人放在建图起点附近，AMCL 启动时会先使用地图原点 `(0, 0, 0)` 发布定位。若现场启动位置偏离建图起点，请先在 RViz/Foxglove 发布 `/initialpose` 覆盖默认位姿，再发送导航目标。
-
-默认导航地图：
+LingBot-Map 建议作为后台或离线三维重建模块：
 
 ```text
-~/ros2_ws/maps/my_map.yaml
-~/ros2_ws/maps/my_map.pgm
+巡检视频 -> 三维重建 -> 相机轨迹/点云 -> 巡检点位对齐 -> 后台三维展示
 ```
-
-推荐比赛导航地图来自实机 SLAM 保存，地图图像为 `195 x 333`，分辨率 `0.05 m/pix`。`~/ros2_ws/src/my_map.yaml` 仅作为兼容回退地图。
-
-UI 的“保存地图”默认写入：
-
-```text
-~/ros2_ws/src/maps/<map_name>.yaml/.pgm
-```
-
-UI 和移动端调试接口保存地图时都会调用：
-
-```bash
-ros2 run nav2_map_server map_saver_cli -f <target> --ros-args -p save_map_timeout:=10.0
-```
-
-这个等待时间用于覆盖 SLAM Toolbox 发布 `/map` 的实际节奏，避免 Nav2 默认 2 秒订阅等待偶发超时。
-
-导航默认优先读取 `~/ros2_ws/maps/my_map.yaml`。要使用新保存的地图，需要复制成推荐默认地图、保持为回退地图，或启动导航时覆盖 `map:=...`。
 
 ---
 
-## 🧠 模型文件说明
-
-模型二进制文件不提交到 GitHub。需要在 Jetson 上准备：
-
-```text
-/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.onnx
-/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine
-```
-
-PC 端导出 ONNX 后，将 `yolo26.onnx` 放入 `src/ylhb_perception/models/`，再在 Jetson 上编译 TensorRT engine：
-
-```bash
-ros2 run ylhb_perception export_yolo_trt.py \
-  --onnx /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.onnx \
-  --output /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine \
-  --workspace 2048
-```
-
-DashScope API Key 不写入代码。运行图片理解、云端 ASR 或云端 TTS 前，在终端设置：
-
-```bash
-export DASHSCOPE_API_KEY=你的DashScopeKey
-```
-
-推荐把 API Key 放在本机 shell 配置或现场启动脚本外部注入，不要写进 launch 文件、Python 源码、README 示例之外的配置文件或 Git 跟踪文件。
-
-## 🧪 适合谁参考？
-
-- 正在做 ROS 2 智能车、移动机器人或比赛项目的同学
-- 想把 Jetson、ZED、Nav2、YOLO、LLM 接成完整系统的开发者
-- 需要智慧零售、服务机器人、多模态交互参考架构的团队
-- 想学习“比赛工程如何从 demo 变成交付系统”的机器人爱好者
-
----
-
-## 📌 Roadmap
-
-- [x] Jetson 本机化部署
-- [x] Nav2 / SLAM / EKF 基础运动栈
-- [x] ZED 2i + YOLO26 + TensorRT 感知链路
-- [x] DashScope/Qwen 多模态任务理解
-- [x] 唤醒式连续语音会话
-- [x] 比赛显示屏 UI 与 system supervisor
-- [ ] 补充高质量演示 GIF、系统截图和视频链接
-- [ ] 补充英文 README
-- [ ] 增加 CI 检查自研 ROS 2 包
-- [ ] 整理可复用的机器人任务编排框架
-
----
-
-## 🔒 安全与规范
+## 安全与规范
 
 - 不提交 `DASHSCOPE_API_KEY`、`.env`、SSH key、证书或其他本机密钥。
 - 不提交 `.onnx`、`.engine`、`.pt` 等模型二进制文件。
-- 串口权限优先使用 udev 规则或用户组，不建议长期使用 `chmod 777`。
-- 安全和部署注意事项见 [SECURITY.md](SECURITY.md)。
+- 串口权限优先使用 udev 规则或用户组。
+- 电力巡检演示涉及“火源、烟雾、漏油、设备状态”等安全告警，实训系统只作为辅助识别原型，不替代真实电力安全规程。
 
 ---
 
-## 📚 详细文档
+## 参考
 
-- [src/PROJECT_DOC_zh.md](src/PROJECT_DOC_zh.md)：比赛调试顺序、节点关系、话题流向、启动命令和常见问题。
-- [MIGRATION_JETSON.md](MIGRATION_JETSON.md)：从旧 PC 推流识别流程迁移到 Jetson 本机开发、本机构建、本机运行。
-
----
-
-## ⭐ 支持项目
-
-如果这个项目对你做 ROS 2、Jetson、机器人比赛或多模态 AI Agent 有帮助，欢迎点一个 **Star**。  
-后续会继续补充演示视频、部署文档和比赛实战记录。
+- [LocateAnything-3B](https://huggingface.co/nvidia/LocateAnything-3B)
+- [LingBot-Map](https://github.com/robbyant/lingbot-map)
+- [详细开发文档](src/PROJECT_DOC_zh.md)
+- [Jetson 迁移说明](MIGRATION_JETSON.md)
 
 <div align="center">
 
-**YLHB Smart Retail Robot — 让机器人从“能跑”走向“能听懂、看懂、会执行”。**
+**电力行业巡检机器人 — 从“能跑的移动机器人”迁移到“能巡、能看、能告警”的行业应用原型。**
 
 </div>

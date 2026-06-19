@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer='liaojingwu20041031',
     maintainer_email='206929594+liaojingwu20041031@users.noreply.github.com',
-    description='Retail competition AI task layer.',
+    description='Electric power inspection robot AI task layer.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
