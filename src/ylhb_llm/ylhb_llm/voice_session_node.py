@@ -19,7 +19,7 @@ from ylhb_interfaces.msg import SayText, VoiceStatus
 from .qwen_client import QwenClient, QwenClientError
 from .voice_stability import (
     VoiceRoutingPolicy,
-    is_sales_followup_text,
+    is_context_followup_text,
     normalize_voice_text,
 )
 
@@ -39,13 +39,13 @@ def transient_qos() -> QoSProfile:
 class VoiceSessionNode(Node):
     def __init__(self) -> None:
         super().__init__('voice_session_node')
-        self.declare_parameter('voice_command_event_topic', '/retail_ai/voice_command_event')
-        self.declare_parameter('voice_session_status_topic', '/retail_ai/voice_session_status')
-        self.declare_parameter('say_text_topic', '/retail_ai/say_text')
-        self.declare_parameter('voice_status_topic', '/retail_ai/voice_status')
-        self.declare_parameter('sales_dialogue_status_topic', '/retail_ai/sales_dialogue_status')
-        self.declare_parameter('start_voice_session_service_name', '/retail_ai/start_voice_session')
-        self.declare_parameter('stop_voice_session_service_name', '/retail_ai/stop_voice_session')
+        self.declare_parameter('voice_command_event_topic', '/inspection_ai/voice_command_event')
+        self.declare_parameter('voice_session_status_topic', '/inspection_ai/voice_session_status')
+        self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
+        self.declare_parameter('voice_status_topic', '/inspection_ai/voice_status')
+        self.declare_parameter('task_context_status_topic', '/inspection_ai/task_context_status')
+        self.declare_parameter('start_voice_session_service_name', '/inspection_ai/start_voice_session')
+        self.declare_parameter('stop_voice_session_service_name', '/inspection_ai/stop_voice_session')
         self.declare_parameter('audio_device', 'default')
         self.declare_parameter('audio_input_device', 'default')
         self.declare_parameter('enabled', False)
@@ -68,9 +68,9 @@ class VoiceSessionNode(Node):
         self.declare_parameter('asr_fail_standby_threshold', 3)
         self.declare_parameter('post_event_listen_pause_sec', 3.0)
         self.declare_parameter('ignore_empty_asr_after_event_sec', 6.0)
-        self.declare_parameter('sales_followup_timeout_sec', 8.0)
+        self.declare_parameter('context_followup_timeout_sec', 8.0)
         self.declare_parameter('single_wake_default', True)
-        self.declare_parameter('sales_followup_words', [])
+        self.declare_parameter('followup_words', [])
         self.declare_parameter('voice_close_words', [])
 
         self.enabled = bool(self.get_parameter('enabled').value)
@@ -99,13 +99,13 @@ class VoiceSessionNode(Node):
         self.post_event_listen_pause_sec = float(self.get_parameter('post_event_listen_pause_sec').value)
         self.ignore_empty_asr_after_event_sec = float(
             self.get_parameter('ignore_empty_asr_after_event_sec').value)
-        self.sales_followup_timeout_sec = float(
-            self.get_parameter('sales_followup_timeout_sec').value)
+        self.context_followup_timeout_sec = float(
+            self.get_parameter('context_followup_timeout_sec').value)
         self.single_wake_default = bool(self.get_parameter('single_wake_default').value)
         self.followup_policy = VoiceRoutingPolicy(
             followup_words=tuple(
                 str(value)
-                for value in self.get_parameter('sales_followup_words').value
+                for value in self.get_parameter('followup_words').value
                 if str(value)
             )
         )
@@ -128,8 +128,8 @@ class VoiceSessionNode(Node):
         )
         self.create_subscription(
             String,
-            self.get_parameter('sales_dialogue_status_topic').value,
-            self.sales_dialogue_status_callback,
+            self.get_parameter('task_context_status_topic').value,
+            self.task_context_status_callback,
             transient_qos(),
         )
         self.create_service(
@@ -161,8 +161,8 @@ class VoiceSessionNode(Node):
         self.last_active_at = 0.0
         self.pause_listen_until = 0.0
         self.last_event_published_at = 0.0
-        self.sales_followup_until = 0.0
-        self.in_sales_followup = False
+        self.context_followup_until = 0.0
+        self.in_context_followup = False
 
         self.worker = threading.Thread(target=self.session_loop, daemon=True)
         self.worker.start()
@@ -191,8 +191,8 @@ class VoiceSessionNode(Node):
             self.last_active_at = time.monotonic()
             self.pause_listen_until = 0.0
             self.last_event_published_at = 0.0
-            self.sales_followup_until = 0.0
-            self.in_sales_followup = False
+            self.context_followup_until = 0.0
+            self.in_context_followup = False
             self.set_state('WAIT_WAKE')
         self.say('voice_session', f'语音模式已开启，请先说{self.wake_phrase}。', priority=6)
         self.publish_status()
@@ -214,32 +214,33 @@ class VoiceSessionNode(Node):
         if self.last_tts_speaking and not speaking:
             self.last_active_at = now
             self.pause_listen_until = max(self.pause_listen_until, now + 0.3)
-            if self.in_sales_followup:
-                self.sales_followup_until = now + self.sales_followup_timeout_sec
+            if self.in_context_followup:
+                self.context_followup_until = now + self.context_followup_timeout_sec
         self.is_tts_playing = speaking
         self.last_tts_speaking = speaking
 
-    def sales_dialogue_status_callback(self, msg: String) -> None:
+    def task_context_status_callback(self, msg: String) -> None:
         if not self.session_enabled:
-            self.in_sales_followup = False
-            self.sales_followup_until = 0.0
+            self.in_context_followup = False
+            self.context_followup_until = 0.0
             return
         try:
             status = json.loads(msg.data)
         except json.JSONDecodeError:
             return
-        active = bool(status.get('active'))
+        state = str(status.get('state') or '')
         waiting_for = str(status.get('waiting_for') or '')
-        pending_product_id = str(status.get('pending_product_id') or '')
-        if active and (waiting_for or pending_product_id):
+        active_task_id = str(status.get('active_task_id') or '')
+        active = state not in ('', 'idle', 'ready') or bool(active_task_id)
+        if active and (waiting_for or active_task_id or state):
             now = time.monotonic()
-            self.sales_followup_until = now + self.sales_followup_timeout_sec
-            self.in_sales_followup = True
+            self.context_followup_until = now + self.context_followup_timeout_sec
+            self.in_context_followup = True
             self.last_active_at = now
-            self.set_state('SALES_FOLLOWUP')
+            self.set_state('CONTEXT_FOLLOWUP')
             return
-        self.in_sales_followup = False
-        self.sales_followup_until = 0.0
+        self.in_context_followup = False
+        self.context_followup_until = 0.0
 
     def set_state(self, state: str) -> None:
         if self.state == state:
@@ -270,7 +271,7 @@ class VoiceSessionNode(Node):
                 continue
 
             self.update_followup_window()
-            listen_without_wake = self.awakened or self.in_sales_followup
+            listen_without_wake = self.awakened or self.in_context_followup
             self.set_state('LISTENING' if listen_without_wake else 'WAIT_WAKE')
             idle_deadline = (
                 self.last_active_at + self.session_idle_timeout_sec
@@ -300,15 +301,15 @@ class VoiceSessionNode(Node):
             self.set_state('AWAKENED_IDLE')
             self.get_logger().info('Ignoring empty ASR shortly after valid voice event.')
             return
-        if not self.awakened and not self.in_sales_followup:
+        if not self.awakened and not self.in_context_followup:
             self.asr_fail_count = 0
             self.set_state('WAIT_WAKE')
             return
         self.asr_fail_count += 1
         if self.asr_fail_count >= self.asr_fail_standby_threshold:
             self.awakened = False
-            self.in_sales_followup = False
-            self.sales_followup_until = 0.0
+            self.in_context_followup = False
+            self.context_followup_until = 0.0
             self.set_state('WAIT_WAKE')
             self.say('voice_session', f'多次没有听清，已回到待唤醒。请说{self.wake_phrase}。', priority=5)
             return
@@ -348,7 +349,7 @@ class VoiceSessionNode(Node):
         loud = 0
         effective_energy_threshold = self.energy_threshold
         effective_start_frames = self.voice_start_frames_required
-        if not self.awakened and not self.in_sales_followup:
+        if not self.awakened and not self.in_context_followup:
             effective_energy_threshold = int(self.energy_threshold * 1.8)
             effective_start_frames = max(self.voice_start_frames_required, 6)
         try:
@@ -440,14 +441,14 @@ class VoiceSessionNode(Node):
 
         self.update_followup_window()
         interaction_phase = 'wake_command'
-        if self.in_sales_followup and not contains_wake:
-            if not is_sales_followup_text(command, self.followup_policy):
-                self.set_state('SALES_FOLLOWUP')
+        if self.in_context_followup and not contains_wake:
+            if not is_context_followup_text(command, self.followup_policy):
+                self.set_state('CONTEXT_FOLLOWUP')
                 self.get_logger().info(
-                    f'Ignoring non-followup voice text in sales window: {command}'
+                    f'Ignoring non-followup voice text in task context window: {command}'
                 )
                 return
-            interaction_phase = 'sales_followup'
+            interaction_phase = 'context_followup'
             self.last_active_at = time.monotonic()
         elif not self.awakened:
             if not contains_wake:
@@ -512,8 +513,8 @@ class VoiceSessionNode(Node):
             self.is_recording = False
             self.pause_listen_until = 0.0
             self.last_event_published_at = 0.0
-            self.sales_followup_until = 0.0
-            self.in_sales_followup = False
+            self.context_followup_until = 0.0
+            self.in_context_followup = False
         if say:
             self.say('voice_session', text, priority=6, interrupt=True)
         self.publish_status()
@@ -528,9 +529,9 @@ class VoiceSessionNode(Node):
         return command.strip()
 
     def update_followup_window(self) -> None:
-        if self.in_sales_followup and time.monotonic() >= self.sales_followup_until:
-            self.in_sales_followup = False
-            self.sales_followup_until = 0.0
+        if self.in_context_followup and time.monotonic() >= self.context_followup_until:
+            self.in_context_followup = False
+            self.context_followup_until = 0.0
 
     def say(
         self,
@@ -558,20 +559,20 @@ class VoiceSessionNode(Node):
             'session_id': self.session_id,
             'active_module': '',
             'waiting_for': (
-                'sales_followup'
-                if self.in_sales_followup
+                'context_followup'
+                if self.in_context_followup
                 else 'wake_phrase'
                 if self.session_enabled and not self.awakened
                 else ''
             ),
-            'interaction_phase': 'sales_followup' if self.in_sales_followup else 'wake_command',
+            'interaction_phase': 'context_followup' if self.in_context_followup else 'wake_command',
             'is_tts_playing': bool(self.is_tts_playing),
             'is_recording': bool(self.is_recording),
             'asr_fail_count': int(self.asr_fail_count),
             'last_asr_text': self.last_asr_text,
             'last_published_text': self.last_published_text,
             'last_intent': '',
-            'last_product': '',
+            'last_target': '',
             'last_confidence': 0.0,
             'last_error': self.last_error,
             'last_update_time': time.time(),

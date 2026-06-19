@@ -41,9 +41,9 @@ class ManagedProcess:
 class SystemSupervisorNode(Node):
     def __init__(self) -> None:
         super().__init__('system_supervisor_node')
-        self.declare_parameter('system_command_topic', '/retail_ai/system_command')
-        self.declare_parameter('system_status_topic', '/retail_ai/system_status')
-        self.declare_parameter('system_mode_topic', '/retail_ai/system_mode')
+        self.declare_parameter('system_command_topic', '/inspection_ai/system_command')
+        self.declare_parameter('system_status_topic', '/inspection_ai/system_status')
+        self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('workspace_dir', os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws')))
         self.declare_parameter('ros_distro', 'humble')
@@ -168,11 +168,11 @@ class SystemSupervisorNode(Node):
         if command == 'emergency_stop':
             self.emergency_stop()
             return
-        if command == 'start_competition_stack':
-            self.start_competition_stack()
+        if command == 'start_robot_stack':
+            self.start_robot_stack()
             return
-        if command == 'stop_competition_stack':
-            self.stop_competition_stack()
+        if command == 'stop_robot_stack':
+            self.stop_robot_stack()
             return
         if command == 'return_ready':
             self.publish_mode('ready')
@@ -185,7 +185,7 @@ class SystemSupervisorNode(Node):
             self.set_result(
                 'start_llm',
                 True,
-                self.voice_summary('AI task layer is embedded in competition launch'),
+                self.voice_summary('AI task layer is embedded in inspection launch'),
             )
             return
         proc = self.processes[name]
@@ -209,7 +209,7 @@ class SystemSupervisorNode(Node):
             self.set_result(
                 'stop_llm',
                 True,
-                'AI task layer is embedded in competition launch; keep it running with UI and voice.',
+                'AI task layer is embedded in inspection launch; keep it running with UI and voice.',
             )
             return
         proc = self.processes[name]
@@ -231,23 +231,23 @@ class SystemSupervisorNode(Node):
             except Exception as exc:
                 self.set_result_locked(f'stop_{name}', False, f'Failed to stop {name}: {exc}')
 
-    def start_competition_stack(self) -> None:
+    def start_robot_stack(self) -> None:
         for name in ('bringup', 'zed', 'perception', 'navigation', 'llm'):
             self.start_process(name)
             time.sleep(0.3)
-        self.set_result('start_competition_stack', True, '比赛节点启动命令已发送')
+        self.set_result('start_robot_stack', True, '巡检节点启动命令已发送')
 
-    def stop_competition_stack(self) -> None:
+    def stop_robot_stack(self) -> None:
         for name in ('navigation', 'perception', 'zed', 'bringup'):
             self.stop_process(name)
             time.sleep(0.2)
         self.publish_mode('ready')
-        self.set_result('stop_competition_stack', True, '比赛运动、导航和感知节点已停止，AI/UI 保持运行')
+        self.set_result('stop_robot_stack', True, '巡检运动、导航和感知节点已停止，AI/UI 保持运行')
 
     def save_map(self, map_name: str) -> None:
         safe_name = ''.join(c for c in map_name if c.isalnum() or c in ('_', '-')).strip('_-')
         if not safe_name:
-            safe_name = time.strftime('retail_map_%Y%m%d_%H%M')
+            safe_name = time.strftime('inspection_map_%Y%m%d_%H%M')
         os.makedirs(self.map_output_dir, exist_ok=True)
         map_prefix = os.path.join(self.map_output_dir, safe_name)
         cmd = self.wrap_command(

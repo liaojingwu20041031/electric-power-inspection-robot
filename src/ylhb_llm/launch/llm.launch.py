@@ -13,14 +13,10 @@ def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_llm')
     workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
     default_params = os.path.join(pkg_dir, 'config', 'llm.yaml')
-    default_products = os.path.join(pkg_dir, 'config', 'products.yaml')
-    default_task_image_dir = os.path.join(pkg_dir, 'test_images')
     default_map_output_dir = os.path.join(workspace_dir, 'src', 'maps')
-    default_perception_model = os.path.join(
-        workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
+    default_perception_model = os.path.join(workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
 
     params_file = LaunchConfiguration('params_file')
-    products_file = LaunchConfiguration('products_file')
     dashscope_base_url = LaunchConfiguration('dashscope_base_url')
     vl_model = LaunchConfiguration('vl_model')
     chat_model = LaunchConfiguration('chat_model')
@@ -38,7 +34,6 @@ def generate_launch_description():
     enable_task_layer = LaunchConfiguration('enable_task_layer')
     enable_display_ui = LaunchConfiguration('enable_display_ui')
     enable_system_supervisor = LaunchConfiguration('enable_system_supervisor')
-    task_image_dir = LaunchConfiguration('task_image_dir')
     initial_system_mode = LaunchConfiguration('initial_system_mode')
     fullscreen = LaunchConfiguration('fullscreen')
     display = LaunchConfiguration('display')
@@ -46,10 +41,10 @@ def generate_launch_description():
     workspace_dir_arg = LaunchConfiguration('workspace_dir')
     map_output_dir = LaunchConfiguration('map_output_dir')
     perception_model_path = LaunchConfiguration('perception_model_path')
+    enable_llm_parse = LaunchConfiguration('enable_llm_parse')
 
     return LaunchDescription([
         DeclareLaunchArgument('params_file', default_value=default_params),
-        DeclareLaunchArgument('products_file', default_value=default_products),
         DeclareLaunchArgument('dashscope_base_url', default_value='https://dashscope.aliyuncs.com/compatible-mode/v1'),
         DeclareLaunchArgument('vl_model', default_value='qwen3.6-plus'),
         DeclareLaunchArgument('chat_model', default_value='qwen3.6-plus'),
@@ -67,7 +62,6 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_task_layer', default_value='true'),
         DeclareLaunchArgument('enable_display_ui', default_value='true'),
         DeclareLaunchArgument('enable_system_supervisor', default_value='true'),
-        DeclareLaunchArgument('task_image_dir', default_value=default_task_image_dir),
         DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
         DeclareLaunchArgument('map_output_dir', default_value=default_map_output_dir),
         DeclareLaunchArgument('perception_model_path', default_value=default_perception_model),
@@ -75,21 +69,20 @@ def generate_launch_description():
         DeclareLaunchArgument('fullscreen', default_value='true'),
         DeclareLaunchArgument('display', default_value=':0'),
         DeclareLaunchArgument('force_local_display', default_value='true'),
+        DeclareLaunchArgument('enable_llm_parse', default_value='false'),
 
         Node(
             package='ylhb_llm',
-            executable='retail_task_node',
-            name='retail_task_node',
+            executable='inspection_task_node',
+            name='inspection_task_node',
             output='screen',
             condition=IfCondition(enable_task_layer),
             parameters=[
                 params_file,
                 {
-                    'products_file': products_file,
                     'dashscope_base_url': dashscope_base_url,
-                    'vl_model': vl_model,
                     'chat_model': chat_model,
-                    'task_image_dir': task_image_dir,
+                    'enable_llm_parse': ParameterValue(enable_llm_parse, value_type=bool),
                 },
             ],
         ),
@@ -107,16 +100,7 @@ def generate_launch_description():
             name='voice_input_node',
             output='screen',
             condition=IfCondition(enable_task_layer),
-            parameters=[
-                params_file,
-                {
-                    'dashscope_base_url': dashscope_base_url,
-                    'asr_model': asr_model,
-                    'audio_device': audio_device,
-                    'audio_input_device': audio_input_device,
-                    'enabled': ParameterValue(enable_capture_voice, value_type=bool),
-                },
-            ],
+            parameters=[params_file, {'dashscope_base_url': dashscope_base_url, 'asr_model': asr_model, 'audio_device': audio_device, 'audio_input_device': audio_input_device, 'enabled': ParameterValue(enable_capture_voice, value_type=bool)}],
         ),
         Node(
             package='ylhb_llm',
@@ -124,16 +108,7 @@ def generate_launch_description():
             name='voice_session_node',
             output='screen',
             condition=IfCondition(enable_task_layer),
-            parameters=[
-                params_file,
-                {
-                    'dashscope_base_url': dashscope_base_url,
-                    'asr_model': asr_model,
-                    'audio_device': audio_device,
-                    'audio_input_device': audio_input_device,
-                    'enabled': ParameterValue(enable_voice_session, value_type=bool),
-                },
-            ],
+            parameters=[params_file, {'dashscope_base_url': dashscope_base_url, 'asr_model': asr_model, 'audio_device': audio_device, 'audio_input_device': audio_input_device, 'enabled': ParameterValue(enable_voice_session, value_type=bool)}],
         ),
         Node(
             package='ylhb_llm',
@@ -149,19 +124,7 @@ def generate_launch_description():
             name='voice_output_node',
             output='screen',
             condition=IfCondition(enable_task_layer),
-            parameters=[
-                params_file,
-                {
-                    'dashscope_base_url': dashscope_base_url,
-                    'tts_model': tts_model,
-                    'audio_device': audio_device,
-                    'audio_output_device': audio_output_device,
-                    'tts_voice': tts_voice,
-                    'tts_language_type': tts_language_type,
-                    'enabled': ParameterValue(enable_voice, value_type=bool),
-                    'tts_enabled': ParameterValue(enable_tts, value_type=bool),
-                },
-            ],
+            parameters=[params_file, {'dashscope_base_url': dashscope_base_url, 'tts_model': tts_model, 'audio_device': audio_device, 'audio_output_device': audio_output_device, 'tts_voice': tts_voice, 'tts_language_type': tts_language_type, 'enabled': ParameterValue(enable_voice, value_type=bool), 'tts_enabled': ParameterValue(enable_tts, value_type=bool)}],
         ),
         Node(
             package='ylhb_llm',
@@ -169,44 +132,15 @@ def generate_launch_description():
             name='system_supervisor_node',
             output='screen',
             condition=IfCondition(enable_system_supervisor),
-            parameters=[
-                params_file,
-                {
-                    'workspace_dir': workspace_dir_arg,
-                    'map_output_dir': map_output_dir,
-                    'perception_model_path': perception_model_path,
-                    'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool),
-                    'enable_voice': ParameterValue(enable_voice, value_type=bool),
-                    'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool),
-                    'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool),
-                    'enable_tts': ParameterValue(enable_tts, value_type=bool),
-                    'audio_device': audio_device,
-                    'audio_input_device': audio_input_device,
-                    'audio_output_device': audio_output_device,
-                    'asr_model': asr_model,
-                    'tts_model': tts_model,
-                    'tts_voice': tts_voice,
-                    'tts_language_type': tts_language_type,
-                    'dashscope_base_url': dashscope_base_url,
-                },
-            ],
+            parameters=[params_file, {'workspace_dir': workspace_dir_arg, 'map_output_dir': map_output_dir, 'perception_model_path': perception_model_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'audio_device': audio_device, 'audio_input_device': audio_input_device, 'audio_output_device': audio_output_device, 'asr_model': asr_model, 'tts_model': tts_model, 'tts_voice': tts_voice, 'tts_language_type': tts_language_type, 'dashscope_base_url': dashscope_base_url}],
         ),
         Node(
             package='ylhb_llm',
-            executable='retail_display_ui_node',
-            name='retail_display_ui_node',
+            executable='inspection_display_ui_node',
+            name='inspection_display_ui_node',
             output='screen',
             condition=IfCondition(enable_display_ui),
             additional_env={'DISPLAY': display},
-            parameters=[
-                params_file,
-                {
-                    'task_image_dir': task_image_dir,
-                    'initial_system_mode': initial_system_mode,
-                    'fullscreen': ParameterValue(fullscreen, value_type=bool),
-                    'display': display,
-                    'force_local_display': ParameterValue(force_local_display, value_type=bool),
-                },
-            ],
+            parameters=[params_file, {'initial_system_mode': initial_system_mode, 'fullscreen': ParameterValue(fullscreen, value_type=bool), 'display': display, 'force_local_display': ParameterValue(force_local_display, value_type=bool)}],
         ),
     ])

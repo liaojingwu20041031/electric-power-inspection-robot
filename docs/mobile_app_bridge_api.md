@@ -1,4 +1,4 @@
-# YLHB Mobile Bridge API
+# 电力巡检机器人 Mobile Bridge API
 
 ## 后端启动方式
 
@@ -60,14 +60,14 @@ curl -X POST http://<jetson_ip>:8000/api/debug/navigation/set_initial_pose \
 
 curl -X POST http://<jetson_ip>:8000/api/debug/navigation/goal \
   -H "Content-Type: application/json" \
-  -d '{"x":1.0,"y":0.5,"yaw":0.0,"label":"shelf_A"}'
+  -d '{"x":1.0,"y":0.5,"yaw":0.0,"label":"checkpoint_001"}'
 ```
 
 ## ROS2 topic 对应关系
 
 - `/api/cmd_vel` -> `/cmd_vel` (`geometry_msgs/Twist`)
-- `/api/text_command` -> `/retail_ai/text_command` (`std_msgs/String`)
-- `/api/task` -> 转中文文本后发布到 `/retail_ai/text_command`
+- `/api/text_command` -> `/inspection_ai/text_command` (`std_msgs/String`)
+- `/api/task` -> 转中文文本后发布到 `/inspection_ai/text_command`
 - `/api/debug/navigation/set_initial_pose` -> `/initialpose`
 - 状态读取：`/odom`、`/scan`、`/map`、`/zlac8015d/status`、`/zlac8015d/fault`
 - 导航目标：`navigate_to_pose` action

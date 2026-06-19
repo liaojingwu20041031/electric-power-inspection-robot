@@ -18,11 +18,9 @@ class VoiceRoutingPolicy:
     voice_close_words: Tuple[str, ...] = ()
     safety_words: Tuple[str, ...] = ()
     cancel_words: Tuple[str, ...] = ()
-    checkout_words: Tuple[str, ...] = ()
     system_feedback_words: Tuple[str, ...] = ()
     general_qa_words: Tuple[str, ...] = ()
-    sales_need_words: Tuple[str, ...] = ()
-    product_words: Tuple[str, ...] = ()
+    inspection_words: Tuple[str, ...] = ()
     background_words: Tuple[str, ...] = ()
     followup_words: Tuple[str, ...] = ()
     motion_aliases: Tuple[Tuple[str, str], ...] = ()
@@ -41,7 +39,7 @@ def contains_any(text: str, words: Tuple[str, ...]) -> bool:
     return any(word in text for word in words)
 
 
-def is_sales_followup_text(text: str, policy: VoiceRoutingPolicy) -> bool:
+def is_context_followup_text(text: str, policy: VoiceRoutingPolicy) -> bool:
     normalized = normalize_voice_text(text)
     if not normalized:
         return False
@@ -66,7 +64,7 @@ def classify_voice_intent(
             command, feedback = policy.system_commands[phrase]
             return VoiceIntent('system_command', normalized, feedback, command)
 
-    if interaction_phase == 'sales_followup' and not is_sales_followup_text(normalized, policy):
+    if interaction_phase == 'context_followup' and not is_context_followup_text(normalized, policy):
         return VoiceIntent('ignore', normalized)
 
     if contains_any(normalized, policy.safety_words):
@@ -74,26 +72,24 @@ def classify_voice_intent(
 
     motion_text = normalize_motion_command(normalized, policy.motion_aliases)
     if motion_text:
-        return VoiceIntent('task_a_motion', motion_text)
+        return VoiceIntent('motion', motion_text)
 
     if any(word == normalized or word in normalized for word in policy.incomplete_motion_words):
         return VoiceIntent('unsupported_motion', normalized, '请说左转或右转。')
 
-    if contains_any(normalized, policy.checkout_words):
-        return VoiceIntent('checkout', normalized)
     if contains_any(normalized, policy.cancel_words):
         return VoiceIntent('global_cancel', normalized, '已取消当前任务。')
     if contains_any(normalized, policy.system_feedback_words):
         return VoiceIntent('system_feedback', normalized)
     if contains_any(normalized, policy.general_qa_words):
         return VoiceIntent('general_qa', normalized)
-    if contains_any(normalized, policy.sales_need_words) or contains_any(normalized, policy.product_words):
-        return VoiceIntent('sales', normalized)
+    if contains_any(normalized, policy.inspection_words):
+        return VoiceIntent('inspection_command', normalized)
     if is_background_or_debug_talk(normalized, policy):
         return VoiceIntent('ignore', normalized)
     if ignore_unknown_voice:
         return VoiceIntent('ignore', normalized)
-    return VoiceIntent('sales', normalized)
+    return VoiceIntent('inspection_command', normalized)
 
 
 def normalize_motion_command(text: str, aliases: Tuple[Tuple[str, str], ...]) -> str:
@@ -110,9 +106,8 @@ def is_close_voice_session(text: str, policy: VoiceRoutingPolicy) -> bool:
 def is_background_or_debug_talk(text: str, policy: VoiceRoutingPolicy) -> bool:
     if contains_any(text, policy.background_words):
         return True
-    if len(text) >= 14 and not (
-        contains_any(text, policy.sales_need_words)
-        or contains_any(text, policy.product_words)
+    if len(text) >= 18 and not (
+        contains_any(text, policy.inspection_words)
         or contains_any(text, policy.general_qa_words)
     ):
         return True
@@ -135,19 +130,13 @@ def safe_wav_duration_sec(
                 return duration
     except Exception:
         pass
-
     estimate = estimate_pcm_duration(audio_path, sample_rate, sample_width, channels)
     if estimate is not None:
         return estimate
     return float(default_sec)
 
 
-def estimate_pcm_duration(
-    audio_path: str,
-    sample_rate: int,
-    sample_width: int,
-    channels: int,
-) -> Optional[float]:
+def estimate_pcm_duration(audio_path: str, sample_rate: int, sample_width: int, channels: int) -> Optional[float]:
     try:
         size = os.path.getsize(audio_path)
     except OSError:
@@ -155,6 +144,4 @@ def estimate_pcm_duration(
     bytes_per_second = sample_rate * sample_width * channels
     if bytes_per_second <= 0 or size <= 0:
         return None
-    # WAV headers are small; subtracting 44 keeps estimates sane for normal PCM WAVs
-    # and still yields a conservative timeout for malformed files.
     return max(0.1, (max(0, size - 44) / float(bytes_per_second)))

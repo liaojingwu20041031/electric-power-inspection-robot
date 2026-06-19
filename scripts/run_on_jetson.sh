@@ -93,7 +93,7 @@ case "${MODE}" in
     shift || true
     exec ros2 launch ylhb_llm llm.launch.py "$@"
     ;;
-  competition)
+  inspection)
     shift || true
     export DISPLAY="${DISPLAY:-:0}"
     if [ "${DISPLAY}" = "localhost:10.0" ] || [[ "${DISPLAY}" == localhost:* ]]; then
@@ -129,8 +129,8 @@ Modes:
   navigation   Start Nav2 with default map ${WS_DIR}/src/my_map.yaml
   zed          Start ZED 2i wrapper
   perception   Start Jetson YOLO runtime with TensorRT engine
-  llm          Start retail AI task layer, image service, and voice I/O nodes
-  competition  Start display UI and system supervisor for competition control
+  llm          Start inspection AI task layer and voice I/O nodes
+  inspection   Start inspection display UI and system supervisor
   teleop       Start keyboard teleop
 
 Examples:
@@ -140,7 +140,7 @@ Examples:
   $0 perception model_path:=${WS_DIR}/src/ylhb_perception/models/yolo26.engine backend:=tensorrt imgsz:=960 half:=true
   $0 llm enable_voice:=false enable_tts:=false
   $0 llm enable_voice:=true enable_tts:=true audio_input_device:=plughw:CARD=Luna,DEV=0 audio_output_device:=plughw:CARD=Luna,DEV=0
-  $0 competition fullscreen:=true
+  $0 inspection fullscreen:=true
   $0 navigation map:=${WS_DIR}/src/my_map.yaml
 EOF
     ;;

@@ -1,128 +1,50 @@
-retail_task_node:
+inspection_task_node:
   ros__parameters:
-    # 商品库配置文件。里面维护 16 类商品的标准 ID、中文名、别名、价格、推荐权重。
-    # 比赛现场如果商品名称、别名或价格变化，优先改这个文件，不改代码。
-    products_file: /home/nvidia/ros2_ws/src/ylhb_llm/config/products.yaml
-
-    # 文字任务输入话题。命令行输入和 voice_input_node 的 ASR 结果都会发到这里。
-    # 示例内容：来瓶可乐 / 拿一瓶矿泉水 / 一共多少钱
-    text_command_topic: /retail_ai/text_command
-
-    # 视觉定位结果话题。来自 ylhb_perception/object_localizer_node.py。
-    # retail_task_node 会用这个话题确认货架上真实存在的商品，避免大模型凭空推荐。
+    text_command_topic: /inspection_ai/text_command
     localized_objects_topic: /perception/localized_objects
-
-    # AI 层发给导航/抓取层的结构化任务事件话题。
-    # 导航/抓取层应订阅它，然后执行去货架、抓取、去结算区、放置等动作。
-    task_event_topic: /retail_ai/task_event
-
-    # 导航/抓取层回传执行状态的话题。
-    # B-1 用 inspect_shelf 成功触发真实货架推荐；B-2 用 place 成功入账；C 用 checkout_inspect/return_start 完成清单和总价播报。
-    task_status_topic: /retail_ai/task_status
-
-    # 播报请求话题。retail_task_node 把所有需要说的话发到这里。
-    # voice_output_node 负责排队、TTS 和播放。
-    say_text_topic: /retail_ai/say_text
-
-    # B-2 销售对话状态。UI 订阅后显示主推商品、备选商品和最近回复。
-    sales_dialogue_status_topic: /retail_ai/sales_dialogue_status
-
-    # 购物车状态话题。用于调试结算区识别出的商品、数量和本地计算出的总价。
-    cart_topic: /retail_ai/cart
-
-    # B-1 任务启动服务。使用 std_srvs/srv/Trigger，任务层自己扫描 task_image_dir。
-    start_b1_service_name: /retail_ai/start_b1_task
-
-    # 任务书图片目录。B-1 要求目录内只有一张 jpg/jpeg/png 图片。
-    task_image_dir: /home/nvidia/ros2_ws/src/ylhb_llm/test_images
-
-    # 显示屏发布的全局系统模式：sleep/ready/mapping/running/fault。
-    system_mode_topic: /retail_ai/system_mode
-
-    # 货架识别结果有效期，单位秒。
-    # 超过这个时间没有新的 /perception/localized_objects，就认为货架结果过期，不做最终推荐。
-    shelf_snapshot_ttl_sec: 2.0
-
-    # DashScope OpenAI 兼容接口地址。中国内地北京地域使用下面这个地址。
-    # 如果使用国际/新加坡地域，需要换成 https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    task_event_topic: /inspection_ai/task_event
+    task_status_topic: /inspection_ai/task_status
+    say_text_topic: /inspection_ai/say_text
+    task_context_status_topic: /inspection_ai/task_context_status
+    start_demo_service_name: /inspection_ai/start_demo_task
+    system_mode_topic: /inspection_ai/system_mode
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-
-    # 视觉理解模型。比赛追求效果优先，默认使用 qwen3.6-plus。
-    # 如果现场网络慢或想降成本，可临时改 qwen3.6-flash。
-    vl_model: qwen3.6-plus
-
-    # 文本意图解析模型。用于复杂口语、多轮补充、商品名称归一化。
-    # 为了效果稳定，默认也使用 qwen3.6-plus。
     chat_model: qwen3.6-plus
-
-    # B-2 语音实时分类模型：只做意图/类别/约束分类，最终选品和执行仍由本地状态机决定。
-    fast_classifier_model: qwen3.6-flash
-    classifier_timeout_sec: 4.0
-    enable_fast_sales_classifier: true
-    classifier_confidence_threshold: 0.72
-    enable_plus_fallback: true
-    plus_fallback_confidence_threshold: 0.62
-    sales_reply_min_chars: 90
-    sales_reply_max_chars: 180
-    voice_requires_confirmation: true
-
-    # 普通文本请求超时，单位秒。用于文字意图解析等。
-    # 太短容易误判超时；太长会影响比赛 60 秒响应限制。
     request_timeout_sec: 12.0
-
-    # 图片理解请求超时，单位秒。qwen3.6-plus 第一次视觉请求可能较慢，所以默认 45 秒。
-    # 如果比赛现场网络稳定，可调到 20~30；如果仍超时，可临时调到 60。
-    vision_timeout_sec: 45.0
-
-    # 是否在 TaskEvent.raw_json 和 CartState.raw_json 中保留调试 JSON。
-    # 调试阶段建议 true；正式比赛如果想减少消息长度可设 false。
+    enable_llm_parse: false
     publish_raw_json: true
 
 basic_motion_command_node:
   ros__parameters:
-    # A-1 基本运动语音/文字入口，和 ASR 结果共用同一个文字话题。
-    text_command_topic: /retail_ai/text_command
-
-    # 显示屏发布的全局系统模式。sleep/fault 下只响应停止；mapping 下允许手动建图运动。
-    system_mode_topic: /retail_ai/system_mode
-
-    # 底盘速度控制话题，base_controller 订阅该话题。
+    text_command_topic: /inspection_ai/text_command
+    system_mode_topic: /inspection_ai/system_mode
     cmd_vel_topic: /cmd_vel
-
-    # 运动拒绝原因通过语音播报，ZLAC 状态用于避免向离线底盘发送非零速度。
-    say_text_topic: /retail_ai/say_text
+    say_text_topic: /inspection_ai/say_text
     zlac_status_topic: /zlac8015d/status
-
-    # 基本运动调试速度。比赛 A-1 只需展示前进/后退/左转/右转，不追求高速。
     linear_speed: 0.12
     angular_speed: 0.45
-
-    # 每条运动指令持续时间，到时自动发布零速度停止。
     motion_duration_sec: 1.0
     publish_rate_hz: 20.0
     require_chassis_online: true
     chassis_status_max_age_sec: 2.5
 
-retail_display_ui_node:
+inspection_display_ui_node:
   ros__parameters:
-    text_command_topic: /retail_ai/text_command
-    system_mode_topic: /retail_ai/system_mode
-    system_command_topic: /retail_ai/system_command
-    system_status_topic: /retail_ai/system_status
-    task_event_topic: /retail_ai/task_event
-    task_status_topic: /retail_ai/task_status
-    say_text_topic: /retail_ai/say_text
-    sales_dialogue_status_topic: /retail_ai/sales_dialogue_status
-    voice_session_status_topic: /retail_ai/voice_session_status
-    voice_command_event_topic: /retail_ai/voice_command_event
-    cart_topic: /retail_ai/cart
-    voice_status_topic: /retail_ai/voice_status
-    start_voice_session_service_name: /retail_ai/start_voice_session
-    stop_voice_session_service_name: /retail_ai/stop_voice_session
-    capture_voice_service_name: /retail_ai/capture_voice
+    text_command_topic: /inspection_ai/text_command
+    system_mode_topic: /inspection_ai/system_mode
+    system_command_topic: /inspection_ai/system_command
+    system_status_topic: /inspection_ai/system_status
+    task_event_topic: /inspection_ai/task_event
+    task_status_topic: /inspection_ai/task_status
+    say_text_topic: /inspection_ai/say_text
+    task_context_status_topic: /inspection_ai/task_context_status
+    voice_session_status_topic: /inspection_ai/voice_session_status
+    voice_command_event_topic: /inspection_ai/voice_command_event
+    voice_status_topic: /inspection_ai/voice_status
+    start_voice_session_service_name: /inspection_ai/start_voice_session
+    stop_voice_session_service_name: /inspection_ai/stop_voice_session
+    capture_voice_service_name: /inspection_ai/capture_voice
     localized_objects_topic: /perception/localized_objects
-    start_b1_service_name: /retail_ai/start_b1_task
-    task_image_dir: /home/nvidia/ros2_ws/src/ylhb_llm/test_images
     cmd_vel_topic: /cmd_vel
     initial_system_mode: ready
     fullscreen: true
@@ -131,9 +53,9 @@ retail_display_ui_node:
 
 system_supervisor_node:
   ros__parameters:
-    system_command_topic: /retail_ai/system_command
-    system_status_topic: /retail_ai/system_status
-    system_mode_topic: /retail_ai/system_mode
+    system_command_topic: /inspection_ai/system_command
+    system_status_topic: /inspection_ai/system_status
+    system_mode_topic: /inspection_ai/system_mode
     cmd_vel_topic: /cmd_vel
     workspace_dir: /home/nvidia/ros2_ws
     ros_distro: humble
@@ -156,43 +78,26 @@ system_supervisor_node:
 
 voice_input_node:
   ros__parameters:
-    # ASR 识别出的文字发布到这个话题，retail_task_node 会按文字指令处理。
-    text_command_topic: /retail_ai/text_command
-    capture_voice_service_name: /retail_ai/capture_voice
-
-    # ALSA 录音设备。default 表示系统默认麦克风。
-    # eMeet Luna 推荐使用 plughw:CARD=Luna,DEV=0；audio_device 保留兼容旧启动命令。
+    text_command_topic: /inspection_ai/text_command
+    capture_voice_service_name: /inspection_ai/capture_voice
     audio_device: default
     audio_input_device: default
-
-    # 每次录音时长，单位秒。短命令推荐 3~5 秒。
-    # 太短可能截断语音，太长会增加 ASR 延迟。
     record_sec: 4.0
-
-    # 录音采样率。中文短语音识别用 16000 通常足够。
     sample_rate: 16000
-
-    # 是否启用语音输入。默认 false，避免没有声卡或 API Key 时误触发。
-    # 接上 eMeet Luna 并确认 arecord -l 正常后再设 true。
     enabled: false
-
-    # DashScope OpenAI 兼容接口地址，和 retail_task_node 保持一致。
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-
-    # ASR 模型。后续如切换实时 WebSocket ASR，需要配合代码改造。
     asr_model: qwen3-asr-flash
-
-    # ASR 请求超时，单位秒。现场短语音建议 10~15 秒以内。
     request_timeout_sec: 15.0
 
 voice_session_node:
   ros__parameters:
-    voice_command_event_topic: /retail_ai/voice_command_event
-    voice_session_status_topic: /retail_ai/voice_session_status
-    say_text_topic: /retail_ai/say_text
-    voice_status_topic: /retail_ai/voice_status
-    start_voice_session_service_name: /retail_ai/start_voice_session
-    stop_voice_session_service_name: /retail_ai/stop_voice_session
+    voice_command_event_topic: /inspection_ai/voice_command_event
+    voice_session_status_topic: /inspection_ai/voice_session_status
+    say_text_topic: /inspection_ai/say_text
+    voice_status_topic: /inspection_ai/voice_status
+    task_context_status_topic: /inspection_ai/task_context_status
+    start_voice_session_service_name: /inspection_ai/start_voice_session
+    stop_voice_session_service_name: /inspection_ai/stop_voice_session
     audio_device: default
     audio_input_device: default
     enabled: false
@@ -215,21 +120,20 @@ voice_session_node:
     asr_fail_standby_threshold: 3
     post_event_listen_pause_sec: 3.0
     ignore_empty_asr_after_event_sec: 6.0
-    sales_followup_timeout_sec: 8.0
+    context_followup_timeout_sec: 8.0
     single_wake_default: true
     voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
-    sales_followup_words: [确认, 确定, 就这个, 我要这个, 开始取货, 帮我拿这个, 换一个, 不要这个, 重新推荐, 取消, 取消任务, 不要了, 不用, 不需要, 算了, 结算, 付款, 多少钱, 总价]
+    followup_words: [确认, 确定, 继续, 暂停, 取消, 停止, 人工接管, 恢复]
 
 voice_command_router_node:
   ros__parameters:
-    voice_command_event_topic: /retail_ai/voice_command_event
-    text_command_topic: /retail_ai/text_command
-    system_command_topic: /retail_ai/system_command
-    sales_dialogue_status_topic: /retail_ai/sales_dialogue_status
-    system_mode_topic: /retail_ai/system_mode
-    task_status_topic: /retail_ai/task_status
-    say_text_topic: /retail_ai/say_text
-    products_file: /home/nvidia/ros2_ws/src/ylhb_llm/config/products.yaml
+    voice_command_event_topic: /inspection_ai/voice_command_event
+    text_command_topic: /inspection_ai/text_command
+    system_command_topic: /inspection_ai/system_command
+    task_context_status_topic: /inspection_ai/task_context_status
+    system_mode_topic: /inspection_ai/system_mode
+    task_status_topic: /inspection_ai/task_status
+    say_text_topic: /inspection_ai/say_text
     ignore_unknown_voice: true
     motion_aliases:
       - "向前进:前进"
@@ -256,56 +160,37 @@ voice_command_router_node:
     incomplete_motion_words: [旋转]
     system_commands:
       - "启动底盘|start_bringup|已发送启动底盘命令。"
-      - "开始比赛|start_competition_stack|已发送开始比赛命令。"
-      - "开始运行|start_competition_stack|已发送开始比赛命令。"
-      - "停止比赛|stop_competition_stack|已发送停止比赛命令。"
+      - "开始巡检|start_robot_stack|已发送启动巡检节点命令。"
+      - "启动巡检|start_robot_stack|已发送启动巡检节点命令。"
+      - "停止巡检|stop_robot_stack|已发送停止巡检节点命令。"
       - "紧急停止|emergency_stop|已发送紧急停止命令。"
       - "急停|emergency_stop|已发送紧急停止命令。"
       - "返回准备状态|return_ready|已发送返回准备状态命令。"
       - "返回准备|return_ready|已发送返回准备状态命令。"
     voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
     safety_words: [急停, 停下, 别动, 刹车, 停止]
-    cancel_words: [取消任务, 取消当前任务, 不要了]
-    checkout_words: [多少钱, 结算, 总价, 一共, 付款]
+    cancel_words: [取消任务, 取消当前任务, 取消巡检, 不要了]
     system_feedback_words: [怎么不说话, 你怎么不说话, 没声音, 听不到, 没有声音, 你没说话, 语音坏了]
-    general_qa_words: [介绍一下自己, 介绍自己, 你是谁, 你能做什么, 你会做什么, 有什么功能, 能干什么, 怎么用, 使用方法, 语音怎么用, 有什么商品, 卖什么, 有哪些东西, 商品列表]
-    sales_need_words: [我要, 我想要, 想买, 买, 拿, 帮我拿, 口渴, 喝水, 渴了, 解渴, 饮料, 喝的, 饿, 吃东西, 吃的, 零食, 水果, 困了, 没精神, 提神, 生活用品, 日用品, 擦嘴, 清洁]
-    background_words: [ai不出来, AI不出来, 差不多, 调试, 报错, 日志, 代码, 网络, 麦克风]
-    sales_followup_words: [确认, 确定, 就这个, 我要这个, 开始取货, 帮我拿这个, 换一个, 不要这个, 重新推荐, 取消, 取消任务, 不要了, 不用, 不需要, 算了, 结算, 付款, 多少钱, 总价]
+    general_qa_words: [介绍一下自己, 介绍自己, 你是谁, 你能做什么, 你会做什么, 有什么功能, 能干什么, 怎么用, 使用方法, 语音怎么用]
+    inspection_words: [开始巡检, 启动巡检, 执行巡检, 巡检任务, 暂停巡检, 恢复巡检, 继续巡检, 取消巡检, 人工接管, 检查点, 开始检查, 检测, 告警, 火源, 烟雾, 漏油, 安全帽, 开关, 刀闸]
+    background_words: [调试, 报错, 日志, 代码, 网络, 麦克风]
+    followup_words: [确认, 确定, 继续, 暂停, 取消, 停止, 人工接管, 恢复]
 
 voice_output_node:
   ros__parameters:
-    # 播报请求输入话题。retail_task_node 会发布 SayText 到这里。
-    say_text_topic: /retail_ai/say_text
-
-    # 播报状态输出话题。用于查看当前是否正在说话、正在播报哪个 task_id。
-    voice_status_topic: /retail_ai/voice_status
-
-    # 是否启用语音输出节点的播放功能。
-    # false 时仍会打印 SAY[...] 日志，方便先调试逻辑。
+    say_text_topic: /inspection_ai/say_text
+    voice_status_topic: /inspection_ai/voice_status
     enabled: false
-
-    # 是否调用云端 TTS 生成语音。
-    # enabled=true 且 tts_enabled=true 时才会真正生成并播放音频。
     tts_enabled: false
-
-    # ALSA 播放设备。default 表示系统默认扬声器。
-    # eMeet Luna 推荐使用 plughw:CARD=Luna,DEV=0；audio_device 保留兼容旧启动命令。
     audio_device: default
     audio_output_device: default
-
-    # DashScope OpenAI 兼容接口地址，和 retail_task_node 保持一致。
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-
-    # TTS 模型。若账号未开通该模型，需要按百炼控制台可用模型 ID 替换。
     tts_model: qwen3-tts-flash
     tts_voice: Serena
     tts_language_type: Chinese
-
-    # TTS 请求超时，单位秒。播报内容较长时可适当调大。
     request_timeout_sec: 10.0
     enable_tts_cache: true
     split_long_tts: true
     tts_segment_max_chars: 70
-    preserve_b2_tts_single_request: false
+    preserve_long_task_tts_single_request: false
     interrupt_current_playback: true

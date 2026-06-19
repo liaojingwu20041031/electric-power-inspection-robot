@@ -14,8 +14,8 @@ from .qwen_client import QwenClient, QwenClientError
 class VoiceInputNode(Node):
     def __init__(self) -> None:
         super().__init__('voice_input_node')
-        self.declare_parameter('text_command_topic', '/retail_ai/text_command')
-        self.declare_parameter('capture_voice_service_name', '/retail_ai/capture_voice')
+        self.declare_parameter('text_command_topic', '/inspection_ai/text_command')
+        self.declare_parameter('capture_voice_service_name', '/inspection_ai/capture_voice')
         self.declare_parameter('audio_device', 'default')
         self.declare_parameter('audio_input_device', 'default')
         self.declare_parameter('record_sec', 4.0)

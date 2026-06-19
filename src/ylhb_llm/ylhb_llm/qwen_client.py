@@ -34,26 +34,16 @@ class QwenClient:
     ) -> str:
         if not self.api_key:
             raise QwenClientError(f'{self.api_key_env} is not set')
-
-        payload: Dict[str, Any] = {
-            'model': model,
-            'messages': messages,
-            'temperature': temperature,
-        }
+        payload: Dict[str, Any] = {'model': model, 'messages': messages, 'temperature': temperature}
         if extra_body:
             payload.update(extra_body)
-
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         request = urllib.request.Request(
             self.base_url + '/chat/completions',
             data=data,
-            headers={
-                'Authorization': f'Bearer {self.api_key}',
-                'Content-Type': 'application/json',
-            },
+            headers={'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'},
             method='POST',
         )
-
         try:
             with urllib.request.urlopen(request, timeout=timeout_sec) as response:
                 body = response.read().decode('utf-8')
@@ -62,60 +52,20 @@ class QwenClient:
             raise QwenClientError(f'DashScope HTTP {exc.code}: {detail}') from exc
         except Exception as exc:
             raise QwenClientError(str(exc)) from exc
-
         try:
             parsed = json.loads(body)
             return parsed['choices'][0]['message']['content']
         except Exception as exc:
             raise QwenClientError(f'Unexpected DashScope response: {body[:500]}') from exc
 
-    def analyze_image(
-        self,
-        image_path: str,
-        model: str,
-        timeout_sec: float,
-        product_names: List[str],
-    ) -> Dict[str, Any]:
-        image_url = self._image_data_url(image_path)
+    def parse_inspection_command(self, text: str, model: str, timeout_sec: float) -> Dict[str, Any]:
         prompt = (
-            '你是智慧零售机器人。请理解任务书图片，客观描述画面中的人物、表情、动作、'
-            '思考气泡或文字提示，再推理用户的潜在需求，但不要直接决定最终商品。'
-            '播报风格参考：“这张图像展示了一个看起来口渴的卡通男孩。他的舌头伸出，'
-            '表情像是在说我好渴，思考气泡中有一杯水，暗示他想要喝水。”'
-            '要求描述完整但不要繁琐，不要使用“肚子咕咕叫”“明显急需”等夸张脑补；'
-            '如果画面没有明确信息，就说“可能”。请只输出 JSON，不要 Markdown。字段：'
-            'description_cn: 适合语音播报的2到3个中文短句，先描述可见画面，再说明需求，'
-            '总长度控制在45到90个汉字；'
-            'need: 一个英文意图标签，例如 thirsty/hungry/energy/tissue/hygiene/drink/snack/nutrition；'
-            'preferred_categories: 按推荐优先级排列的商品类别或商品名数组；'
-            'avoid_categories: 明显不适合的类别数组；'
-            'confidence: 0到1。'
-            f'可选商品范围包括：{", ".join(product_names)}。'
-        )
-        content = [
-            {'type': 'image_url', 'image_url': {'url': image_url}},
-            {'type': 'text', 'text': prompt},
-        ]
-        text = self.chat_completion(
-            model=model,
-            messages=[{'role': 'user', 'content': content}],
-            timeout_sec=timeout_sec,
-            temperature=0.0,
-            extra_body={'enable_thinking': False},
-        )
-        return parse_json_object(text)
-
-    def parse_command(
-        self,
-        text: str,
-        model: str,
-        timeout_sec: float,
-        product_names: List[str],
-    ) -> Dict[str, Any]:
-        prompt = (
-            '你是智慧零售机器人任务解析器。请把用户口语命令解析成 JSON，不要 Markdown。'
-            '字段：intent，取 pick_item/checkout/unknown；item_name；need；confidence；reply_cn。'
-            f'商品范围：{", ".join(product_names)}。用户命令：{text}'
+            '你是电力巡检机器人任务解析器。请把用户中文口语命令解析成 JSON，不要 Markdown。'
+            '本系统面向电力巡检任务，不处理与巡检无关的消费类指令。'
+            '字段：intent, target_id, target_name, destination, reply_cn, confidence, requires_ack。'
+            'intent 只能从 start_inspection, pause_inspection, resume_inspection, cancel_inspection, '
+            'manual_takeover, inspect_checkpoint, emergency_stop, inspection_query, unknown 中选择。'
+            f'用户命令：{text}'
         )
         out = self.chat_completion(
             model=model,
@@ -126,165 +76,20 @@ class QwenClient:
         )
         return parse_json_object(out)
 
-    def parse_sales_dialogue(
-        self,
-        text: str,
-        model: str,
-        timeout_sec: float,
-        products: List[Dict[str, Any]],
-        dialogue: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        system_prompt = (
-            '你是智慧零售比赛机器人的销售对话决策器。'
-            '你的任务是根据用户中文口语、历史对话和商品清单，判断是否执行购买、推荐商品、追问、取消或未知。'
-            '你不是只给一个商品，而是像真实销售员一样：如果用户需求明确但商品未明确，给出一个主推商品，'
-            '同时给出1到2个相关备选商品。主推商品必须最符合用户当前需求，备选商品必须和需求相关。'
-            '如果 source=voice，即使用户明确说出商品名或别名，也必须 action=propose_product，'
-            'requires_confirmation=true，不允许直接 execute_pick。'
-            '如果 source=text，用户明确说出商品名或别名，可以 action=execute_pick。'
-            '如果用户表达需求但没有明确商品，action=propose_product。'
-            '如果信息不足，action=ask_clarification。'
-            '只有用户明确说“确认/确定/就这个/我要这个/开始取货/帮我拿这个”，'
-            '并且 dialogue.pending_proposal 存在时，才允许 action=execute_pick，并选择当前主推商品。'
-            '用户说“是/对/好/可以”不等于最终执行确认。'
-            '用户说“不需要”时必须根据 dialogue.waiting_for 判断：ask_addon 表示不需要搭配，'
-            'confirm_product 表示取消当前推荐。'
-            '如果用户说换一个，避开 rejected_product_ids 和 last_product_id，优先从 related_products 或同类商品中重新推荐。'
-            '如果用户说不要碳酸的、便宜点、健康点等约束，根据上下文和约束重新排序推荐。'
-            '如果用户取消，action=cancel。'
-            '不要处理前进、后退、左转、右转、停止、结算等控制类任务，这些会由系统外部处理。'
-            '只能从给定商品清单中选择商品，禁止创造商品。'
-            '输出必须是 JSON，不要 Markdown，不要额外解释。'
-            '允许的 action：execute_pick/propose_product/ask_clarification/cancel/unknown。'
-            '字段：task, action, need, primary_product_id, primary_product_name, related_products, '
-            'reply_cn, confidence, requires_confirmation, reason_cn。'
-            'related_products 中每项字段：product_id, product_name, reason_cn。'
+    def analyze_inspection_image(self, image_path: str, model: str, timeout_sec: float, prompt_hint: str = '') -> Dict[str, Any]:
+        image_url = self._image_data_url(image_path)
+        prompt = (
+            '你是电力巡检机器人视觉分析助手。请根据图片识别巡检相关目标或异常。'
+            '重点关注：人员、安全帽、开关/刀闸状态、表计/指示灯、漏油、火源、烟雾、异物、障碍物。'
+            '请只输出 JSON，不要 Markdown。字段：summary_cn, findings, alarms, confidence。'
+            'findings 每项字段：target_type, target_name, state, bbox_hint, confidence, description_cn。'
+            'alarms 每项字段：level, type, description_cn。'
+            f'补充提示：{prompt_hint}'
         )
-        user_payload = {
-            'current_user_text': text,
-            'dialogue': dialogue,
-            'products': products,
-            'allowed_actions': [
-                'execute_pick',
-                'propose_product',
-                'ask_clarification',
-                'cancel',
-                'unknown',
-            ],
-        }
+        content = [{'type': 'image_url', 'image_url': {'url': image_url}}, {'type': 'text', 'text': prompt}]
         out = self.chat_completion(
             model=model,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            timeout_sec=timeout_sec,
-            temperature=0.0,
-            extra_body={'enable_thinking': False},
-        )
-        return parse_json_object(out)
-
-    def parse_dialogue_state_patch(
-        self,
-        text: str,
-        model: str,
-        timeout_sec: float,
-        products: List[Dict[str, Any]],
-        dialogue: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        system_prompt = (
-            '你是智慧零售机器人 B-2 销售对话的上下文语义解释器。'
-            '你的任务不是做动作分类，也不是直接下发执行，而是解释当前用户话语对已有 sales_dialogue 状态的有序影响。'
-            '必须结合当前 pending_product、related_products、rejected_product_ids、constraints、waiting_for、last_reply 和 history。'
-            '不要按关键词机械判断，要解释整句话的最终有效意图。'
-            '当确认与否定、反悔、纠正、新约束、疑问冲突时，后出现或更具体的否定/反悔/纠正/新约束优先。'
-            '只要有疑问、不确定、反悔、纠正或新约束，execution.should_execute 必须为 false。'
-            '只有用户明确肯定当前待确认商品，且无疑问/否定/反悔/纠正/新约束时，才可以建议执行。'
-            '你只输出状态操作和回复计划，不拥有执行权；本地 guard 会最终决定是否取货。'
-            '只能从给定商品清单中引用商品，禁止创造商品。'
-            '输出必须是 JSON，不要 Markdown，不要额外解释。'
-            'schema_version 固定为 "2.1"，policy_version 固定为 "b2_state_patch_v2.1"。'
-            '字段：schema_version, policy_version, understanding_cn, user_intent_summary, context_reference, '
-            'utterance_properties, state_ops, execution, response_plan, confidence, needs_clarification。'
-            'context_reference 字段：refers_to_pending_product, referenced_product_id, referenced_related_index。'
-            'utterance_properties 字段：is_question, is_negation, is_correction, has_conflicting_intents, later_intent_overrides_confirmation, has_new_constraints。'
-            'state_ops 是有序数组，每项字段 op, product_id, constraints, reason_cn。'
-            '允许 op：confirm_pending_product, reject_pending_product, cancel_dialogue, ask_explanation, '
-            'add_constraints, clear_constraints, request_recommendation, request_catalog, request_status, '
-            'select_related_product, select_mentioned_product, clarify_user_need, close_voice_request, no_state_change。'
-            'constraints 可包含 positive_constraints 和 negative_constraints 数组，元素可用 cheap/healthy/sweet/salty/filling/refreshing/non_carbonated/carbonated/expensive/cold。'
-            'execution 字段：should_execute, execute_product_id, reason_cn。'
-            'response_plan 字段：reply_cn。'
-        )
-        user_payload = {
-            'current_user_text': text,
-            'dialogue': dialogue,
-            'products': products,
-            'allowed_state_ops': [
-                'confirm_pending_product',
-                'reject_pending_product',
-                'cancel_dialogue',
-                'ask_explanation',
-                'add_constraints',
-                'clear_constraints',
-                'request_recommendation',
-                'request_catalog',
-                'request_status',
-                'select_related_product',
-                'select_mentioned_product',
-                'clarify_user_need',
-                'close_voice_request',
-                'no_state_change',
-            ],
-        }
-        out = self.chat_completion(
-            model=model,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            timeout_sec=timeout_sec,
-            temperature=0.0,
-            extra_body={'enable_thinking': False},
-        )
-        parsed = parse_json_object(out)
-        parsed.setdefault('schema_version', '2.1')
-        parsed.setdefault('policy_version', 'b2_state_patch_v2.1')
-        return parsed
-
-    def classify_sales_category(
-        self,
-        text: str,
-        model: str,
-        timeout_sec: float,
-        dialogue: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        system_prompt = (
-            '你是智慧零售机器人 B-2 语音销售分类器。'
-            '你只负责把用户中文口语分类成结构化 JSON，不负责生成完整销售回复，不负责决定最终执行取货。'
-            '必须快速、保守、稳定。输出必须是 JSON，不要 Markdown。'
-            '字段：dialogue_action: recommend/confirm/modify/cancel/ask_catalog/checkout/motion/unknown；'
-            'need_category: thirsty/drink/hungry/snack/fruit/nutrition/energy/sleepy/hygiene/tissue/clean/daily_goods/unknown；'
-            'product_mention: 用户明确提到的商品名，没有则为空；'
-            'positive_constraints: 数组，可选 cheap/healthy/sweet/salty/filling/refreshing/non_carbonated；'
-            'negative_constraints: 数组，可选 carbonated/expensive/sweet/cold；'
-            'confidence: 0到1；reason_cn: 20字以内分类原因。'
-            '注意：用户说确认/确定/就这个/我要这个/开始取货/帮我拿这个，dialogue_action=confirm。'
-            '用户说换一个/不要这个/便宜点/不要碳酸的，dialogue_action=modify。'
-            '用户说不买了/取消/算了，dialogue_action=cancel。'
-            '用户问你卖什么，dialogue_action=ask_catalog。'
-            '用户说是/对/好/可以，不要输出 confirm，按上下文输出 recommend/unknown。'
-        )
-        payload = {
-            'current_user_text': text,
-            'dialogue': dialogue,
-        }
-        out = self.chat_completion(
-            model=model,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
-            ],
+            messages=[{'role': 'user', 'content': content}],
             timeout_sec=timeout_sec,
             temperature=0.0,
             extra_body={'enable_thinking': False},
@@ -294,99 +99,40 @@ class QwenClient:
     def transcribe_audio(self, audio_path: str, model: str, timeout_sec: float) -> str:
         audio_url = self._audio_data_url(audio_path)
         endpoint = self._dashscope_generation_url()
-        payload = {
-            'model': model,
-            'input': {
-                'messages': [
-                    {
-                        'role': 'user',
-                        'content': [
-                            {'audio': audio_url},
-                        ],
-                    },
-                ],
-            },
-        }
-        body = self._post_dashscope_json(
-            endpoint=endpoint,
-            payload=payload,
-            timeout_sec=timeout_sec,
-            error_prefix=self._asr_error_prefix(endpoint, model, audio_path, audio_url),
-        )
+        payload = {'model': model, 'input': {'messages': [{'role': 'user', 'content': [{'audio': audio_url}]}]}}
+        body = self._post_dashscope_json(endpoint, payload, timeout_sec, self._asr_error_prefix(endpoint, model, audio_path, audio_url))
         try:
             parsed = json.loads(body)
         except json.JSONDecodeError as exc:
             raise QwenClientError(f'Unexpected DashScope ASR response: {body[:500]}') from exc
-
         text = self._extract_text(parsed).strip()
         if not text:
             raise QwenClientError(f'DashScope ASR response has no text: {body[:500]}')
         return text
 
     def synthesize_speech(self, text: str, model: str, timeout_sec: float) -> Optional[bytes]:
-        return self.synthesize_speech_bytes(
-            text=text,
-            model=model,
-            timeout_sec=timeout_sec,
-        )
+        return self.synthesize_speech_bytes(text=text, model=model, timeout_sec=timeout_sec)
 
-    def synthesize_speech_bytes(
-        self,
-        text: str,
-        model: str,
-        timeout_sec: float,
-        voice: str = 'Serena',
-        language_type: str = 'Chinese',
-    ) -> Optional[bytes]:
+    def synthesize_speech_bytes(self, text: str, model: str, timeout_sec: float, voice: str = 'Serena', language_type: str = 'Chinese') -> Optional[bytes]:
         if not self.api_key:
             raise QwenClientError(f'{self.api_key_env} is not set')
-
         endpoint = self._dashscope_generation_url()
-        payload = {
-            'model': model,
-            'input': {
-                'text': text,
-                'voice': voice,
-                'language_type': language_type,
-            },
-        }
-        body = self._post_dashscope_json(
-            endpoint=endpoint,
-            payload=payload,
-            timeout_sec=timeout_sec,
-            error_prefix='DashScope TTS',
-        )
-
+        payload = {'model': model, 'input': {'text': text, 'voice': voice, 'language_type': language_type}}
+        body = self._post_dashscope_json(endpoint, payload, timeout_sec, 'DashScope TTS')
         try:
             parsed = json.loads(body)
         except json.JSONDecodeError as exc:
             raise QwenClientError(f'Unexpected DashScope TTS response: {body[:500]}') from exc
-
         audio_url = self._extract_audio_url(parsed)
         if not audio_url:
             raise QwenClientError(f'DashScope TTS response has no audio url: {body[:500]}')
         return self._download_url(audio_url, timeout_sec)
 
-    def _post_dashscope_json(
-        self,
-        endpoint: str,
-        payload: Dict[str, Any],
-        timeout_sec: float,
-        error_prefix: str,
-    ) -> str:
+    def _post_dashscope_json(self, endpoint: str, payload: Dict[str, Any], timeout_sec: float, error_prefix: str) -> str:
         if not self.api_key:
             raise QwenClientError(f'{self.api_key_env} is not set')
-
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        request = urllib.request.Request(
-            endpoint,
-            data=data,
-            headers={
-                'Authorization': f'Bearer {self.api_key}',
-                'Content-Type': 'application/json',
-            },
-            method='POST',
-        )
+        request = urllib.request.Request(endpoint, data=data, headers={'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'}, method='POST')
         try:
             with urllib.request.urlopen(request, timeout=timeout_sec) as response:
                 return response.read().decode('utf-8')
@@ -419,17 +165,12 @@ class QwenClient:
             audio_size = os.path.getsize(audio_path)
         except OSError:
             audio_size = -1
-        return (
-            'DashScope ASR '
-            f'endpoint={endpoint} model={model} audio_bytes={audio_size} '
-            f'audio_prefix={audio_url[:22]}'
-        )
+        return f'DashScope ASR endpoint={endpoint} model={model} audio_bytes={audio_size} audio_prefix={audio_url[:22]}'
 
     def _extract_text(self, parsed: Dict[str, Any]) -> str:
         candidates: List[str] = []
         self._collect_text_values(parsed.get('text'), candidates)
         self._collect_text_values(parsed.get('transcription'), candidates)
-
         output = parsed.get('output')
         if isinstance(output, dict):
             self._collect_text_values(output.get('text'), candidates)
@@ -453,9 +194,8 @@ class QwenClient:
                 candidates.append(stripped)
             return
         if isinstance(value, dict):
-            self._collect_text_values(value.get('text'), candidates)
-            self._collect_text_values(value.get('transcription'), candidates)
-            self._collect_text_values(value.get('content'), candidates)
+            for key in ('text', 'transcription', 'content'):
+                self._collect_text_values(value.get(key), candidates)
             return
         if isinstance(value, list):
             for item in value:
@@ -472,13 +212,12 @@ class QwenClient:
             choices = output.get('choices')
             if isinstance(choices, list):
                 for choice in choices:
-                    if not isinstance(choice, dict):
-                        continue
-                    message = choice.get('message')
-                    if isinstance(message, dict):
-                        audio = message.get('audio')
-                        if isinstance(audio, dict) and isinstance(audio.get('url'), str):
-                            return audio['url']
+                    if isinstance(choice, dict):
+                        message = choice.get('message')
+                        if isinstance(message, dict):
+                            audio = message.get('audio')
+                            if isinstance(audio, dict) and isinstance(audio.get('url'), str):
+                                return audio['url']
         audio = parsed.get('audio')
         if isinstance(audio, dict) and isinstance(audio.get('url'), str):
             return audio['url']

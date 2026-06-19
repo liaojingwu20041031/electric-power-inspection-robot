@@ -24,10 +24,10 @@ class BasicMotionCommandNode(Node):
     def __init__(self) -> None:
         super().__init__('basic_motion_command_node')
 
-        self.declare_parameter('text_command_topic', '/retail_ai/text_command')
-        self.declare_parameter('system_mode_topic', '/retail_ai/system_mode')
+        self.declare_parameter('text_command_topic', '/inspection_ai/text_command')
+        self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('say_text_topic', '/retail_ai/say_text')
+        self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
         self.declare_parameter('zlac_status_topic', '/zlac8015d/status')
         self.declare_parameter('linear_speed', 0.12)
         self.declare_parameter('angular_speed', 0.45)

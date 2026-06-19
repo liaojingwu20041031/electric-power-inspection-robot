@@ -17,8 +17,8 @@ from .voice_stability import safe_wav_duration_sec
 class VoiceOutputNode(Node):
     def __init__(self) -> None:
         super().__init__('voice_output_node')
-        self.declare_parameter('say_text_topic', '/retail_ai/say_text')
-        self.declare_parameter('voice_status_topic', '/retail_ai/voice_status')
+        self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
+        self.declare_parameter('voice_status_topic', '/inspection_ai/voice_status')
         self.declare_parameter('enabled', False)
         self.declare_parameter('tts_enabled', False)
         self.declare_parameter('audio_device', 'default')
@@ -31,7 +31,7 @@ class VoiceOutputNode(Node):
         self.declare_parameter('enable_tts_cache', True)
         self.declare_parameter('split_long_tts', True)
         self.declare_parameter('tts_segment_max_chars', 70)
-        self.declare_parameter('preserve_b2_tts_single_request', True)
+        self.declare_parameter('preserve_long_task_tts_single_request', True)
         self.declare_parameter('interrupt_current_playback', True)
 
         self.enabled = bool(self.get_parameter('enabled').value)
@@ -46,8 +46,8 @@ class VoiceOutputNode(Node):
         self.enable_tts_cache = bool(self.get_parameter('enable_tts_cache').value)
         self.split_long_tts = bool(self.get_parameter('split_long_tts').value)
         self.tts_segment_max_chars = int(self.get_parameter('tts_segment_max_chars').value)
-        self.preserve_b2_tts_single_request = bool(
-            self.get_parameter('preserve_b2_tts_single_request').value)
+        self.preserve_long_task_tts_single_request = bool(
+            self.get_parameter('preserve_long_task_tts_single_request').value)
         self.interrupt_current_playback = bool(
             self.get_parameter('interrupt_current_playback').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
@@ -189,7 +189,7 @@ class VoiceOutputNode(Node):
     def should_split_tts(self, task_id: str, text: str) -> bool:
         if not self.split_long_tts:
             return False
-        if self.preserve_b2_tts_single_request and task_id.startswith(('text_', 'b2_', 'b2_pick_')):
+        if self.preserve_long_task_tts_single_request and task_id.startswith(('text_', 'inspection_', 'inspect_')):
             return False
         return len(text.strip()) > self.tts_segment_max_chars
 
