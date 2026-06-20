@@ -23,7 +23,7 @@ def latched_qos() -> QoSProfile:
 
 
 def workspace_path(*parts: str) -> str:
-    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL'))
     return os.path.join(workspace_dir, *parts)
 
 
@@ -45,7 +45,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('system_status_topic', '/inspection_ai/system_status')
         self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('workspace_dir', os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws')))
+        self.declare_parameter('workspace_dir', os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL')))
         self.declare_parameter('ros_distro', 'humble')
         self.declare_parameter('map_output_dir', workspace_path('src', 'maps'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))

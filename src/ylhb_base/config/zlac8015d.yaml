@@ -33,4 +33,4 @@ zlac8015d_canopen_controller:
     # 驱动器内部减速度参数，单位取决于 ZLAC8015D 协议。数值越大减速越快。
     profile_deceleration: 100
     # 本地协议文档目录，仅用于调试/查阅，不影响运行控制逻辑。
-    protocol_docs_dir: "/home/nvidia/ros2_ws/官方通信协议"
+    protocol_docs_dir: "/home/nvidia/ros2_DL/官方通信协议"

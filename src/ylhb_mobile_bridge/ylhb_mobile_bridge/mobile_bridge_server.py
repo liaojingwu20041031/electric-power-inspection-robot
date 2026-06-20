@@ -24,11 +24,9 @@ from .schemas import (
 def task_to_text(command: TaskCommand) -> str:
     if command.text:
         return command.text
-    if command.task == 'pickup_product':
-        product = command.product or '商品'
-        target = command.target or '结算区'
-        return f'请帮我拿{product}并送到{target}'
-    return f'执行任务：{command.task}'
+    if command.command:
+        return f'收到任务指令：{command.command}'
+    return '收到通用任务指令'
 
 
 def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAPI:

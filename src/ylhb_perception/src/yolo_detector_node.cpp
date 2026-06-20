@@ -141,7 +141,7 @@ public:
     declare_parameter<std::string>("detections_topic", "/perception/detections");
     declare_parameter<std::string>("debug_image_topic", "/perception/debug_image");
     declare_parameter<std::string>(
-      "model_path", "/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine");
+      "model_path", "/home/nvidia/ros2_DL/src/ylhb_perception/models/yolo26.engine");
     declare_parameter<std::string>("backend", "tensorrt");
     declare_parameter<double>("confidence_threshold", 0.35);
     declare_parameter<double>("iou_threshold", 0.45);

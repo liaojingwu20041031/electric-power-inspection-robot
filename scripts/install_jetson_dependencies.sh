@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WS_DIR="${WS_DIR:-$HOME/ros2_ws}"
+WS_DIR="${WS_DIR:-$HOME/ros2_DL}"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 ROSDISTRO_INDEX_URL="${ROSDISTRO_INDEX_URL:-https://mirrors.tuna.tsinghua.edu.cn/github-raw/ros/rosdistro/master/index-v4.yaml}"
 export ROSDISTRO_INDEX_URL

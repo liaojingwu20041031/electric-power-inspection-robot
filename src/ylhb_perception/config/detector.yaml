@@ -11,10 +11,10 @@ yolo_detector_node:
 
     # 模型路径。模型统一放在 ylhb_perception 包内，避免散落到其它目录。
     # 默认运行 Jetson 本机由 ONNX 编译出的 TensorRT FP16 engine。
-    # 源模型：~/ros2_ws/src/ylhb_perception/models/yolo26.pt
-    # 中间模型：~/ros2_ws/src/ylhb_perception/models/yolo26.onnx
-    # 推理模型：~/ros2_ws/src/ylhb_perception/models/yolo26.engine
-    model_path: /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine
+    # 源模型：~/ros2_DL/src/ylhb_perception/models/yolo26.pt
+    # 中间模型：~/ros2_DL/src/ylhb_perception/models/yolo26.onnx
+    # 推理模型：~/ros2_DL/src/ylhb_perception/models/yolo26.engine
+    model_path: /home/nvidia/ros2_DL/src/ylhb_perception/models/yolo26.engine
 
     # 后端名称，主要用于日志标识；C++ 节点实际直接用 TensorRT Runtime 加载 .engine。
     backend: tensorrt

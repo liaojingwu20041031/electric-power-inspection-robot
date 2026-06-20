@@ -6,12 +6,10 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/RecognizedProduct.msg"
   "msg/TaskEvent.msg"
   "msg/TaskStatus.msg"
   "msg/SayText.msg"
   "msg/VoiceStatus.msg"
-  "msg/CartState.msg"
   DEPENDENCIES std_msgs
 )
 

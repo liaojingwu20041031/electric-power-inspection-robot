@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def workspace_path(*parts):
-    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL'))
     return str(Path(workspace_dir).joinpath(*parts))
 
 

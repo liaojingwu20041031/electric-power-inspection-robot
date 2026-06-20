@@ -51,7 +51,7 @@ class MobileRosBridge(Node):
             'host': '0.0.0.0',
             'port': 8000,
             'cmd_vel_topic': '/cmd_vel',
-            'text_command_topic': '/retail_ai/text_command',
+            'text_command_topic': '/inspection_ai/text_command',
             'odom_topic': '/odom',
             'scan_topic': '/scan',
             'map_topic': '/map',
@@ -61,8 +61,8 @@ class MobileRosBridge(Node):
             'max_linear_speed': 0.15,
             'max_angular_speed': 0.5,
             'default_cmd_duration_ms': 300,
-            'workspace_dir': '/home/nvidia/ros2_ws',
-            'default_map_path': '/home/nvidia/ros2_ws/src/my_map',
+            'workspace_dir': '/home/nvidia/ros2_DL',
+            'default_map_path': '/home/nvidia/ros2_DL/src/my_map',
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)

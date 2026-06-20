@@ -19,7 +19,7 @@ class YoloDetectorNode(Node):
         self.declare_parameter('image_topic', '/zed/zed_node/rgb/color/rect/image')
         self.declare_parameter('detections_topic', '/perception/detections')
         self.declare_parameter('debug_image_topic', '/perception/debug_image')
-        workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+        workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL'))
         default_model = os.path.join(
             workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
         self.declare_parameter('model_path', default_model)

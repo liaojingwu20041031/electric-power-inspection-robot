@@ -68,10 +68,10 @@ bt_navigator:
     # 行为树内部 TF 查询容忍时间；实车/Foxglove 目标时间戳会有几十毫秒抖动。
     transform_tolerance: 1.5
     # 默认行为树禁用恢复动作，失败时不再原地急转或后退。
-    default_bt_xml_filename: "/home/nvidia/ros2_ws/src/ylhb_base/config/nav2_no_recovery.xml"
-    default_nav_to_pose_bt_xml: "/home/nvidia/ros2_ws/src/ylhb_base/config/nav2_no_recovery.xml"
+    default_bt_xml_filename: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_no_recovery.xml"
+    default_nav_to_pose_bt_xml: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_no_recovery.xml"
     # 多点导航仍保留原文件，但当前只启用 navigate_to_pose。
-    default_nav_through_poses_bt_xml: "/home/nvidia/ros2_ws/install/ylhb_base/share/ylhb_base/behavior_trees/navigate_through_poses_wait_recovery.xml"
+    default_nav_through_poses_bt_xml: "/home/nvidia/ros2_DL/install/ylhb_base/share/ylhb_base/behavior_trees/navigate_through_poses_wait_recovery.xml"
     # 关闭 Groot 监控，减少无用端口和运行噪声。
     enable_groot_monitoring: False
     navigators: ["navigate_to_pose"]

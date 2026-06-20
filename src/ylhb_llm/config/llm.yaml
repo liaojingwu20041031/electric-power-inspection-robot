@@ -57,11 +57,11 @@ system_supervisor_node:
     system_status_topic: /inspection_ai/system_status
     system_mode_topic: /inspection_ai/system_mode
     cmd_vel_topic: /cmd_vel
-    workspace_dir: /home/nvidia/ros2_ws
+    workspace_dir: /home/nvidia/ros2_DL
     ros_distro: humble
-    map_output_dir: /home/nvidia/ros2_ws/src/maps
-    default_navigation_map: /home/nvidia/ros2_ws/maps/my_map.yaml
-    perception_model_path: /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine
+    map_output_dir: /home/nvidia/ros2_DL/src/maps
+    default_navigation_map: /home/nvidia/ros2_DL/maps/my_map.yaml
+    perception_model_path: /home/nvidia/ros2_DL/src/ylhb_perception/models/yolo26.engine
     embedded_task_layer: true
     enable_voice: false
     enable_voice_session: false

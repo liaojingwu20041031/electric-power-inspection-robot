@@ -556,7 +556,7 @@ private:
     declare_parameter<int>("profile_deceleration", 300);
     declare_parameter<int>("acceleration_rpm_per_sec", 0);
     declare_parameter<int>("deceleration_rpm_per_sec", 0);
-    declare_parameter<std::string>("protocol_docs_dir", "/home/nvidia/ros2_ws/官方通信协议");
+    declare_parameter<std::string>("protocol_docs_dir", "/home/nvidia/ros2_DL/官方通信协议");
   }
 
   void load_parameters()
@@ -849,7 +849,7 @@ private:
   double actual_velocity_unit_per_rpm_ = 10.0;
   int profile_acceleration_ = 300;
   int profile_deceleration_ = 300;
-  std::string protocol_docs_dir_ = "/home/nvidia/ros2_ws/官方通信协议";
+  std::string protocol_docs_dir_ = "/home/nvidia/ros2_DL/官方通信协议";
 
   bool online_ = false;
   bool timed_out_ = false;

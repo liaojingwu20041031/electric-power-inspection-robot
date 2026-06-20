@@ -10,7 +10,7 @@ from launch.substitutions import LaunchConfiguration
 def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_base')
     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
-    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL'))
     preferred_map = os.path.join(workspace_dir, 'maps', 'my_map.yaml')
     fallback_map = os.path.join(workspace_dir, 'src', 'my_map.yaml')
     default_map = preferred_map
@@ -19,9 +19,9 @@ def generate_launch_description():
         default_map = fallback_map
         map_fallback_warning = LogInfo(
             msg=(
-                f'WARN: recommended competition map {preferred_map} does not exist; '
+                f'WARN: recommended map {preferred_map} does not exist; '
                 f'falling back to compatibility map {fallback_map}. '
-                'This is not the recommended competition map path.'
+                'This is not the recommended map path.'
             )
         )
 
@@ -48,7 +48,7 @@ def generate_launch_description():
         msg=(
             'INFO: navigation.launch.py starts Nav2 only. Start '
             'ylhb_base bringup.launch.py first so /odom, /scan, and TF are available. '
-            'AMCL initializes from the map origin by default for competition starts. '
+            'AMCL initializes from the map origin by default for field tests. '
             'If the robot is not near the mapping start point, publish /initialpose '
             'from RViz/Foxglove before sending navigation goals.'
         )

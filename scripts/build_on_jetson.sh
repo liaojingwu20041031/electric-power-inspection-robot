@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WS_DIR="${WS_DIR:-$HOME/ros2_ws}"
+WS_DIR="${WS_DIR:-$HOME/ros2_DL}"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 

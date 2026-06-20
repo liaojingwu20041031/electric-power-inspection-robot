@@ -21,10 +21,12 @@ class TextCommand(BaseModel):
 
 
 class TaskCommand(BaseModel):
-    task: str
-    product: Optional[str] = None
-    target: Optional[str] = None
+    command: Optional[str] = None
     text: Optional[str] = None
+    task_id: Optional[str] = None
+    route_id: Optional[str] = None
+    checkpoint_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChassisTestRequest(VelocityCommand):

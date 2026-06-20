@@ -27,10 +27,10 @@ src/ylhb_perception/models/yolo26.engine
 
 Run the robot with the least privilege practical for the hardware. Avoid broad permissions such as `chmod 777` on serial devices; prefer udev rules or dialout group membership.
 
-Networked services such as DashScope should be enabled only when needed for the competition task layer. Keep `enable_voice` and `enable_tts` disabled unless audio hardware and credentials are ready.
+Networked services such as DashScope should be enabled only when needed for the inspection task layer. Keep `enable_voice` and `enable_tts` disabled unless audio hardware and credentials are ready.
 
 During builds, use the project build script or set `PYTHONNOUSERSITE=1` to prevent user-installed Python packages from shadowing ROS/Ubuntu build tooling.
 
 ## Reporting
 
-For this competition project, report issues through GitHub Issues in the repository. Include the ROS 2 distro, Jetson/JetPack version, launch command, logs, and reproduction steps.
+For this inspection robot initialization framework, report issues through GitHub Issues in the repository. Include the ROS 2 distro, Jetson/JetPack version, launch command, logs, and reproduction steps.

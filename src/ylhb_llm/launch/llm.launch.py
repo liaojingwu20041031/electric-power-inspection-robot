@@ -11,7 +11,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_llm')
-    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL'))
     default_params = os.path.join(pkg_dir, 'config', 'llm.yaml')
     default_map_output_dir = os.path.join(workspace_dir, 'src', 'maps')
     default_perception_model = os.path.join(workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
