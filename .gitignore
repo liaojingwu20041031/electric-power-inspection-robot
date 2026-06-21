@@ -34,6 +34,8 @@ Thumbs.db
 *.log
 core
 core.*
+frames_*.gv
+frames_*.pdf
 
 # Local secrets and machine-specific configuration
 .env
