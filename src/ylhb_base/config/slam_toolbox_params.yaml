@@ -37,8 +37,8 @@ slam_toolbox:
     # General Parameters
     use_scan_matching: true # 是否使用激光扫描匹配以优化里程计，true能提高精度
     use_scan_barycenter: true # 扫描匹配中是否使用扫描重心计算
-    minimum_travel_distance: 0.5 # 恢复到适合完整底盘建图的正常阈值，移动超过这么多米才处理新的一帧扫描
-    minimum_travel_heading: 0.5 # 恢复到适合完整底盘旋转建图的正常阈值，旋转超过这么多弧度才处理新的一帧扫描
+    minimum_travel_distance: 0.10 # 小车移动10cm即加入关键帧，避免地图长时间不更新
+    minimum_travel_heading: 0.10 # 小车旋转约5.7度即加入关键帧，改善原地转向建图
     scan_buffer_size: 10 # 缓存的激光扫描帧数，用于回环检测
     scan_buffer_maximum_scan_distance: 12.0 # 缓存中激光扫描的最大距离
     link_match_minimum_response_fine: 0.1 # 建立相邻节点连接时的最小匹配响应值

@@ -47,12 +47,24 @@ class IMUPublisher : public rclcpp::Node
 			RCLCPP_INFO(this->get_logger(), "imu_topic: %s\r\n", imu_topic.c_str());
 			
 			imu_data.header.frame_id = frame_id;
+			// The vendor packet does not include covariance. Zero covariance is
+			// interpreted by robot_localization as invalid and destabilizes EKF.
+			imu_data.orientation_covariance = {
+				0.01, 0.0, 0.0,
+				0.0, 0.01, 0.0,
+				0.0, 0.0, 0.01};
+			imu_data.angular_velocity_covariance = {
+				0.001, 0.0, 0.0,
+				0.0, 0.001, 0.0,
+				0.0, 0.0, 0.001};
+			imu_data.linear_acceleration_covariance = {
+				0.04, 0.0, 0.0,
+				0.0, 0.04, 0.0,
+				0.0, 0.0, 0.04};
 			imu_pub = this->create_publisher<sensor_msgs::msg::Imu>(imu_topic, 20);
 
 			fd = open_serial(serial_port, baud_rate);
-
-			while(1)
-				imu_read();
+			read_timer = this->create_wall_timer(1ms, [this]() { imu_read(); });
 		}
 
 	private: 
@@ -86,7 +98,7 @@ class IMUPublisher : public rclcpp::Node
 					imu_data.linear_acceleration.y = raw.hi91.acc[1] * GRA_ACC;
 					imu_data.linear_acceleration.z = raw.hi91.acc[2] * GRA_ACC;
 
-					imu_data.header.stamp = rclcpp::Clock().now();
+					imu_data.header.stamp = this->now();
 					
 					imu_pub->publish(imu_data);
 				}
@@ -161,6 +173,7 @@ class IMUPublisher : public rclcpp::Node
 		std::string imu_topic;
 		sensor_msgs::msg::Imu imu_data = sensor_msgs::msg::Imu();
 		rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub;
+		rclcpp::TimerBase::SharedPtr read_timer;
 };
 
 

@@ -219,6 +219,70 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ./scripts/run_on_jetson.sh teleop
 ```
 
+### 5.1 键盘速度参数调节
+
+`teleop_twist_keyboard` 发布 `/cmd_vel` 时，`speed` 控制线速度 `linear.x`，单位 `m/s`；`turn` 控制角速度 `angular.z`，单位 `rad/s`。可以启动时直接指定：
+
+```bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+  --ros-args -p speed:=0.10 -p turn:=0.30
+```
+
+使用脚本时，把参数接在 `teleop` 后面：
+
+```bash
+./scripts/run_on_jetson.sh teleop --ros-args -p speed:=0.10 -p turn:=0.30
+```
+
+键盘控制运行后也可以临时调节当前速度：
+
+```text
+q / z：线速度和角速度同时增加 / 减小 10%
+w / x：只增加 / 减小线速度 speed
+e / c：只增加 / 减小角速度 turn
+k 或其他非运动按键：停止
+```
+
+屏幕上的 `currently: speed ... turn ...` 会显示当前线速度和角速度。建议实机先用 `speed:=0.10`、`turn:=0.30` 低速测试，再逐步增加。
+
+注意：键盘发布的速度仍受底盘最终限幅限制。实机底盘限幅在 `src/ylhb_base/config/base_kinematics.yaml`：
+
+```yaml
+zlac8015d_canopen_controller:
+  ros__parameters:
+    # 最大线速度，单位 m/s。调大前先确认场地、电机和急停安全。
+    max_linear_speed: 0.35
+    # 最大角速度，单位 rad/s。数值越大，原地转向越快。
+    max_angular_speed: 0.55
+```
+
+这两个参数会限制 `/cmd_vel` 输入，超过后由底盘控制器自动限幅。修改后重新启动 bringup 生效：
+
+```bash
+ros2 launch ylhb_base bringup.launch.py
+```
+
+如果调的是 Nav2 自动导航速度，而不是键盘控制速度，还需要同步修改 `src/ylhb_base/config/nav2_params.yaml`：
+
+```yaml
+controller_server:
+  ros__parameters:
+    FollowPath:
+      # Nav2 输出线速度上限，单位 m/s。
+      max_vel_x: 0.15
+      max_speed_xy: 0.15
+      # Nav2 输出角速度上限，单位 rad/s。
+      max_vel_theta: 0.35
+
+velocity_smoother:
+  ros__parameters:
+    # 平滑器最终输出上限：[x, y, theta]。
+    max_velocity: [0.15, 0.0, 0.35]
+    min_velocity: [-0.05, 0.0, -0.35]
+```
+
+建议先小幅调节：线速度每次增加 `0.05 m/s`，角速度每次增加 `0.05 rad/s` 到 `0.10 rad/s`。Nav2 的 `max_vel_x`、`max_speed_xy`、`velocity_smoother.max_velocity[0]` 应保持一致；`max_vel_theta` 与 `velocity_smoother.max_velocity[2]` 应保持一致。
+
 也可以直接发布速度指令：
 
 ```bash
