@@ -126,7 +126,7 @@ Usage: $0 <mode> [ros arguments]
 Modes:
   bringup      Start chassis backend, IMU, RPLidar, robot_state_publisher, EKF
   mapping      Start slam_toolbox mapping
-  navigation   Start Nav2 with default map ${WS_DIR}/src/my_map.yaml
+  navigation   Start Nav2 with default map ${WS_DIR}/maps/my_map.yaml
   zed          Start ZED 2i wrapper
   perception   Start Jetson YOLO runtime with TensorRT engine
   llm          Start inspection AI task layer and voice I/O nodes
@@ -141,7 +141,7 @@ Examples:
   $0 llm enable_voice:=false enable_tts:=false
   $0 llm enable_voice:=true enable_tts:=true audio_input_device:=plughw:CARD=Luna,DEV=0 audio_output_device:=plughw:CARD=Luna,DEV=0
   $0 inspection fullscreen:=true
-  $0 navigation map:=${WS_DIR}/src/my_map.yaml
+  $0 navigation map:=${WS_DIR}/maps/my_map.yaml
 EOF
     ;;
 esac

@@ -88,6 +88,7 @@ install(DIRECTORY
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
@@ -107,6 +108,10 @@ if(BUILD_TESTING)
   target_include_directories(test_zlac_drive_mapping PRIVATE include)
   target_compile_definitions(test_zlac_drive_mapping PRIVATE
     BASE_KINEMATICS_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/base_kinematics.yaml")
+
+  ament_add_pytest_test(test_bringup_imu_detection test/test_bringup_imu_detection.py)
+  ament_add_pytest_test(test_robot_geometry test/test_robot_geometry.py)
+  ament_add_pytest_test(test_slam_config test/test_slam_config.py)
 endif()
 
 ament_package()

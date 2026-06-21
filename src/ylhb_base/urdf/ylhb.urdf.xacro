@@ -7,7 +7,7 @@
   <!-- 2. 小车主体框架：建立 base_link（实测长方体包络） -->
   <link name="base_link">
     <visual>
-      <origin xyz="0.0885 0 0.07175" rpy="0 0 0"/>
+      <origin xyz="-0.0885 0 0.07175" rpy="0 0 0"/>
       <geometry>
         <box size="0.465 0.470 0.3165"/>
       </geometry>
@@ -16,7 +16,7 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0.0885 0 0.07175" rpy="0 0 0"/>
+      <origin xyz="-0.0885 0 0.07175" rpy="0 0 0"/>
       <geometry>
         <box size="0.465 0.470 0.3165"/>
       </geometry>
@@ -60,19 +60,17 @@
   
   <!-- Base 到 IMU 的静态固定连接 -->
   <joint name="base_to_imu_joint" type="fixed">
-    <parent link="base_link"/>
+    <parent link="base_footprint"/>
     <child link="imu_link"/>
-    <!-- 匹配 ROS 前左上标准坐标系 (X为前，Y为左，Z为上) -->
-    <origin xyz="-0.280 0 0.107" rpy="0 0 0"/>
+    <!-- N300WP PRO: 轮间中心前方 109.5 mm、高 110 mm，X 轴朝车头。 -->
+    <origin xyz="0.1095 0 0.110" rpy="0 0 0"/>
   </joint>
 
   <joint name="base_to_laser_joint" type="fixed">
     <parent link="base_link"/>
     <child link="laser_link"/>
-    <!-- 方向标定：雷达自身输出的数据 Y轴正方向 对准了 小车的车头(正前X轴方向)。
-         这意味着雷达自身的 X轴 指向了小车的右侧 (-Y方向)。
-         因此，雷达坐标系相对于小车主坐标系顺时针旋转了90度，即 Yaw = -1.5707963 -->
-    <origin xyz="-0.090 0 0.1805" rpy="0 0 -1.5707963"/>
+    <!-- 雷达数据 X 轴对准小车前进方向，坐标系与 base_link 同向。 -->
+    <origin xyz="-0.090 0 0.1805" rpy="0 0 0"/>
   </joint>
 
 </robot>

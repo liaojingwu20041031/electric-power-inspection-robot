@@ -1,32 +1,36 @@
-# 电力巡检机器人初始化框架使用与调试手册
+# 电力巡检机器人 ROS 2 项目使用与调试手册
 
 平台规划：Jetson Orin Nano Super、Ubuntu 22.04、ROS 2 Humble
-推荐工作区：`~/ros2_DL`
-当前状态：PC 主机端仓库初始化整理完成，开发板实机运行仍待验证。
+统一工作区：`~/ros2_DL`
+当前定位：电力巡检机器人初始化框架，保留底盘、雷达、IMU、建图、导航、ZED 感知、语音/LLM 任务层、显示 UI 和 mobile bridge。
 
-## 1. 当前阶段说明
+本文按实机调试顺序组织：先底层，再控制，再建图，再导航，最后接入感知和任务层。
 
-当前仓库不是完整电力巡检系统，而是电力巡检机器人方向的初始化框架。已保留 ROS 2 机器人通用能力，包括底盘、雷达、IMU、建图、导航、ZED 感知、语音、LLM 任务事件、控制台和 mobile bridge。
+## 0. 项目主流程
 
-当前没有实现：
+```text
+1. 底层 bringup
+   ZLAC8015D SocketCAN 底盘 或 STM32 串口回退 + IMU + RPLidar + URDF + EKF
 
-- 正式巡检状态机。
-- 检查点导航执行闭环。
-- 检测服务 API。
-- 告警数据库或巡检报告导出。
-- LocateAnything-3B 推理代码。
-- LingBot-Map 实际接入代码。
+2. 手动控制验收
+   /cmd_vel -> 底盘动作，确认方向、速度、里程计、TF
 
-相关文档入口：
+3. 建图
+   /scan + /odom + TF -> slam_toolbox -> 保存 maps/my_map.yaml 和 maps/my_map.pgm
 
-- [项目概览](../docs/项目概览.md)
-- [快速使用](../docs/快速使用.md)
-- [接口约定](../docs/接口约定.md)
-- [迁移清理记录](../docs/迁移清理记录.md)
+4. 导航
+   已知地图 + AMCL + Nav2 -> /cmd_vel -> 底盘闭环运动
 
-## 2. 工作空间规范
+5. 感知和任务层
+   ZED 2i -> YOLO/TensorRT -> /perception/localized_objects
+   文字/语音/UI -> /inspection_ai/* -> 系统控制或巡检任务事件
+```
 
-后续 PC 和开发板统一使用 `~/ros2_DL`：
+初始化框架尚未实现完整巡检业务闭环、检测服务 API、告警数据库、报告导出、LocateAnything-3B 推理和 LingBot-Map 实际接入。
+
+## 1. 工作空间规范
+
+推荐工作空间固定为：
 
 ```bash
 cd ~
@@ -34,37 +38,91 @@ git clone https://github.com/liaojingwu20041031/electric-power-inspection-robot.
 cd ~/ros2_DL
 ```
 
-如需放到其他目录，显式设置：
+ROS 包应直接位于：
+
+```text
+~/ros2_DL/src/ylhb_base
+~/ros2_DL/src/ylhb_interfaces
+~/ros2_DL/src/ylhb_llm
+~/ros2_DL/src/ylhb_mobile_bridge
+~/ros2_DL/src/ylhb_perception
+~/ros2_DL/src/rplidar_ros-ros2
+~/ros2_DL/src/zed-ros2-wrapper
+```
+
+如果临时放在其他目录，先设置：
 
 ```bash
 export WS_DIR=/path/to/ros2_DL
 ```
 
-## 3. 编译流程
+后续地图统一保存到：
 
-PC 或开发板具备 ROS 2 Humble 时执行：
+```text
+~/ros2_DL/maps/my_map.yaml
+~/ros2_DL/maps/my_map.pgm
+```
+
+`~/ros2_DL/src/my_map.yaml` 仅作为旧版本兼容地图，不作为推荐路径。
+
+## 2. 依赖安装与编译
+
+开发板首次部署：
+
+```bash
+cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+./scripts/install_jetson_dependencies.sh
+colcon build --symlink-install
+source ~/ros2_DL/install/setup.bash
+```
+
+日常重新编译：
 
 ```bash
 cd ~/ros2_DL
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
-source ~/ros2_DL/install/setup.bash
+source install/setup.bash
 ```
 
-开发板上也可使用脚本：
+只编译自研包可用于快速检查：
+
+```bash
+colcon build --symlink-install \
+  --packages-select ylhb_interfaces ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge
+```
+
+当前工作空间实测 `colcon build --symlink-install` 可完成 10 个包构建。`colcon test` 中 ZED 第三方包会触发上游 lint/copyright 问题，且受限网络下 `xmllint` 无法下载 ROS schema；自研底盘映射 gtest 和自研包 lint 已通过。
+
+## 3. 硬件绑定与 CAN 检查
+
+Jetson 实机建议先执行一次 USB/CAN 绑定：
 
 ```bash
 cd ~/ros2_DL
-./scripts/install_jetson_dependencies.sh
-./scripts/build_on_jetson.sh
-source ~/ros2_DL/install/setup.bash
+sudo ./src/bind_usb.sh
 ```
 
-如果当前 PC 没有 ROS 2 环境，只做 Python 文件语法检查即可，不要把未运行的 ROS 2 结果写成实测通过。
+目标设备约定：
 
-## 4. CAN 配置说明
+```text
+/dev/robot_lidar -> RPLidar A2M8，CP210x，10c4:ea60
+/dev/robot_imu   -> WIT IMU，CH340，1a86:7523
+can1             -> PEAK PCAN-USB，0c72:000c，500000 bit/s
+```
 
-本节用于后续开发板调试。当前 PC 初始化阶段不验证 CAN 实机通信。
+验收命令：
+
+```bash
+systemctl status robot-hardware-guard.service --no-pager
+tail -n 120 /var/log/robot-hardware-guard.log
+lsusb
+ls -l /dev/robot_lidar /dev/robot_imu /dev/ttyUSB* /dev/ttyCH341USB*
+ip -details link show can1
+```
+
+如果只想手动配置 CAN：
 
 ```bash
 cd ~/ros2_DL
@@ -73,93 +131,281 @@ ip -br link show can1
 candump -tz can1
 ```
 
-PEAK PCAN-USB 排查建议：
+只有 `can1` 存在且 `candump -tz can1` 能看到或至少不报接口错误时，再继续底盘 bringup。
 
-- 先确认 `lsusb` 能看到 PEAK USB 设备。
-- 确认系统出现 SocketCAN 网络接口，例如 `can1`。
-- 若只出现 PEAK 字符设备而没有 `can1`，不要修改 ROS 2 CAN 配置。
-- 临时验证驱动模块成功后，再考虑安装；不要直接替换内核或修改启动配置。
-- 只有 `candump -tz can1` 能看到 ZLAC8015D 启动报文后，再继续底盘 bringup。
+## 4. 底层 Bringup
 
-## 5. Bringup 启动与检查
-
-后续开发板使用：
+终端 1 启动底层系统：
 
 ```bash
 cd ~/ros2_DL
 source /opt/ros/humble/setup.bash
-source ~/ros2_DL/install/setup.bash
+source install/setup.bash
+ros2 launch ylhb_base bringup.launch.py
+```
+
+等价脚本：
+
+```bash
 ./scripts/run_on_jetson.sh bringup
 ```
 
-常用检查：
+默认底盘后端是 ZLAC8015D SocketCAN：
+
+```bash
+ros2 launch ylhb_base bringup.launch.py base_backend:=zlac
+```
+
+无 USB-CAN 或需要旧底盘板时使用 STM32 串口回退：
+
+```bash
+ros2 launch ylhb_base bringup.launch.py base_backend:=stm32 base_port:=/dev/ttyS1
+```
+
+台架调试时可临时关闭 IMU，但实机建图和导航不推荐：
+
+```bash
+ros2 launch ylhb_base bringup.launch.py enable_imu:=false
+```
+
+Bringup 会启动：
+
+```text
+zlac8015d_canopen_controller 或 base_controller
+imu_driver
+rplidar_node
+robot_state_publisher
+ekf_filter_node
+```
+
+底层验收：
 
 ```bash
 ros2 node list
-ros2 topic echo /odom
-ros2 topic echo /zlac8015d/status
-ros2 topic echo /zlac8015d/fault
+ros2 topic echo /odom --once
+ros2 topic echo /imu/data --once
+ros2 topic echo /scan --once
+ros2 topic echo /zlac8015d/status --once
+ros2 topic echo /zlac8015d/fault --once
 ros2 topic hz /scan
 ros2 run tf2_tools view_frames
 ```
 
-## 6. Mapping 建图与地图保存
+RPLidar A2M8 默认 `115200` 波特率，frame 为 `laser_link`。如果 `/dev/robot_lidar` 不存在，launch 会尝试按 USB ID 查找 CP2102 `/dev/ttyUSB*`；长期修复仍应使用 `sudo ./src/bind_usb.sh`。
 
-后续开发板使用：
+IMU 默认 `/dev/robot_imu`、`9600` 波特率。CH340 枚举但没有串口时，先检查：
+
+```bash
+./scripts/install_ch341_safe.sh --precheck
+./scripts/install_ch341_safe.sh --test-load
+sudo ./src/bind_usb.sh
+ls -l /dev/robot_imu /dev/ttyCH341USB* /dev/ttyUSB*
+```
+
+## 5. 底盘控制
+
+底层 bringup 正常后，在终端 2 做键盘控制：
 
 ```bash
 cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
+```
+
+等价脚本：
+
+```bash
+./scripts/run_on_jetson.sh teleop
+```
+
+也可以直接发布速度指令：
+
+```bash
+# 前进 0.10 m/s，持续发布时机器人会运动
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
+  "{linear: {x: 0.10}, angular: {z: 0.0}}"
+
+# 停车
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+  "{linear: {x: 0.0}, angular: {z: 0.0}}"
+```
+
+检查订阅链路：
+
+```bash
+ros2 topic info /cmd_vel -v
+ros2 topic echo /odom
+ros2 topic echo /zlac8015d/status
+```
+
+方向验收：
+
+```text
+linear.x > 0：机器人应向前。
+angular.z > 0：机器人应按 ROS 约定左转。
+/odom 中 x、yaw 应与实际运动方向一致。
+松开键盘或停止发布后，cmd_vel 超时保护应停车。
+```
+
+语音/文字基础动作入口由 `basic_motion_command_node` 处理：
+
+```bash
+ros2 launch ylhb_llm llm.launch.py enable_voice:=false enable_tts:=false enable_display_ui:=false
+ros2 topic pub --once /inspection_ai/text_command std_msgs/msg/String "{data: '前进'}"
+ros2 topic pub --once /inspection_ai/text_command std_msgs/msg/String "{data: '停止'}"
+```
+
+默认要求底盘状态在线；如果只是离线调试任务层，需要在配置里临时关闭 `require_chassis_online`，不要在实机运行时关闭安全检查。
+
+## 6. 建图 Mapping
+
+建图需要先保持终端 1 的 bringup 运行，再开终端 2：
+
+```bash
+cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch ylhb_base mapping.launch.py
+```
+
+等价脚本：
+
+```bash
 ./scripts/run_on_jetson.sh mapping
 ```
 
-保存地图：
+终端 3 用键盘慢速遥控机器人覆盖场地：
 
 ```bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
+```
+
+建图过程检查：
+
+```bash
+ros2 node list | grep slam
+ros2 topic echo /map --once --field info
+ros2 topic hz /scan
+ros2 topic echo /odom --once
+```
+
+保存地图到推荐路径：
+
+```bash
+mkdir -p ~/ros2_DL/maps
 ros2 run nav2_map_server map_saver_cli -f ~/ros2_DL/maps/my_map \
   --ros-args -p save_map_timeout:=10.0
 ```
 
-检查输出：
+保存后检查：
 
 ```bash
-ls ~/ros2_DL/maps/my_map.yaml
-ls ~/ros2_DL/maps/my_map.pgm
+ls -lh ~/ros2_DL/maps/my_map.yaml ~/ros2_DL/maps/my_map.pgm
 ```
 
-## 7. Navigation 导航与初始位姿
+地图保存失败时优先检查 `/map` 是否存在、`slam_toolbox` 是否运行，以及当前终端是否已 source 工作空间环境。
 
-后续开发板使用：
+## 7. 导航 Navigation
+
+导航需要已有地图，并且先启动底层 bringup。推荐终端顺序：
 
 ```bash
+# 终端 1：底层
 cd ~/ros2_DL
-./scripts/run_on_jetson.sh navigation
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch ylhb_base bringup.launch.py
+
+# 终端 2：导航
+cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch ylhb_base navigation.launch.py map:=$HOME/ros2_DL/maps/my_map.yaml
 ```
 
-如果机器人不在建图原点附近，先从 RViz/Foxglove 发布 `/initialpose`，再发送导航目标。
-
-命令行调试：
+等价脚本：
 
 ```bash
-ros2 topic echo /amcl_pose
-ros2 action list | grep navigate
+./scripts/run_on_jetson.sh navigation map:=$HOME/ros2_DL/maps/my_map.yaml
+```
+
+`navigation.launch.py` 默认优先读取 `~/ros2_DL/maps/my_map.yaml`；如果缺失，会回退到旧兼容路径 `~/ros2_DL/src/my_map.yaml` 并打印 warning。
+
+导航启动检查：
+
+```bash
+ros2 node list | grep -E 'amcl|planner|controller|bt_navigator|map_server'
+ros2 lifecycle nodes
+ros2 topic echo /amcl_pose --once
 ros2 topic echo /cmd_vel
+ros2 action list | grep navigate
 ```
 
-## 8. Perception 感知框架
-
-后续开发板使用：
+如果机器人不在建图起点附近，先在 RViz/Foxglove 发布 `/initialpose`。命令行也可以发布初始位姿示例：
 
 ```bash
-cd ~/ros2_DL
-./scripts/run_on_jetson.sh zed
-./scripts/run_on_jetson.sh perception
+ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
+  "{header: {frame_id: map}, pose: {pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}, covariance: [0.25, 0, 0, 0, 0, 0, 0, 0.25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0685]}}"
 ```
 
-模型路径统一放在：
+发送一个简单导航目标：
+
+```bash
+ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
+  "{pose: {header: {frame_id: map}, pose: {position: {x: 1.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}}"
+```
+
+导航不动时按顺序检查：
 
 ```text
-~/ros2_DL/src/ylhb_perception/models/yolo26.onnx
-~/ros2_DL/src/ylhb_perception/models/yolo26.engine
+1. /scan 是否有频率。
+2. /odom 是否更新。
+3. TF 是否有 map -> odom -> base_footprint/base_link -> laser_link。
+4. /initialpose 是否已设置到地图中的正确位置。
+5. controller_server 是否在输出 /cmd_vel。
+6. 底盘节点是否订阅 /cmd_vel 且 ZLAC 状态在线。
+```
+
+## 8. ZED 与感知
+
+启动 ZED 2i：
+
+```bash
+cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i
+```
+
+等价脚本：
+
+```bash
+./scripts/run_on_jetson.sh zed
+```
+
+启动 YOLO/TensorRT 感知：
+
+```bash
+ros2 launch ylhb_perception perception.launch.py \
+  model_path:=$HOME/ros2_DL/src/ylhb_perception/models/yolo26.engine \
+  backend:=tensorrt \
+  confidence_threshold:=0.35 \
+  imgsz:=960 \
+  max_det:=20 \
+  half:=true \
+  publish_debug_image:=false \
+  show_debug_window:=false
+```
+
+调试时打开本地 OpenCV 窗口：
+
+```bash
+ros2 launch ylhb_perception perception.launch.py \
+  model_path:=$HOME/ros2_DL/src/ylhb_perception/models/yolo26.engine \
+  backend:=tensorrt \
+  show_debug_window:=true \
+  debug_window_max_hz:=15.0
 ```
 
 检查话题：
@@ -170,130 +416,168 @@ ros2 topic echo /perception/detections
 ros2 topic echo /perception/localized_objects
 ```
 
-## 9. Inspection/LLM 框架启动
+模型推荐路径：
 
-当前初始化阶段可重点检查 LLM 任务事件链路。默认关闭语音和 TTS：
+```text
+~/ros2_DL/src/ylhb_perception/models/yolo26.onnx
+~/ros2_DL/src/ylhb_perception/models/yolo26.engine
+```
+
+## 9. AI 任务层与显示 UI
+
+文字调试优先关闭语音和 TTS：
 
 ```bash
 cd ~/ros2_DL
 source /opt/ros/humble/setup.bash
-source ~/ros2_DL/install/setup.bash
-ros2 launch ylhb_llm llm.launch.py enable_voice:=false enable_tts:=false
+source install/setup.bash
+ros2 launch ylhb_llm llm.launch.py \
+  enable_voice:=false \
+  enable_tts:=false \
+  enable_display_ui:=false
 ```
 
-开发板 UI 入口：
-
-```bash
-./scripts/run_on_jetson.sh inspection
-```
-
-## 10. /inspection_ai/text_command 测试
+发送巡检文字命令：
 
 ```bash
 ros2 topic pub --once /inspection_ai/text_command std_msgs/msg/String \
   "{data: '{\"source\":\"cli\",\"text\":\"开始巡检任务\"}'}"
 ```
 
-查看任务事件：
+查看任务链路：
 
 ```bash
 ros2 topic echo /inspection_ai/task_event
-```
-
-查看播报请求：
-
-```bash
+ros2 topic echo /inspection_ai/task_status
 ros2 topic echo /inspection_ai/say_text
-```
-
-查看任务层上下文：
-
-```bash
 ros2 topic echo /inspection_ai/task_context_status
 ```
 
-## 11. 常用 ROS 2 调试命令
+启动本机显示 UI 和 supervisor：
+
+```bash
+export DISPLAY=:0
+./scripts/run_on_jetson.sh inspection
+```
+
+`inspection` 模式会启动显示 UI、系统 supervisor 和内嵌 AI 任务层。UI 可以发出启动/停止底层、建图、导航、感知等系统命令；核心 ROS 节点仍以各自 launch 管理。
+
+如需 DashScope：
+
+```bash
+export DASHSCOPE_API_KEY=你的DashScope_API_Key
+ros2 launch ylhb_llm llm.launch.py enable_llm_parse:=true enable_voice:=false enable_tts:=false
+```
+
+## 10. Mobile Bridge
+
+启动移动端桥接：
+
+```bash
+cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py
+```
+
+默认监听：
+
+```text
+0.0.0.0:8000
+```
+
+默认地图前缀已统一为：
+
+```text
+/home/nvidia/ros2_DL/maps/my_map
+```
+
+## 11. 常用调试命令
 
 ```bash
 ros2 node list
-ros2 node info /inspection_task_node
 ros2 topic list
-ros2 topic info /inspection_ai/task_event
-ros2 topic echo /inspection_ai/task_event
-ros2 topic hz /scan
 ros2 service list
 ros2 action list
-ros2 launch ylhb_llm llm.launch.py enable_voice:=false enable_tts:=false
+ros2 topic info /cmd_vel -v
+ros2 topic hz /scan
+ros2 topic echo /odom --once
+ros2 topic echo /imu/data --once
+ros2 topic echo /map --once --field info
+ros2 lifecycle nodes
+ros2 run tf2_tools view_frames
 ```
 
-## 12. 常见问题排查
+查看 launch 参数：
+
+```bash
+ros2 launch ylhb_base bringup.launch.py --show-args
+ros2 launch ylhb_base navigation.launch.py --show-args
+ros2 launch ylhb_llm llm.launch.py --show-args
+ros2 launch ylhb_perception perception.launch.py --show-args
+```
+
+脚本模式：
+
+```bash
+./scripts/run_on_jetson.sh bringup
+./scripts/run_on_jetson.sh mapping
+./scripts/run_on_jetson.sh navigation
+./scripts/run_on_jetson.sh zed
+./scripts/run_on_jetson.sh perception
+./scripts/run_on_jetson.sh llm
+./scripts/run_on_jetson.sh inspection
+./scripts/run_on_jetson.sh teleop
+```
+
+## 12. 常见问题
+
+### 编译通过但测试不全绿
+
+当前 ZED wrapper 第三方包存在 lint/copyright 测试失败，受限网络下 `xmllint` 也会因无法加载 `download.ros.org` schema 失败。这不影响 `colcon build` 生成运行文件。自研包问题应优先用 `--packages-select ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge ylhb_interfaces` 单独验证。
 
 ### CAN 不在线
 
 - 检查 `ip -br link show can1`。
-- 检查 `candump -tz can1` 是否有 ZLAC8015D 报文。
-- 检查 `src/ylhb_base/config/zlac8015d.yaml` 中 `can_interface` 是否与实际接口一致。
+- 检查 `candump -tz can1`。
+- 检查 `src/ylhb_base/config/zlac8015d.yaml` 中 `can_interface` 是否为实际接口。
 - 不要在没有 SocketCAN 接口时修改 ROS 2 控制逻辑。
 
 ### 雷达无数据
 
-- 检查雷达 USB 权限和串口绑定。
+- 检查 `/dev/robot_lidar`。
+- 检查 launch 日志中的 `serial_baudrate` 是否为 `115200`。
 - 执行 `ros2 topic hz /scan`。
-- 确认 `rplidar_ros` 节点是否启动。
+- 不要把 CH340 IMU 串口当作雷达端口。
 
 ### IMU 无数据
 
-- 检查串口权限和设备名。
-- 确认 bringup 参数和硬件连接。
-- 检查 TF 中 `base_footprint`、`base_link`、`imu_link` 是否正常。
+- 检查 `/dev/robot_imu` 和 `/dev/ttyCH341USB*`。
+- 检查 `lsmod | grep -E 'ch341|ch34x'`。
+- 检查 `ros2 topic echo /imu/data --once`。
+- 实机建图和导航不要长期使用 `enable_imu:=false`。
+
+### 地图保存到了错误目录
+
+推荐只使用：
+
+```bash
+~/ros2_DL/maps/my_map.yaml
+~/ros2_DL/maps/my_map.pgm
+```
+
+如果发现 `~/ros2_DL/src/maps`，说明旧配置或旧进程仍在运行；停止相关节点，重新 source 并启动当前工作空间。
 
 ### Nav2 未启动或无法导航
 
-- 先启动 bringup，确认 `/odom`、`/scan` 和 TF。
-- 确认地图文件存在。
-- 检查 `/initialpose` 是否已设置。
-- 查看 `planner_server`、`controller_server`、`bt_navigator` 节点状态。
+- 先启动 bringup。
+- 确认 `/odom`、`/scan`、TF 和地图存在。
+- 确认 `/initialpose` 已设置。
+- 查看 `planner_server`、`controller_server`、`bt_navigator`、`amcl`。
+- 查看 `/cmd_vel` 是否输出，以及底盘节点是否订阅。
 
-### UI 无法显示
+### UI 不显示
 
-- 检查开发板本地 `DISPLAY`，通常为 `:0`。
-- 远程 SSH 时不要依赖 `localhost:10.0` 显示 PyQt UI。
-- 可先关闭 UI，只运行 LLM 任务层命令行检查。
-
-### 语音默认关闭
-
-- 初始化阶段默认 `enable_voice:=false`、`enable_tts:=false`。
-- 开启语音前检查麦克风、扬声器、DashScope Key 和网络。
-
-### DashScope Key 未配置
-
-- 未配置 Key 时不要开启需要云端 ASR/TTS/LLM 的功能。
-- 仍可用 `/inspection_ai/text_command` 做本地任务事件链路检查。
-
-### 话题没有输出
-
-- 先确认节点是否存在：`ros2 node list`。
-- 确认话题名是否为 `/inspection_ai/*`。
-- 检查 launch 参数是否关闭了对应节点。
-
-### colcon build 失败
-
-- 确认已 source `/opt/ros/humble/setup.bash`。
-- 确认依赖安装完整。
-- 先构建单包定位问题：`colcon build --packages-select ylhb_llm`。
-- 第三方 ZED/RPLidar 包的依赖问题和本项目 LLM 初始化清理分开处理。
-
-## 13. 后续开发板待验证清单
-
-- CAN 设备识别与 ZLAC8015D 通信。
-- 底盘 bringup。
-- 雷达 `/scan`。
-- IMU 数据。
-- EKF/TF。
-- SLAM Toolbox 建图。
-- Nav2 导航。
-- ZED 相机。
-- 感知节点。
-- UI 显示。
-- 语音输入/输出。
-- `/inspection_ai/*` 任务事件链路。
+- Jetson 物理屏幕使用 `DISPLAY=:0`。
+- SSH X11 的 `localhost:10.0` 会显示到远程电脑，不适合现场屏幕。
+- `./scripts/run_on_jetson.sh inspection` 会把 SSH 转发 DISPLAY 自动改成本机显示。

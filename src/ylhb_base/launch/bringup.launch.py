@@ -16,8 +16,8 @@ DEFAULT_LIDAR_PORT = '/dev/robot_lidar'
 DEFAULT_IMU_PORT = '/dev/robot_imu'
 LIDAR_VENDOR_ID = '10c4'
 LIDAR_PRODUCT_ID = 'ea60'
-CH340_VENDOR_ID = '1a86'
-CH340_PRODUCT_ID = '7523'
+N300_VENDOR_ID = '1a86'
+N300_PRODUCT_ID = '55d4'
 
 
 def _read_sysfs_text(path):
@@ -44,11 +44,16 @@ def _tty_usb_has_usb_id(tty_name, vendor_id, product_id):
     return False
 
 
-def _find_ch340_tty_ports():
+def _find_n300_tty_ports():
     ports = []
-    for path in sorted(glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyCH341USB*')):
+    candidates = (
+        glob.glob('/dev/ttyACM*')
+        + glob.glob('/dev/ttyCH343USB*')
+        + glob.glob('/dev/ttyUSB*')
+    )
+    for path in sorted(candidates):
         tty_name = os.path.basename(path)
-        if _tty_usb_has_usb_id(tty_name, CH340_VENDOR_ID, CH340_PRODUCT_ID):
+        if _tty_usb_has_usb_id(tty_name, N300_VENDOR_ID, N300_PRODUCT_ID):
             ports.append(path)
     return ports
 
@@ -62,14 +67,14 @@ def _find_lidar_tty_ports():
     return ports
 
 
-def _lsusb_has_ch340():
+def _lsusb_has_n300():
     try:
         output = subprocess.check_output(
             ['lsusb'], text=True, stderr=subprocess.DEVNULL
         ).lower()
     except (OSError, subprocess.CalledProcessError):
         return False
-    return f'{CH340_VENDOR_ID}:{CH340_PRODUCT_ID}' in output
+    return f'{N300_VENDOR_ID}:{N300_PRODUCT_ID}' in output
 
 
 def _sysfs_has_usb_id(vendor_id, product_id):
@@ -82,16 +87,16 @@ def _sysfs_has_usb_id(vendor_id, product_id):
     return False
 
 
-def _has_ch340_usb_device():
-    return _sysfs_has_usb_id(CH340_VENDOR_ID, CH340_PRODUCT_ID) or _lsusb_has_ch340()
+def _has_n300_usb_device():
+    return _sysfs_has_usb_id(N300_VENDOR_ID, N300_PRODUCT_ID) or _lsusb_has_n300()
 
 
-def _ch340_interface_drivers():
+def _n300_interface_drivers():
     drivers = []
     for device_path in glob.glob('/sys/bus/usb/devices/*'):
         if (
-            _read_sysfs_text(os.path.join(device_path, 'idVendor')) != CH340_VENDOR_ID
-            or _read_sysfs_text(os.path.join(device_path, 'idProduct')) != CH340_PRODUCT_ID
+            _read_sysfs_text(os.path.join(device_path, 'idVendor')) != N300_VENDOR_ID
+            or _read_sysfs_text(os.path.join(device_path, 'idProduct')) != N300_PRODUCT_ID
         ):
             continue
 
@@ -130,14 +135,14 @@ def _resolve_required_imu_port(requested_port):
             return requested_port, None, None
         return None, None, error
 
-    ch340_ttys = _find_ch340_tty_ports()
-    if requested_port == DEFAULT_IMU_PORT and ch340_ttys:
-        selected_port = ch340_ttys[0]
+    n300_ttys = _find_n300_tty_ports()
+    if requested_port == DEFAULT_IMU_PORT and n300_ttys:
+        selected_port = n300_ttys[0]
         ok, error = _can_open_serial(selected_port)
         if ok:
             return selected_port, (
                 f'WARN: default IMU alias {DEFAULT_IMU_PORT} does not exist; '
-                f'using detected CH340 tty {selected_port}. Run src/bind_usb.sh '
+                f'using detected N300WP PRO tty {selected_port}. Run src/bind_usb.sh '
                 'to create the stable /dev/robot_imu alias.'
             ), None
         return None, None, error
@@ -145,30 +150,29 @@ def _resolve_required_imu_port(requested_port):
     if requested_port != DEFAULT_IMU_PORT:
         return None, None, (
             f'IMU requested port {requested_port} does not exist. '
-            f'Pass imu_port:=/dev/ttyUSBx, imu_port:=/dev/ttyCH341USBx, '
+            f'Pass imu_port:=/dev/ttyACMx, imu_port:=/dev/ttyCH343USBx, '
             f'or use the default {DEFAULT_IMU_PORT}.'
         )
 
-    if _has_ch340_usb_device():
-        interface_drivers = _ch340_interface_drivers()
+    if _has_n300_usb_device():
+        interface_drivers = _n300_interface_drivers()
         if any(driver == 'usbfs' for _, driver in interface_drivers):
             driver_text = ', '.join(
                 f'{interface}={driver}' for interface, driver in interface_drivers
             )
             return None, None, (
-                f'CH340 is still claimed by usbfs ({driver_text}). '
-                'Disable brltty/ModemManager and run sudo ./src/bind_usb.sh.'
+                f'N300WP PRO CH9102 is still claimed by usbfs ({driver_text}). '
+                'Disable ModemManager and run sudo ./src/bind_usb.sh.'
             )
         return None, None, (
-            'CH340 IMU USB device 1a86:7523 is enumerated, but no /dev/ttyUSB* '
-            'or /dev/ttyCH341USB* was created for it. Run '
-            'scripts/install_ch341_safe.sh --precheck and '
-            'scripts/install_ch341_safe.sh --test-load.'
+            'N300WP PRO USB device 1a86:55d4 is enumerated, but no /dev/ttyACM*, '
+            '/dev/ttyCH343USB*, or /dev/ttyUSB* device was created. Check the '
+            'cdc_acm/CH343 driver and reconnect the IMU.'
         )
 
     return None, None, (
-        'IMU is required, but no CH340 IMU device was found. Plug in the '
-        '1a86:7523 USB-TTL adapter or pass enable_imu:=false only for bench diagnostics.'
+        'IMU is required, but no N300WP PRO device was found. Plug in the '
+        '1a86:55d4 CH9102 device or pass enable_imu:=false only for bench diagnostics.'
     )
 
 
@@ -176,6 +180,8 @@ def serial_nodes(context, *args, **kwargs):
     lidar_port = LaunchConfiguration('lidar_port').perform(context)
     imu_port = LaunchConfiguration('imu_port').perform(context)
     imu_baud_rate_text = LaunchConfiguration('imu_baud_rate').perform(context)
+    imu_frame_id = LaunchConfiguration('imu_frame_id').perform(context)
+    imu_topic = LaunchConfiguration('imu_topic').perform(context)
     lidar_baudrate_text = LaunchConfiguration('lidar_baudrate').perform(context)
     lidar_frame_id = LaunchConfiguration('lidar_frame_id').perform(context)
     enable_imu = (
@@ -209,17 +215,19 @@ def serial_nodes(context, *args, **kwargs):
             imu_baud_rate = int(imu_baud_rate_text)
         except ValueError:
             actions.append(LogInfo(msg=(
-                f'ERROR: invalid imu_baud_rate={imu_baud_rate_text}; using 9600.'
+                f'ERROR: invalid imu_baud_rate={imu_baud_rate_text}; using 115200.'
             )))
-            imu_baud_rate = 9600
+            imu_baud_rate = 115200
         actions.append(Node(
-            package='ylhb_base',
-            executable='imu_driver',
-            name='imu_driver',
+            package='hipnuc_imu',
+            executable='talker',
+            name='IMU_publisher',
             output='screen',
             parameters=[
                 {'serial_port': resolved_imu_port},
-                {'baud_rate': imu_baud_rate}
+                {'baud_rate': imu_baud_rate},
+                {'frame_id': imu_frame_id},
+                {'imu_topic': imu_topic}
             ]
         ))
 
@@ -277,8 +285,16 @@ def generate_launch_description():
         description='Serial port for the IMU sensor'
     )
     imu_baud_rate_arg = DeclareLaunchArgument(
-        'imu_baud_rate', default_value='9600',
-        description='Serial baudrate for the WIT IMU'
+        'imu_baud_rate', default_value='115200',
+        description='Serial baudrate for the N300WP PRO IMU'
+    )
+    imu_frame_id_arg = DeclareLaunchArgument(
+        'imu_frame_id', default_value='imu_link',
+        description='Frame id for N300WP PRO IMU messages'
+    )
+    imu_topic_arg = DeclareLaunchArgument(
+        'imu_topic', default_value='/imu/data',
+        description='ROS sensor_msgs/Imu topic published by N300WP PRO'
     )
     lidar_port_arg = DeclareLaunchArgument(
         'lidar_port', default_value=DEFAULT_LIDAR_PORT,
@@ -353,12 +369,14 @@ def generate_launch_description():
         enable_imu_arg,
         imu_port_arg,
         imu_baud_rate_arg,
+        imu_frame_id_arg,
+        imu_topic_arg,
         lidar_port_arg,
         lidar_baudrate_arg,
         lidar_frame_id_arg,
+        OpaqueFunction(function=serial_nodes),
         robot_state_publisher_node,
         zlac_base_node,
         stm32_base_node,
-        OpaqueFunction(function=serial_nodes),
         ekf_node
     ])

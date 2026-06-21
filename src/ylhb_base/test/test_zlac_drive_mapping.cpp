@@ -35,14 +35,17 @@ TEST(DifferentialDriveKinematicsTest, PositiveAngularVelocityKeepsRosLeftTurnSem
   EXPECT_GT(rpm.right, 0.0);
 }
 
-TEST(ZlacChannelMappingTest, FieldMappingProducesRequiredForwardChannelPolarity)
+TEST(ZlacChannelMappingTest, FieldMappingPreservesRosTurnDirection)
 {
-  const ZlacChannelMapping mapping(false, -1.0, 1.0);
+  const ZlacChannelMapping mapping(true, 1.0, -1.0);
 
-  const auto channels = mapping.logical_to_channels(LogicalWheelRpm{100.0, 100.0});
+  const auto forward = mapping.logical_to_channels(LogicalWheelRpm{100.0, 100.0});
+  const auto left_turn = mapping.logical_to_channels(LogicalWheelRpm{-100.0, 100.0});
 
-  EXPECT_DOUBLE_EQ(channels.low, -100.0);
-  EXPECT_DOUBLE_EQ(channels.high, 100.0);
+  EXPECT_DOUBLE_EQ(forward.low, 100.0);
+  EXPECT_DOUBLE_EQ(forward.high, -100.0);
+  EXPECT_DOUBLE_EQ(left_turn.low, -100.0);
+  EXPECT_DOUBLE_EQ(left_turn.high, -100.0);
 }
 
 TEST(ZlacChannelMappingTest, PreviousHighChannelPolarityReproducesAxisSwapSymptoms)
@@ -76,14 +79,14 @@ TEST(ZlacChannelMappingTest, BaseKinematicsConfigUsesCalibratedFieldMapping)
   const std::string config(
     (std::istreambuf_iterator<char>(config_stream)), std::istreambuf_iterator<char>());
 
-  EXPECT_NE(config.find("low_channel_is_left: false"), std::string::npos);
-  EXPECT_NE(config.find("low_channel_direction: -1.0"), std::string::npos);
-  EXPECT_NE(config.find("high_channel_direction: 1.0"), std::string::npos);
+  EXPECT_NE(config.find("low_channel_is_left: true"), std::string::npos);
+  EXPECT_NE(config.find("low_channel_direction: 1.0"), std::string::npos);
+  EXPECT_NE(config.find("high_channel_direction: -1.0"), std::string::npos);
 }
 
 TEST(ZlacChannelMappingTest, CommandAndFeedbackMappingsRoundTrip)
 {
-  const ZlacChannelMapping mapping(false, -1.0, 1.0);
+  const ZlacChannelMapping mapping(true, 1.0, -1.0);
   const LogicalWheelRpm expected{-42.5, 17.25};
 
   const auto actual = mapping.channels_to_logical(mapping.logical_to_channels(expected));

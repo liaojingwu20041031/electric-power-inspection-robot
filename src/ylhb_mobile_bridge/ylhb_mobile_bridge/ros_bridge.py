@@ -62,7 +62,7 @@ class MobileRosBridge(Node):
             'max_angular_speed': 0.5,
             'default_cmd_duration_ms': 300,
             'workspace_dir': '/home/nvidia/ros2_DL',
-            'default_map_path': '/home/nvidia/ros2_DL/src/my_map',
+            'default_map_path': '/home/nvidia/ros2_DL/maps/my_map',
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)

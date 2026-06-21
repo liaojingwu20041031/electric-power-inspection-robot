@@ -109,7 +109,7 @@ LOG_PATH="/var/log/robot-hardware-guard.log"
 CH341_MODULE_PATH="$CH341_MODULE_PATH"
 PCAN_MODULE_PATH="$PCAN_MODULE_PATH"
 IMU_VID="1a86"
-IMU_PID="7523"
+IMU_PID="55d4"
 LIDAR_VID="10c4"
 LIDAR_PID="ea60"
 PCAN_VID="0c72"
@@ -380,12 +380,7 @@ ensure_pcan_can1() {
 }
 
 run_once() {
-  ensure_ch341_driver || true
-  while IFS= read -r interface; do
-    [ -n "\$interface" ] || continue
-    bind_usb_interface "\$interface" usb_ch341
-  done < <(list_usb_interfaces_by_id "\$IMU_VID" "\$IMU_PID")
-  refresh_tty_alias /dev/robot_imu "\$IMU_VID" "\$IMU_PID" /dev/ttyCH341USB* /dev/ttyUSB* || true
+  refresh_tty_alias /dev/robot_imu "\$IMU_VID" "\$IMU_PID" /dev/ttyACM* /dev/ttyCH343USB* /dev/ttyUSB* || true
 
   ensure_cp210x_driver || true
   while IFS= read -r interface; do
@@ -434,10 +429,11 @@ print_conflict_hints
 echo "- 正在写入 CP210x (激光雷达) 规则为 /dev/robot_lidar"
 echo 'SUBSYSTEM=="tty", KERNEL=="ttyUSB*", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE:="0666", GROUP:="dialout", SYMLINK+="robot_lidar"' > /etc/udev/rules.d/99-robot-lidar.rules
 
-echo "- 正在写入 CH340 (IMU) 规则为 /dev/robot_imu"
+echo "- 正在写入 N300WP PRO CH9102 (IMU) 规则为 /dev/robot_imu"
 {
-  echo 'SUBSYSTEM=="tty", KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666", GROUP:="dialout", SYMLINK+="robot_imu"'
-  echo 'SUBSYSTEM=="tty", KERNEL=="ttyCH341USB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666", GROUP:="dialout", SYMLINK+="robot_imu"'
+  echo 'SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", MODE:="0666", GROUP:="dialout", SYMLINK+="robot_imu"'
+  echo 'SUBSYSTEM=="tty", KERNEL=="ttyCH343USB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", MODE:="0666", GROUP:="dialout", SYMLINK+="robot_imu"'
+  echo 'SUBSYSTEM=="tty", KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", MODE:="0666", GROUP:="dialout", SYMLINK+="robot_imu"'
 } > /etc/udev/rules.d/99-robot-imu.rules
 
 install_hardware_guard
@@ -464,10 +460,10 @@ echo "日志: /var/log/robot-hardware-guard.log"
 echo "================================================="
 echo "+ lsusb -t"
 lsusb -t || true
-echo "+ ls -l /dev/robot_lidar /dev/robot_imu /dev/ttyUSB* /dev/ttyCH341USB*"
-ls -l /dev/robot_lidar /dev/robot_imu /dev/ttyUSB* /dev/ttyCH341USB* 2>/dev/null || true
+echo "+ ls -l /dev/robot_lidar /dev/robot_imu /dev/ttyUSB* /dev/ttyACM* /dev/ttyCH343USB*"
+ls -l /dev/robot_lidar /dev/robot_imu /dev/ttyUSB* /dev/ttyACM* /dev/ttyCH343USB* 2>/dev/null || true
 echo "+ 当前 USB interface driver:"
-for interface in $(list_usb_interfaces_by_id 10c4 ea60; list_usb_interfaces_by_id 1a86 7523; list_usb_interfaces_by_id 0c72 000c); do
+for interface in $(list_usb_interfaces_by_id 10c4 ea60; list_usb_interfaces_by_id 1a86 55d4; list_usb_interfaces_by_id 0c72 000c); do
   printf '%s -> %s\n' "$interface" "$(interface_driver "$interface")"
 done
 echo "+ ip -details link show can1"

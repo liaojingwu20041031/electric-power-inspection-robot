@@ -47,7 +47,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('workspace_dir', os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL')))
         self.declare_parameter('ros_distro', 'humble')
-        self.declare_parameter('map_output_dir', workspace_path('src', 'maps'))
+        self.declare_parameter('map_output_dir', workspace_path('maps'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
         self.declare_parameter('embedded_task_layer', True)

@@ -8,12 +8,12 @@ zlac8015d_canopen_controller:
     max_linear_speed: 0.35
     # 底盘最大角速度，单位：弧度/秒。cmd_vel 超过该值会被限幅。
     max_angular_speed: 0.55
-    # 驱动器低 16 位通道连接的物理轮是否为左轮。当前现场接线 low=右轮，high=左轮。
-    low_channel_is_left: false
+    # 驱动器低 16 位通道连接左轮，高 16 位通道连接右轮。
+    low_channel_is_left: true
     # 通道极性：逻辑轮正向转速转换为驱动器通道命令时的方向系数，只允许 1.0 或 -1.0。
-    low_channel_direction: -1.0
+    low_channel_direction: 1.0
     # 通道极性：逻辑轮正向转速转换为驱动器通道命令时的方向系数，只允许 1.0 或 -1.0。
-    high_channel_direction: 1.0
+    high_channel_direction: -1.0
     # 里程计父坐标系，通常保持 odom。
     odom_frame: odom
     # 底盘坐标系，当前系统使用 base_footprint 作为平面运动基座。
