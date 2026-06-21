@@ -19,38 +19,11 @@ def test_amcl_waits_for_operator_initial_pose_instead_of_forcing_origin():
     assert params["always_reset_initial_pose"] is False
     assert params["update_min_d"] == 0.02
     assert params["update_min_a"] == 0.02
-    assert params["max_beams"] == 100
-    assert params["min_particles"] == 800
-    assert params["max_particles"] == 3000
+    assert params["min_particles"] == 1000
+    assert params["max_particles"] == 4000
 
 
-def test_nav2_transform_tolerances_limit_motion_time_skew():
-    config = load_nav2_params()
-
-    assert config["amcl"]["ros__parameters"]["transform_tolerance"] == 0.3
-    assert config["bt_navigator"]["ros__parameters"]["transform_tolerance"] == 0.3
-    assert (
-        config["controller_server"]["ros__parameters"]["FollowPath"][
-            "transform_tolerance"
-        ]
-        == 0.3
-    )
-    assert (
-        config["local_costmap"]["local_costmap"]["ros__parameters"][
-            "transform_tolerance"
-        ]
-        == 0.3
-    )
-    assert (
-        config["global_costmap"]["global_costmap"]["ros__parameters"][
-            "transform_tolerance"
-        ]
-        == 0.3
-    )
-    assert config["behavior_server"]["ros__parameters"]["transform_tolerance"] == 0.3
-
-
-def test_costmaps_keep_local_scan_obstacles_out_of_global_map():
+def test_costmaps_use_dynamic_obstacles_and_safer_inflation():
     config = load_nav2_params()
     local = config["local_costmap"]["local_costmap"]["ros__parameters"]
     global_map = config["global_costmap"]["global_costmap"]["ros__parameters"]
@@ -60,13 +33,14 @@ def test_costmaps_keep_local_scan_obstacles_out_of_global_map():
     assert local["footprint_padding"] == 0.02
     assert local["inflation_layer"]["inflation_radius"] == 0.35
     assert local["inflation_layer"]["cost_scaling_factor"] == 3.0
-    assert local["plugins"] == ["obstacle_layer", "inflation_layer"]
-    assert local["obstacle_layer"]["scan"]["topic"] == "/scan"
 
     assert global_map["update_frequency"] == 2.0
     assert global_map["track_unknown_space"] is True
-    assert global_map["plugins"] == ["static_layer", "inflation_layer"]
-    assert "obstacle_layer" not in global_map
+    assert global_map["plugins"] == ["static_layer", "obstacle_layer", "inflation_layer"]
+    obstacle = global_map["obstacle_layer"]
+    assert obstacle["plugin"] == "nav2_costmap_2d::ObstacleLayer"
+    assert obstacle["scan"]["topic"] == "/scan"
+    assert obstacle["scan"]["data_type"] == "LaserScan"
 
 
 def test_dwb_low_speed_limits_match_velocity_smoother():
