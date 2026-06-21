@@ -48,9 +48,10 @@ def generate_launch_description():
         msg=(
             'INFO: navigation.launch.py starts Nav2 only. Start '
             'ylhb_base bringup.launch.py first so /odom, /scan, and TF are available. '
-            'AMCL initializes from the map origin by default for field tests. '
-            'If the robot is not near the mapping start point, publish /initialpose '
-            'from RViz/Foxglove before sending navigation goals.'
+            'AMCL waits for an initial pose and does not force the map origin. '
+            'Publish /initialpose in the map frame from RViz/Foxglove before '
+            'sending navigation goals. For local scan-to-map correction, start '
+            'scan_map_relocalization_node before publishing the coarse pose.'
         )
     )
 

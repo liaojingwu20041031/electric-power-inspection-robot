@@ -372,7 +372,8 @@ ls -lh ~/ros2_DL/maps/my_map.yaml ~/ros2_DL/maps/my_map.pgm
 
 ## 7. 导航 Navigation
 
-导航需要已有地图，并且先启动底层 bringup。推荐终端顺序：
+导航需要已有地图，并且必须先启动底层 bringup。`navigation.launch.py` 只启动
+Nav2，不启动雷达、底盘、IMU 或 EKF。推荐终端顺序：
 
 ```bash
 # 终端 1：底层
@@ -386,6 +387,12 @@ cd ~/ros2_DL
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch ylhb_base navigation.launch.py map:=$HOME/ros2_DL/maps/my_map.yaml
+
+# 终端 3：等待人工粗定位并做局部 Scan-to-Map 修正
+cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run ylhb_base scan_map_relocalization_node
 ```
 
 等价脚本：
@@ -396,22 +403,51 @@ ros2 launch ylhb_base navigation.launch.py map:=$HOME/ros2_DL/maps/my_map.yaml
 
 `navigation.launch.py` 默认优先读取 `~/ros2_DL/maps/my_map.yaml`；如果缺失，会回退到旧兼容路径 `~/ros2_DL/src/my_map.yaml` 并打印 warning。
 
-导航启动检查：
+先启动 Scan-to-Map 节点，再从 RViz/Foxglove 发布 2D Pose Estimate。因为
+`/initialpose` 通常不是持久化话题，先点击再启动节点可能收不到粗位姿。
+粗位姿的 `header.frame_id` 必须是 `map`；`odom`、`base_link` 或空 frame
+会被拒绝。该节点只在粗位姿附近做二维局部搜索，不是全局自动定位，也不使用
+3D 点云。
+
+导航与定位启动检查：
 
 ```bash
 ros2 node list | grep -E 'amcl|planner|controller|bt_navigator|map_server'
 ros2 lifecycle nodes
 ros2 topic echo /amcl_pose --once
+ros2 topic echo /scan_match_pose --once
 ros2 topic echo /cmd_vel
 ros2 action list | grep navigate
 ```
 
-如果机器人不在建图起点附近，先在 RViz/Foxglove 发布 `/initialpose`。命令行也可以发布初始位姿示例：
+AMCL 不再默认强制使用建图原点。应在 RViz/Foxglove 中把 Fixed Frame 设为
+`map`，发布粗略的 2D Pose Estimate。Scan-to-Map 质量达标时会发布修正后的
+`/initialpose` 和 `/scan_match_pose`；质量不达标时只打印
+`score`、`mean_distance`、`inlier_ratio`，不会发布错误位姿。
+命令行粗位姿示例：
 
 ```bash
 ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
   "{header: {frame_id: map}, pose: {pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}, covariance: [0.25, 0, 0, 0, 0, 0, 0, 0.25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0685]}}"
 ```
+
+如果粗定位后激光与地图仍有小幅偏差，可在周围无人员、线缆和低矮障碍时运行：
+
+```bash
+ros2 run ylhb_base amcl_swing_relocalization_node
+```
+
+该节点仅按 `/odom` 闭环小幅左右摆头，默认执行两轮“左 10°、右 20°、
+左 10°”，`linear.x/y` 始终为 0，不前进后退、不做 360° 旋转。超时、
+异常、Ctrl+C 和正常退出都会发布零速度。需要调整时使用 ROS 参数，例如：
+
+```bash
+ros2 run ylhb_base amcl_swing_relocalization_node --ros-args \
+  -p cycles:=1 -p angular_speed:=0.15
+```
+
+只有在 RViz/Foxglove 中 `/scan` 与静态地图轮廓贴合、`map -> odom ->
+base_footprint` 连续稳定后再发送导航目标。
 
 发送一个简单导航目标：
 
@@ -427,9 +463,16 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 2. /odom 是否更新。
 3. TF 是否有 map -> odom -> base_footprint/base_link -> laser_link。
 4. /initialpose 是否已设置到地图中的正确位置。
-5. controller_server 是否在输出 /cmd_vel。
-6. 底盘节点是否订阅 /cmd_vel 且 ZLAC 状态在线。
+5. Scan-to-Map 是否报告质量达标，/scan 与地图是否贴合。
+6. local/global costmap 是否都能看到 /scan 动态障碍。
+7. controller_server 是否在输出 /cmd_vel。
+8. 底盘节点是否订阅 /cmd_vel 且 ZLAC 状态在线。
 ```
+
+动态避障验收时先使用低速短距离目标，在 local/global costmap 中观察人员或
+纸箱等障碍是否被标记。机器人应减速、绕行或停止；如果路径仍穿过障碍、
+障碍层不清除、定位跳变或持续原地转向，应立即取消目标并停车，不要通过提高
+速度或关闭障碍层绕过问题。
 
 ## 8. ZED 与感知
 
@@ -636,8 +679,10 @@ ros2 launch ylhb_perception perception.launch.py --show-args
 
 - 先启动 bringup。
 - 确认 `/odom`、`/scan`、TF 和地图存在。
-- 确认 `/initialpose` 已设置。
+- 先运行 `scan_map_relocalization_node`，再发布 `map` frame 的 `/initialpose`。
+- 确认 `/scan_match_pose` 合理且 `/scan` 与地图轮廓贴合。
 - 查看 `planner_server`、`controller_server`、`bt_navigator`、`amcl`。
+- 查看 local/global costmap 的 `/scan` 障碍层是否更新。
 - 查看 `/cmd_vel` 是否输出，以及底盘节点是否订阅。
 
 ### UI 不显示

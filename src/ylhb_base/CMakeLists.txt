@@ -78,6 +78,18 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(PROGRAMS
+  scripts/amcl_swing_relocalization_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME amcl_swing_relocalization_node
+)
+
+install(PROGRAMS
+  scripts/scan_map_relocalization_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME scan_map_relocalization_node
+)
+
 install(DIRECTORY
   launch
   config
@@ -112,6 +124,8 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_bringup_imu_detection test/test_bringup_imu_detection.py)
   ament_add_pytest_test(test_robot_geometry test/test_robot_geometry.py)
   ament_add_pytest_test(test_slam_config test/test_slam_config.py)
+  ament_add_pytest_test(test_nav2_localization_config test/test_nav2_localization_config.py)
+  ament_add_pytest_test(test_scan_map_relocalization test/test_scan_map_relocalization.py)
 endif()
 
 ament_package()
