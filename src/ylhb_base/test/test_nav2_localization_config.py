@@ -211,14 +211,51 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
 def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
     controller = load_nav2_params()["controller_server"]["ros__parameters"]
     progress = controller["progress_checker"]
-    backup = load_nav2_behavior_tree().find(".//BackUp")
+    behavior_tree = load_nav2_behavior_tree()
+    follow_path_recovery = behavior_tree.find(".//RecoveryNode[@name='FollowPath']")
+    outer_recovery = behavior_tree.find(".//ReactiveFallback[@name='SmallBackupRecovery']")
 
+    assert progress["plugin"] == "nav2_controller::PoseProgressChecker"
     assert progress["required_movement_radius"] == 0.05
-    assert progress["movement_time_allowance"] == 30.0
-    assert backup is not None
-    assert backup.attrib["backup_dist"] == "0.08"
-    assert backup.attrib["backup_speed"] == "0.03"
-    assert "time_allowance" not in backup.attrib
+    assert progress["required_movement_angle"] == 0.25
+    assert progress["movement_time_allowance"] == 12.0
+
+    assert follow_path_recovery is not None
+    assert follow_path_recovery.attrib["number_of_retries"] == "1"
+    follow_path_children = list(follow_path_recovery)
+    assert [child.tag for child in follow_path_children] == ["FollowPath", "Sequence"]
+
+    local_recovery = follow_path_children[1]
+    assert local_recovery.attrib["name"] == "ClearLocalCostmapAndSmallBackup"
+    local_recovery_children = list(local_recovery)
+    assert [child.tag for child in local_recovery_children] == [
+        "ClearEntireCostmap",
+        "BackUp",
+        "Wait",
+    ]
+
+    local_backup = local_recovery_children[1]
+    assert local_backup.attrib["backup_dist"] == "0.08"
+    assert local_backup.attrib["backup_speed"] == "0.03"
+    assert "time_allowance" not in local_backup.attrib
+    assert local_recovery_children[2].attrib["wait_duration"] == "0.2"
+
+    assert outer_recovery is not None
+    outer_recovery_children = list(outer_recovery)
+    assert [child.tag for child in outer_recovery_children] == [
+        "GoalUpdated",
+        "Sequence",
+    ]
+    outer_sequence = outer_recovery_children[1]
+    assert outer_sequence.attrib["name"] == "SmallBackupAndWait"
+    outer_sequence_children = list(outer_sequence)
+    assert [child.tag for child in outer_sequence_children] == ["BackUp", "Wait"]
+
+    outer_backup = outer_sequence_children[0]
+    assert outer_backup.attrib["backup_dist"] == "0.08"
+    assert outer_backup.attrib["backup_speed"] == "0.03"
+    assert "time_allowance" not in outer_backup.attrib
+    assert outer_sequence_children[1].attrib["wait_duration"] == "0.2"
 
 
 def test_smac_planner_avoids_unknown_and_prefers_centered_costs():

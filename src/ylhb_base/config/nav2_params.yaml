@@ -196,10 +196,12 @@ controller_server:
       RotateToGoal.lookahead_time: -1.0
 
     progress_checker:
-      # 进度检查器：允许慢速微调，避免低速起步或短时避障被过早判死。
-      plugin: "nav2_controller::SimpleProgressChecker"
+      # 进度检查器：平移或转向任一满足阈值都算进展，避免原地起步转向被误判卡住。
+      # 12 秒保留真实卡住时的快速恢复，不把等待窗口放宽到 30 秒。
+      plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.05
-      movement_time_allowance: 30.0
+      required_movement_angle: 0.25
+      movement_time_allowance: 12.0
 
     goal_checker:
       # 目标检查器：明确使用 SimpleGoalChecker，消除默认 goal checker 警告。
