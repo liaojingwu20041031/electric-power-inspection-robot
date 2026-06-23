@@ -4,21 +4,21 @@
   <!-- 1. 定义主要参考坐标系 (通常位于机器人底盘中心在地面的投影位置) -->
   <link name="base_footprint"/>
 
-  <!-- 2. 小车主体框架：建立 base_link（实测长方体包络） -->
+  <!-- 2. 小车主体框架：建立 base_link（实测偏心圆柱包络） -->
   <link name="base_link">
     <visual>
-      <origin xyz="-0.0885 0 0.07175" rpy="0 0 0"/>
+      <origin xyz="-0.09025 0 0.07625" rpy="0 0 0"/>
       <geometry>
-        <box size="0.465 0.470 0.3165"/>
+        <cylinder radius="0.27675" length="0.3255"/>
       </geometry>
       <material name="gray">
         <color rgba="0.7 0.7 0.7 1"/>
       </material>
     </visual>
     <collision>
-      <origin xyz="-0.0885 0 0.07175" rpy="0 0 0"/>
+      <origin xyz="-0.09025 0 0.07625" rpy="0 0 0"/>
       <geometry>
-        <box size="0.465 0.470 0.3165"/>
+        <cylinder radius="0.27675" length="0.3255"/>
       </geometry>
     </collision>
   </link>

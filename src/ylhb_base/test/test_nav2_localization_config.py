@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -11,6 +12,7 @@ NAV2_BT_PATH = PACKAGE_DIR / "config" / "nav2_no_recovery.xml"
 CMAKE_PATH = PACKAGE_DIR / "CMakeLists.txt"
 MAP_YAML_PATH = WORKSPACE_DIR / "maps" / "my_map.yaml"
 MAP_PGM_PATH = WORKSPACE_DIR / "maps" / "my_map.pgm"
+EXPECTED_FOOTPRINT_POINTS = 16
 
 
 def load_nav2_params():
@@ -126,16 +128,22 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     global_obstacle = global_map["obstacle_layer"]
     local_scan = local_obstacle["scan"]
     global_scan = global_obstacle["scan"]
+    local_footprint = ast.literal_eval(local["footprint"])
+    global_footprint = ast.literal_eval(global_map["footprint"])
 
     assert local["width"] == 4
     assert local["height"] == 4
-    assert local["footprint_padding"] == 0.02
+    assert local["footprint_padding"] == 0.01
+    assert "robot_radius" not in local
     assert local["inflation_layer"]["inflation_radius"] == 0.35
     assert local["inflation_layer"]["cost_scaling_factor"] == 3.0
 
     assert global_map["update_frequency"] == 2.0
     assert global_map["track_unknown_space"] is True
-    assert global_map["footprint_padding"] == 0.02
+    assert global_map["footprint_padding"] == 0.01
+    assert "robot_radius" not in global_map
+    assert local_footprint == global_footprint
+    assert len(local_footprint) == EXPECTED_FOOTPRINT_POINTS
     assert global_map["plugins"] == ["static_layer", "obstacle_layer", "inflation_layer"]
     assert global_obstacle["plugin"] == "nav2_costmap_2d::ObstacleLayer"
     assert global_obstacle["enabled"] is True
