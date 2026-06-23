@@ -56,6 +56,8 @@
     </visual>
   </link>
 
+  <link name="gps_link"/>
+
   <!-- ================= 连接关节 (Joints) ================= -->
   
   <!-- Base 到 IMU 的静态固定连接 -->
@@ -71,6 +73,13 @@
     <child link="laser_link"/>
     <!-- 雷达数据 X 轴对准小车前进方向，坐标系与 base_link 同向。 -->
     <origin xyz="-0.090 0 0.1805" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="base_to_gps_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="gps_link"/>
+    <!-- Provisional antenna origin. Replace XYZ with the measured antenna offset. -->
+    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
 </robot>

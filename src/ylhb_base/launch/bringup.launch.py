@@ -308,6 +308,22 @@ def generate_launch_description():
         'lidar_frame_id', default_value='laser_link',
         description='Frame id for RPLidar laser scans'
     )
+    enable_rtk_arg = DeclareLaunchArgument(
+        'enable_rtk', default_value='false',
+        description='Enable WTRTK980 NMEA RTK receiver'
+    )
+    rtk_port_arg = DeclareLaunchArgument(
+        'rtk_port', default_value='/dev/rtk_4g',
+        description='Serial port for the WTRTK980 RTK receiver'
+    )
+    rtk_baud_arg = DeclareLaunchArgument(
+        'rtk_baud', default_value='115200',
+        description='Serial baudrate for the WTRTK980 RTK receiver'
+    )
+    rtk_frame_id_arg = DeclareLaunchArgument(
+        'rtk_frame_id', default_value='gps_link',
+        description='Frame id for RTK messages'
+    )
 
     # 获取动态的参数值
     base_port = LaunchConfiguration('base_port')
@@ -315,6 +331,7 @@ def generate_launch_description():
 
     use_zlac = IfCondition(PythonExpression(["'", base_backend, "' == 'zlac'"]))
     use_stm32 = IfCondition(PythonExpression(["'", base_backend, "' == 'stm32'"]))
+    enable_rtk = IfCondition(LaunchConfiguration('enable_rtk'))
 
     # 默认 ZLAC8015D SocketCAN 底盘后端，关闭自身 TF，让 EKF 接管
     zlac_base_node = Node(
@@ -363,6 +380,19 @@ def generate_launch_description():
         parameters=[ekf_config_path]
     )
 
+    rtk_node = Node(
+        package='ylhb_base',
+        executable='wtrtk980_nmea_node',
+        name='wtrtk980_nmea_node',
+        output='screen',
+        condition=enable_rtk,
+        parameters=[{
+            'port': LaunchConfiguration('rtk_port'),
+            'baud': ParameterValue(LaunchConfiguration('rtk_baud'), value_type=int),
+            'frame_id': LaunchConfiguration('rtk_frame_id'),
+        }]
+    )
+
     return LaunchDescription([
         base_backend_arg,
         base_port_arg,
@@ -374,9 +404,14 @@ def generate_launch_description():
         lidar_port_arg,
         lidar_baudrate_arg,
         lidar_frame_id_arg,
+        enable_rtk_arg,
+        rtk_port_arg,
+        rtk_baud_arg,
+        rtk_frame_id_arg,
         OpaqueFunction(function=serial_nodes),
         robot_state_publisher_node,
         zlac_base_node,
         stm32_base_node,
-        ekf_node
+        ekf_node,
+        rtk_node
     ])

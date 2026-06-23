@@ -66,6 +66,19 @@ def test_laser_x_axis_points_forward():
     assert laser_joint.find("origin").attrib["rpy"] == "0 0 0"
 
 
+def test_gps_link_is_fixed_to_base_with_provisional_zero_offset():
+    root = ET.parse(URDF_PATH).getroot()
+    gps_link = root.find("./link[@name='gps_link']")
+    gps_joint = find_joint(root, "base_to_gps_joint")
+
+    assert gps_link is not None
+    assert gps_joint is not None
+    assert gps_joint.find("parent").attrib["link"] == "base_footprint"
+    assert gps_joint.find("child").attrib["link"] == "gps_link"
+    assert parse_xyz(gps_joint.find("origin").attrib["xyz"]) == (0.0, 0.0, 0.0)
+    assert gps_joint.find("origin").attrib["rpy"] == "0 0 0"
+
+
 def test_body_visual_and_collision_use_matching_cylinder_geometry():
     root = ET.parse(URDF_PATH).getroot()
     visual = body_cylinder(root, "visual")

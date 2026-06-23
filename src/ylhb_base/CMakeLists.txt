@@ -10,6 +10,8 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(nmea_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -47,6 +49,22 @@ ament_target_dependencies(imu_driver
   tf2
 )
 
+add_library(wtrtk980_nmea src/wtrtk980_nmea.cpp)
+target_include_directories(wtrtk980_nmea PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_executable(wtrtk980_nmea_node src/wtrtk980_nmea_node.cpp)
+target_include_directories(wtrtk980_nmea_node PRIVATE include)
+target_link_libraries(wtrtk980_nmea_node wtrtk980_nmea)
+ament_target_dependencies(wtrtk980_nmea_node
+  rclcpp
+  sensor_msgs
+  nmea_msgs
+  diagnostic_msgs
+)
+
 add_library(ylhb_normalize_goal_bt_node SHARED src/normalize_goal_bt_node.cpp)
 ament_target_dependencies(ylhb_normalize_goal_bt_node
   rclcpp
@@ -62,8 +80,17 @@ install(TARGETS
   base_controller
   zlac8015d_canopen_controller
   imu_driver
+  wtrtk980_nmea_node
   DESTINATION lib/${PROJECT_NAME}
 )
+
+install(TARGETS
+  wtrtk980_nmea
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+)
+
+install(DIRECTORY include/ DESTINATION include)
 
 install(TARGETS
   ylhb_normalize_goal_bt_node
@@ -121,7 +148,13 @@ if(BUILD_TESTING)
   target_compile_definitions(test_zlac_drive_mapping PRIVATE
     BASE_KINEMATICS_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/base_kinematics.yaml")
 
+  ament_add_gtest(test_wtrtk980_nmea test/test_wtrtk980_nmea.cpp)
+  target_include_directories(test_wtrtk980_nmea PRIVATE include)
+  target_link_libraries(test_wtrtk980_nmea wtrtk980_nmea)
+
   ament_add_pytest_test(test_bringup_imu_detection test/test_bringup_imu_detection.py)
+  ament_add_pytest_test(test_bringup_rtk_config test/test_bringup_rtk_config.py)
+  ament_add_pytest_test(test_bind_usb_rtk test/test_bind_usb_rtk.py)
   ament_add_pytest_test(test_robot_geometry test/test_robot_geometry.py)
   ament_add_pytest_test(test_slam_config test/test_slam_config.py)
   ament_add_pytest_test(test_nav2_localization_config test/test_nav2_localization_config.py)

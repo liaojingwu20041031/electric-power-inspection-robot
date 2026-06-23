@@ -42,6 +42,33 @@ tty_matches_usb_id() {
   return 1
 }
 
+tty_matches_usb_interface() {
+  tty="$1"
+  expected_vendor="$2"
+  expected_product="$3"
+  expected_interface="$4"
+  sys_path="$(readlink -f "/sys/class/tty/${tty##*/}/device" 2>/dev/null || true)"
+  current="$sys_path"
+  matched_id=0
+  matched_interface=0
+  while [ -n "$current" ] && [ "$current" != "/" ]; do
+    vendor="$(lower_file "$current/idVendor" 2>/dev/null || true)"
+    product="$(lower_file "$current/idProduct" 2>/dev/null || true)"
+    [ "$vendor" = "$expected_vendor" ] && [ "$product" = "$expected_product" ] && matched_id=1
+
+    interface_number="$(lower_file "$current/bInterfaceNumber" 2>/dev/null || true)"
+    [ "$interface_number" = "$expected_interface" ] && matched_interface=1
+    if [ "$matched_id" -eq 1 ] && [ "$matched_interface" -eq 1 ]; then
+      return 0
+    fi
+
+    parent="$(dirname "$current")"
+    [ "$parent" != "$current" ] || break
+    current="$parent"
+  done
+  return 1
+}
+
 first_tty_by_usb_id() {
   expected_vendor="$1"
   expected_product="$2"
@@ -51,6 +78,24 @@ first_tty_by_usb_id() {
     for tty in $pattern; do
       [ -e "$tty" ] || continue
       if tty_matches_usb_id "$tty" "$expected_vendor" "$expected_product"; then
+        printf '%s\n' "$tty"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+first_tty_by_usb_interface() {
+  expected_vendor="$1"
+  expected_product="$2"
+  expected_interface="$3"
+  shift 3
+
+  for pattern in "$@"; do
+    for tty in $pattern; do
+      [ -e "$tty" ] || continue
+      if tty_matches_usb_interface "$tty" "$expected_vendor" "$expected_product" "$expected_interface"; then
         printf '%s\n' "$tty"
         return 0
       fi
@@ -112,6 +157,9 @@ IMU_VID="1a86"
 IMU_PID="55d4"
 LIDAR_VID="10c4"
 LIDAR_PID="ea60"
+RTK_VID="19d1"
+RTK_PID="0001"
+RTK_INTERFACE="06"
 PCAN_VID="0c72"
 PCAN_PID="000c"
 CAN_IFACE="can1"
@@ -251,6 +299,33 @@ tty_matches_usb_id() {
   return 1
 }
 
+tty_matches_usb_interface() {
+  tty="\$1"
+  expected_vendor="\$2"
+  expected_product="\$3"
+  expected_interface="\$4"
+  sys_path="\$(readlink -f "/sys/class/tty/\${tty##*/}/device" 2>/dev/null || true)"
+  current="\$sys_path"
+  matched_id=0
+  matched_interface=0
+  while [ -n "\$current" ] && [ "\$current" != "/" ]; do
+    vendor="\$(lower_file "\$current/idVendor" 2>/dev/null || true)"
+    product="\$(lower_file "\$current/idProduct" 2>/dev/null || true)"
+    [ "\$vendor" = "\$expected_vendor" ] && [ "\$product" = "\$expected_product" ] && matched_id=1
+
+    interface_number="\$(lower_file "\$current/bInterfaceNumber" 2>/dev/null || true)"
+    [ "\$interface_number" = "\$expected_interface" ] && matched_interface=1
+    if [ "\$matched_id" -eq 1 ] && [ "\$matched_interface" -eq 1 ]; then
+      return 0
+    fi
+
+    parent="\$(dirname "\$current")"
+    [ "\$parent" != "\$current" ] || break
+    current="\$parent"
+  done
+  return 1
+}
+
 first_tty_by_usb_id() {
   expected_vendor="\$1"
   expected_product="\$2"
@@ -268,6 +343,24 @@ first_tty_by_usb_id() {
   return 1
 }
 
+first_tty_by_usb_interface() {
+  expected_vendor="\$1"
+  expected_product="\$2"
+  expected_interface="\$3"
+  shift 3
+
+  for pattern in "\$@"; do
+    for tty in \$pattern; do
+      [ -e "\$tty" ] || continue
+      if tty_matches_usb_interface "\$tty" "\$expected_vendor" "\$expected_product" "\$expected_interface"; then
+        printf '%s\n' "\$tty"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 refresh_tty_alias() {
   alias_path="\$1"
   vid="\$2"
@@ -275,6 +368,24 @@ refresh_tty_alias() {
   shift 3
 
   tty="\$(first_tty_by_usb_id "\$vid" "\$pid" "\$@" || true)"
+  [ -n "\$tty" ] || return 1
+
+  current_target="\$(readlink "\$alias_path" 2>/dev/null || true)"
+  if [ "\$current_target" != "\${tty##*/}" ]; then
+    ln -sfn "\${tty##*/}" "\$alias_path" \
+      && log "refreshed \$alias_path -> \${tty##*/}" \
+      || log "failed to refresh \$alias_path -> \${tty##*/}"
+  fi
+
+  chmod 0666 "\$tty" 2>/dev/null || log "failed to chmod 0666 \$tty"
+  chgrp dialout "\$tty" 2>/dev/null || log "failed to chgrp dialout \$tty"
+  chgrp dialout "\$alias_path" 2>/dev/null || true
+  return 0
+}
+
+refresh_rtk_alias() {
+  alias_path="\$1"
+  tty="\$(first_tty_by_usb_interface "\$RTK_VID" "\$RTK_PID" "\$RTK_INTERFACE" /dev/ttyACM* || true)"
   [ -n "\$tty" ] || return 1
 
   current_target="\$(readlink "\$alias_path" 2>/dev/null || true)"
@@ -388,6 +499,7 @@ run_once() {
     bind_usb_interface "\$interface" cp210x
   done < <(list_usb_interfaces_by_id "\$LIDAR_VID" "\$LIDAR_PID")
   refresh_tty_alias /dev/robot_lidar "\$LIDAR_VID" "\$LIDAR_PID" /dev/ttyUSB* || true
+  refresh_rtk_alias /dev/rtk_4g || true
 
   ensure_pcan_driver || true
   while IFS= read -r interface; do
@@ -436,6 +548,9 @@ echo "- 正在写入 N300WP PRO CH9102 (IMU) 规则为 /dev/robot_imu"
   echo 'SUBSYSTEM=="tty", KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", MODE:="0666", GROUP:="dialout", SYMLINK+="robot_imu"'
 } > /etc/udev/rules.d/99-robot-imu.rules
 
+echo "- 正在写入 WTRTK980 RTK_4G 规则为 /dev/rtk_4g"
+echo 'SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="19d1", ATTRS{idProduct}=="0001", ENV{ID_USB_INTERFACE_NUM}=="06", MODE:="0666", GROUP:="dialout", SYMLINK+="rtk_4g"' > /etc/udev/rules.d/99-robot-rtk-4g.rules
+
 install_hardware_guard
 install_hardware_service
 
@@ -460,10 +575,10 @@ echo "日志: /var/log/robot-hardware-guard.log"
 echo "================================================="
 echo "+ lsusb -t"
 lsusb -t || true
-echo "+ ls -l /dev/robot_lidar /dev/robot_imu /dev/ttyUSB* /dev/ttyACM* /dev/ttyCH343USB*"
-ls -l /dev/robot_lidar /dev/robot_imu /dev/ttyUSB* /dev/ttyACM* /dev/ttyCH343USB* 2>/dev/null || true
+echo "+ ls -l /dev/robot_lidar /dev/robot_imu /dev/rtk_4g /dev/ttyUSB* /dev/ttyACM* /dev/ttyCH343USB*"
+ls -l /dev/robot_lidar /dev/robot_imu /dev/rtk_4g /dev/ttyUSB* /dev/ttyACM* /dev/ttyCH343USB* 2>/dev/null || true
 echo "+ 当前 USB interface driver:"
-for interface in $(list_usb_interfaces_by_id 10c4 ea60; list_usb_interfaces_by_id 1a86 55d4; list_usb_interfaces_by_id 0c72 000c); do
+for interface in $(list_usb_interfaces_by_id 10c4 ea60; list_usb_interfaces_by_id 1a86 55d4; list_usb_interfaces_by_id 19d1 0001; list_usb_interfaces_by_id 0c72 000c); do
   printf '%s -> %s\n' "$interface" "$(interface_driver "$interface")"
 done
 echo "+ ip -details link show can1"
