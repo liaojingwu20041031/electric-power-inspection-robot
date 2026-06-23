@@ -7,6 +7,71 @@
 本文按实机调试顺序组织：先看系统能力边界，再按底层、控制、建图、导航、
 巡逻、感知和任务层逐步联调。
 
+## 项目定位与交付
+
+本项目面向电力实训和变电站巡检方向，当前阶段完成的是 PC 主机端仓库初始化整理和 ROS 2 智能机器人可复用框架保留。项目尚未在 Jetson/开发板上进行完整实机运行，因此不能视为已经完成的电力巡检业务系统。
+
+当前交付：
+
+- 仓库已迁移到 `liaojingwu20041031/electric-power-inspection-robot`。
+- 文档入口已整理为中文命名，方便实训汇报和后续开发。
+- LLM 层已从旧业务语义清理为巡检任务初始化框架。
+- 默认任务话题切换为 `/inspection_ai/*`。
+- 保留底盘、导航、感知、语音、移动端桥接等可复用 ROS 2 框架。
+- 未实现正式巡检状态机、检查点执行闭环、检测服务、告警数据库或巡检报告导出。
+
+### 技术栈概览
+
+| 类型 | 技术/模块 |
+|---|---|
+| 系统 | Ubuntu 22.04、ROS 2 Humble |
+| 计算平台 | Jetson Orin Nano Super，后续实机验证 |
+| 底盘 | ZLAC8015D V4、SocketCAN/CANopen |
+| 导航 | RPLidar、IMU、SLAM Toolbox、Nav2、AMCL、EKF |
+| 感知 | ZED 2i、YOLO/TensorRT、OpenCV |
+| LLM/语音 | DashScope/Qwen、ASR、TTS、语音路由 |
+| UI/桥接 | PyQt 控制台、HTTP/WebSocket mobile bridge |
+| 后续规划 | LocateAnything-3B、LingBot-Map、巡检业务协议 |
+
+### 初始化框架边界
+
+当前只提供"可以继续开发"的机器人框架：
+
+```text
+底盘/传感器框架
+  -> 建图与导航框架
+  -> 感知输入框架
+  -> LLM/语音/任务事件框架
+  -> UI 与移动端桥接占位
+```
+
+正式电力巡检流程仍属于后续开发：
+
+```text
+站点/区域/路线/检查点建模
+  -> 任务下发、暂停、恢复、取消、人工接管
+  -> 路线级安全检测
+  -> 检查点级设备检测
+  -> 告警记录和巡检报告
+```
+
+### 后续扩展方向
+
+- 开发板实机验证底盘、雷达、IMU、ZED、Nav2 和语音链路。
+- 设计正式 `/inspection/*` 任务协议和巡检消息。
+- 增加站点、区域、路线和检查点配置。
+- 接入人员、安全帽、火源、烟雾、障碍物等路线级检测。
+- 评估 LocateAnything-3B 用于开关状态、漏油、异物等检查点级定位。
+- 评估 LingBot-Map 用于三维空间重建、巡检点位对齐和后台展示。
+
+### 文档入口
+
+- [项目封面](PROJECT_COVER.md)
+- [项目概览](../docs/项目概览.md)
+- [快速使用](../docs/快速使用.md)
+- [接口约定](../docs/接口约定.md)
+- [迁移清理记录](../docs/迁移清理记录.md)
+
 ## 0. 系统能力地图
 
 当前系统按运行职责分为六层。阅读和排障时先确认自己正在处理哪一层，不要把
@@ -1032,7 +1097,11 @@ ros2 launch ylhb_llm llm.launch.py enable_llm_parse:=true enable_voice:=false en
 
 ## 15. Mobile Bridge
 
-启动移动端桥接：
+`ylhb_mobile_bridge` 是 ROS 2 与移动端调试 APP 之间的 HTTP/WebSocket 桥接，定位为**低速底盘控制、建图、导航的现场调试入口**，不承载正式巡检任务流程。调试端 APP 仓库为 `liaojingwu20041031/ylhb-robot-mobile`（Expo React Native），仅用于局域网调试。
+
+### 15.1 启动桥接
+
+终端 N（在 bringup/导航等底层已启动后）：
 
 ```bash
 cd ~/ros2_DL
@@ -1041,23 +1110,160 @@ source install/setup.bash
 ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py
 ```
 
-本地巡逻执行器也在 `ylhb_mobile_bridge` 包中，但它不是 HTTP/WebSocket 服务。
-巡逻调试使用：
+默认监听 `0.0.0.0:8000`，默认地图前缀 `/home/nvidia/ros2_DL/maps/my_map`。配置文件在 `src/ylhb_mobile_bridge/config/mobile_bridge.yaml`，可改 `host`、`port`、话题名和速度限幅。
+
+启动后先在 Jetson 本机验证服务是否起来：
+
+```bash
+curl http://localhost:8000/api/status
+```
+
+返回 JSON 含 `online: true` 即正常。
+
+本地巡逻执行器也在 `ylhb_mobile_bridge` 包中，但它不是 HTTP/WebSocket 服务，两者共享包但职责不同：
 
 ```bash
 ros2 launch ylhb_mobile_bridge patrol_executor.launch.py
 ```
 
-默认监听：
+### 15.2 调试端 APP 连接
 
-```text
-0.0.0.0:8000
+APP 默认连接地址为 `http://192.168.1.100:8000`，端口与 bridge 一致。连接步骤：
+
+1. 确认 Jetson 与手机处于同一局域网（建议使用 Jetson 的有线/无线 LAN IP，不要用 USB 网络共享地址）。
+2. 在 Jetson 上查看实际 IP：
+
+   ```bash
+   ip -br addr show
+   ```
+
+3. 在手机上安装调试端 APP（Expo Go 扫码或构建 APK），打开设置页。
+4. 将 `baseUrl` 改为 `http://<Jetson_IP>:8000`（例如 `http://192.168.1.50:8000`）。
+5. 关闭 `Mock Mode`（默认开启，开启时 APP 不发任何网络请求，仅用内置模拟数据）。
+6. 首页点"测试 HTTP 连接"，成功后 `connectionState` 显示 `connected`。
+
+### 15.3 WebSocket 实时状态
+
+APP 设置页打开 `WebSocket` 开关后，dashboard 页会连接 `ws://<baseUrl>/ws/status`，服务端每 500ms 推送一次 `RobotStatus` JSON。WebSocket 打开后无需手动刷新；关闭时回退到手动"刷新状态"按钮。
+
+WebSocket 仅服务端→客户端单向推送，APP 不向服务端发任何帧，也不做自动重连。断连后需手动重新打开开关。
+
+### 15.4 调试 API 概览
+
+完整接口契约见 [接口约定](../docs/接口约定.md)。APP 当前使用的端点：
+
+| 分类 | 方法 | 路径 | 用途 |
+|---|---|---|---|
+| 状态 | GET | `/api/status` | 机器人基础状态、健康检查 |
+| 控制 | POST | `/api/cmd_vel` | 短时 `/cmd_vel`，限速限时长 |
+| 控制 | POST | `/api/stop` | 急停：零速度 + 停止任务文本 |
+| 任务 | POST | `/api/text_command` | 文本命令到 `/inspection_ai/text_command` |
+| 底盘测试 | POST | `/api/debug/chassis/test` | 低速底盘动作测试 |
+| 底盘测试 | POST | `/api/debug/chassis/stop` | 停止底盘测试 |
+| 建图 | GET | `/api/debug/mapping/status` | 建图依赖检查 |
+| 建图 | POST | `/api/debug/mapping/start` | 启动建图进程 |
+| 建图 | POST | `/api/debug/mapping/save` | 保存地图 |
+| 建图 | POST | `/api/debug/mapping/stop` | 停止建图进程 |
+| 导航 | GET | `/api/debug/navigation/status` | 导航依赖检查 |
+| 导航 | POST | `/api/debug/navigation/start` | 启动 Nav2 |
+| 导航 | POST | `/api/debug/navigation/set_initial_pose` | 发布 `/initialpose` |
+| 导航 | POST | `/api/debug/navigation/goal` | 发送单点目标 |
+| 导航 | POST | `/api/debug/navigation/cancel` | 取消当前目标 |
+| 实时 | WS | `/ws/status` | 推送状态，约 2Hz |
+
+统一响应信封：
+
+```json
+{ "ok": true, "message": "...", "data": {...} }
 ```
 
-默认地图前缀已统一为：
+失败时 `ok: false`，`error` 取值 `invalid_request`/`ros_unavailable`/`process_error`/`not_allowed`/`internal_error`。
+
+### 15.5 状态字段说明
+
+`/api/status` 与 `/api/debug/status` 返回的字段对接调试端 APP：
+
+- `system_mode`：来自 `/inspection_ai/system_mode`，取 `ready`/`mapping`/`fault`/`sleep` 等，TRANSIENT_LOCAL QoS。
+- `last_map_age_sec`：`/map` 话题最近一次发布距今秒数，建图调试时判断地图是否在持续生成。
+- `scan_range_min` / `scan_range_max`：`/scan` 最近一帧测距范围（米），确认雷达数据质量。
+- `last_odom_age_sec` / `last_scan_age_sec`：里程计/雷达数据新鲜度，APP 用 >3s 判定为 stale。
+- `task_status`：回显最后一次通过 bridge 下发的文本命令，不订阅正式任务状态。
+- `zlac_status`：底盘状态，正常为 `online`，故障为 `fault: <详情>`。
+- `mapping_status` / `nav2_status`：`running` 或 `not_running`，按节点存在性判定。
+- `battery_percent`：电量，当前由底盘侧提供；未提供时为空，APP 解析但不显示。
+
+`DebugStatus.nodes` 检测键：`zlac8015d_canopen_controller`、`slam_toolbox`、`bt_navigator`、`controller_server`、`planner_server`、`amcl`、`map_server`、`bringup`（检测 `robot_state_publisher`）、`rplidar_node`、`tf`（检测 `/tf` 话题是否有发布者）。
+
+> 零售遗留字段 `salesDialogueStatus`、`cart` 在电力巡检机器人上不实现，APP 对缺失值显示"未知"，属预期行为。
+
+### 15.6 调试流程
+
+底盘测试（需先启动 bringup）：
 
 ```text
-/home/nvidia/ros2_DL/maps/my_map
+APP 控制页 -> 方向按钮 -> POST /api/cmd_vel (300ms, ±0.03 m/s, ±0.15 rad/s)
+APP 急停按钮 -> POST /api/stop
+```
+
+建图（需先启动 bringup）：
+
+```text
+APP 建图面板 -> 开始建图 -> POST /api/debug/mapping/start
+遥控机器人覆盖场地
+APP 建图面板 -> 保存地图 -> POST /api/debug/mapping/save { map_name: "my_map" }
+APP 建图面板 -> 停止建图 -> POST /api/debug/mapping/stop
+```
+
+导航（需先启动 bringup）：
+
+```text
+APP 导航面板 -> 开始导航 -> POST /api/debug/navigation/start
+APP 导航面板 -> 设置初始位姿 -> POST /api/debug/navigation/set_initial_pose
+APP 导航面板 -> 发送目标点 -> POST /api/debug/navigation/goal
+APP 导航面板 -> 取消 -> POST /api/debug/navigation/cancel
+```
+
+### 15.7 安全限制
+
+- `/api/cmd_vel` 服务端强制限幅：线速度 ≤ 0.15 m/s，角速度 ≤ 0.5 rad/s，`duration_ms` 范围 50–3000ms，超时自动发布零速度。
+- 进程管理只允许白名单命令（`mapping`、`navigation`），通过 `scripts/run_on_jetson.sh` 执行。
+- bridge 默认允许局域网跨域（CORS `*`），**仅用于局域网，不暴露公网**。
+- 无鉴权：依赖网络层隔离，不要把 8000 端口映射到公网或不可信网络。
+- APP 侧额外节流：底盘命令 200ms 最小间隔，控制面板 10s 无操作自动锁定。
+
+### 15.8 故障排查
+
+APP 显示 `network_error`：
+
+```text
+1. 确认手机与 Jetson 同局域网。
+2. 确认 baseUrl 的 IP 与 Jetson 实际 IP 一致，端口 8000。
+3. Jetson 上 curl http://localhost:8000/api/status 验证服务已启动。
+4. 确认 APP 的 Mock Mode 已关闭。
+```
+
+APP 连接成功但状态全灰：
+
+```text
+1. 确认 bringup 已启动（/odom、/scan、TF）。
+2. APP 调试页查看 nodes/topics 哪些为 false。
+3. last_odom_age_sec / last_scan_age_sec > 3s 表示传感器无数据。
+```
+
+WebSocket 连不上：
+
+```text
+1. 确认 APP 设置页 WebSocket 开关已打开。
+2. 确认 baseUrl 协议与 WS 一致（http -> ws，https -> wss）。
+3. 服务端每 500ms 推送，无消息说明服务端未启动或已退出。
+```
+
+建图/导航启动失败返回 `process_error`：
+
+```text
+1. 确认 scripts/run_on_jetson.sh 存在且可执行。
+2. 确认 workspace_dir 参数指向正确的工作空间。
+3. 在 Jetson 上手动执行 ./scripts/run_on_jetson.sh mapping 验证脚本本身。
 ```
 
 ## 16. 常用调试命令
