@@ -4,31 +4,52 @@
 统一工作区：`~/ros2_DL`
 当前定位：电力巡检机器人集成开发工作空间，覆盖底盘、雷达、IMU、建图、导航、ZED 感知、语音/LLM 任务层、显示 UI 和 mobile bridge。
 
-本文按实机调试顺序组织：先底层，再控制，再建图，再导航，最后接入感知和任务层。
+本文按实机调试顺序组织：先看系统能力边界，再按底层、控制、建图、导航、
+巡逻、感知和任务层逐步联调。
 
-## 0. 项目主流程
+## 0. 系统能力地图
 
-```text
-1. 底层 bringup
-   ZLAC8015D SocketCAN 底盘 或 STM32 串口回退 + IMU + RPLidar + URDF + EKF
+当前系统按运行职责分为六层。阅读和排障时先确认自己正在处理哪一层，不要把
+ROS 包名、launch 模式和业务功能混在一起看。
 
-2. 手动控制验收
-   /cmd_vel -> 底盘动作，确认方向、速度、里程计、TF
-
-3. 建图
-   /scan + /odom + TF -> slam_toolbox -> 保存 maps/my_map.yaml 和 maps/my_map.pgm
-
-4. 导航
-   已知地图 + AMCL + Nav2 -> /cmd_vel -> 底盘闭环运动
-
-5. 感知和任务层
-   ZED 2i -> YOLO/TensorRT -> /perception/localized_objects
-   文字/语音/UI -> /inspection_ai/* -> 系统控制或巡检任务事件
-```
+| 层级 | 当前能力 | 主要运行入口 | 关键输出 |
+|---|---|---|---|
+| 硬件与底盘 | USB 设备绑定、PCAN/SocketCAN、ZLAC8015D 或 STM32 底盘、IMU、RPLidar、URDF、EKF | `./scripts/run_on_jetson.sh bringup` | `/odom`、`/scan`、`/imu/data`、TF、`/cmd_vel` 执行 |
+| 建图定位 | SLAM Toolbox 建图、地图保存、AMCL 定位、Scan-to-Map 修正 | `mapping`、`navigation`、`scan_map_relocalization_node` | `/map`、`map -> odom`、`/initialpose` 修正 |
+| 导航与巡逻 | Nav2 单点导航、本地路线巡逻、到点任务触发、返航、暂停/恢复/取消 | `navigation`、`patrol_executor.launch.py` | Nav2 action、`/patrol/status`、`/patrol/event` |
+| 视觉感知 | ZED 2i 图像/深度、YOLO/TensorRT 检测、目标空间定位 | `zed`、`perception` | `/perception/detections`、`/perception/localized_objects` |
+| 任务与交互 | 文本/语音命令、任务事件、TTS、中文显示 UI、系统进程 supervisor | `llm`、`inspection` | `/inspection_ai/*`、短时 `/cmd_vel`、UI |
+| 外部调试接口 | HTTP/WebSocket 调试、移动端状态查询、低速控制、系统启动/停止入口 | `mobile_bridge.launch.py` | Web API、WebSocket、ROS 话题转发 |
 
 当前仓库已经包含机器人底层、导航、感知和交互框架；完整巡检业务闭环、检测服务 API、告警数据库、报告导出、LocateAnything-3B 推理和 LingBot-Map 实际接入仍属于后续扩展。
 
-## 1. 项目结构总览
+## 1. 实机启动组合
+
+根目录脚本是实机使用入口。`scripts/run_on_jetson.sh` 会自动进入工作空间、
+source ROS 环境和 install 环境，并把常用运行模式统一成固定命令。
+
+| 要做什么 | 必须先启动 | 再启动 | 备注 |
+|---|---|---|---|
+| 台架底盘/传感器验收 | 无 | `bringup` | 先确认 CAN、IMU、雷达、TF 和 `/odom` |
+| 手动遥控 | `bringup` | `teleop` | 低速确认方向、轮速、里程计和急停习惯 |
+| 在线建图 | `bringup` | `mapping` | `mapping.launch.py` 不启动底盘、雷达或 EKF |
+| 单点导航 | `bringup` | `navigation` | 启动后先发布 `map` frame 的 `/initialpose` |
+| 本地巡逻 | `bringup`、`navigation` | `patrol_executor.launch.py` | 默认 `auto_start:=false`，先定位再发送 `start` |
+| 视觉检测 | `zed` | `perception` | ZED wrapper 和 TensorRT 检测分开启动 |
+| 任务/语音/UI | 视任务需要启动底层或导航 | `inspection` 或 `llm` | `inspection` 是带 UI、语音和 supervisor 的组合模式 |
+| 移动端调试 | 视接口需要启动底层或导航 | `mobile_bridge.launch.py` | 只做外部协议到 ROS 的转换 |
+
+常用顺序：
+
+```text
+bringup -> teleop 验收
+bringup -> mapping -> 保存地图
+bringup -> navigation -> initialpose -> 单点导航
+bringup -> navigation -> patrol_executor -> /patrol/command start
+zed -> perception -> inspection
+```
+
+## 2. 项目结构总览
 
 仓库按 ROS 2 工作空间组织。根目录负责部署、地图、文档和硬件资料；`src/` 下放 ROS 2 包和第三方驱动。
 
@@ -50,28 +71,47 @@
     └── zed-ros2-wrapper/     # ZED 2i 官方 ROS 2 wrapper
 ```
 
-根目录脚本是实机使用入口。`scripts/run_on_jetson.sh` 会自动进入工作空间、source ROS 环境和 install 环境，并把常用运行模式统一成 `bringup`、`mapping`、`navigation`、`zed`、`perception`、`llm`、`inspection`、`teleop`。日常调试优先使用这些脚本，只有需要查看 launch 细节时再直接运行 `ros2 launch`。
+容易混淆的边界：
 
-## 2. ROS 包结构分析
+- `scripts/` 是现场启动和诊断入口，不是 ROS 包。
+- `maps/` 存放运行时地图和路线，`maps/my_map.*` 给 Nav2 使用，
+  `maps/route_patrol_*.json` 给本地巡逻执行器使用。
+- `ylhb_mobile_bridge` 同时包含 HTTP/WebSocket bridge 和本地巡逻执行器。
+  前者服务手机/Web 调试，后者直接调用 Nav2；两者共享包但职责不同。
+- `ylhb_llm` 是任务/语音/UI 层，不是底盘控制器。它可以发布短时 `/cmd_vel`
+  或系统命令，但不替代 Nav2 和底盘驱动。
 
-| 层级 | 包/目录 | 主要职责 | 关键输入 | 关键输出 |
-|---|---|---|---|---|
-| 硬件接入 | `scripts/`、`src/bind_usb.sh` | 绑定 USB 设备、配置 `can1`、安装/检查驱动 | USB 设备、PCAN、系统权限 | `/dev/robot_lidar`、`/dev/robot_imu`、`can1` |
-| 传感器驱动 | `hipnuc_imu`、`rplidar_ros-ros2`、`zed-ros2-wrapper` | 发布 IMU、激光雷达和 ZED 图像/深度 | 串口、USB 相机 | `/imu/data`、`/scan`、`/zed/...` |
-| 底盘与导航 | `ylhb_base` | 底盘控制、里程计、URDF、EKF、SLAM、AMCL、Nav2 | `/cmd_vel`、`/scan`、`/imu/data`、地图 | `/odom`、TF、`/map`、Nav2 action |
-| 共享接口 | `ylhb_interfaces` | 定义任务事件、任务状态、语音输出状态等消息 | 无运行节点 | `TaskEvent`、`TaskStatus`、`SayText`、`VoiceStatus` |
-| 视觉感知 | `ylhb_perception` | 2D 检测、深度融合、目标位置输出 | ZED RGB、深度、相机内参 | `/perception/detections`、`/perception/localized_objects` |
-| 任务交互 | `ylhb_llm` | 文本/语音命令、任务事件、显示 UI、系统进程管理 | `/inspection_ai/text_command`、语音、感知结果 | `/inspection_ai/*`、`/cmd_vel`、系统启动/停止 |
-| 外部桥接 | `ylhb_mobile_bridge` | 对手机端或 Web 端提供 HTTP/WebSocket 调试入口 | HTTP/WebSocket 请求、ROS 状态 | `/cmd_vel`、`/inspection_ai/text_command`、状态 JSON |
+## 3. ROS 包职责
 
-这个分层的核心原则是：底层只处理实时运动和传感器，任务层通过 ROS 话题和服务调用底层能力，不直接改写硬件驱动；感知层只输出检测和定位结果，不直接控制底盘；外部桥接只做协议转换，不承载 Nav2 或底盘算法。
+| ROS 包 | 运行类型 | 主要职责 | 不负责 |
+|---|---|---|---|
+| `ylhb_base` | C++/Python 节点、launch、配置 | 底盘后端、URDF/TF、EKF、SLAM、AMCL、Nav2、重定位辅助 | 业务巡检流程、语音/UI、Web API |
+| `hipnuc_imu` | 传感器驱动包 | HiPNUC IMU 串口数据解析与发布 | EKF 参数、底盘控制 |
+| `rplidar_ros-ros2` | 第三方雷达驱动 | Slamtec RPLidar `/scan` 发布 | 地图、导航策略 |
+| `zed-ros2-wrapper` | 第三方相机 wrapper | ZED 2i 图像、深度、相机信息 | YOLO 业务检测 |
+| `ylhb_perception` | 感知节点、launch、模型配置 | YOLO/TensorRT 检测、深度融合、目标定位输出 | 导航控制、任务调度 |
+| `ylhb_interfaces` | 消息定义 | 任务事件、任务状态、语音输出状态等自定义消息 | 运行节点 |
+| `ylhb_llm` | Python 任务/语音/UI 节点 | 文本任务解析、语音输入输出、显示 UI、system supervisor、短时基础运动命令 | 底盘闭环、Nav2 算法、本地路线巡逻状态机 |
+| `ylhb_mobile_bridge` | Python bridge 与巡逻执行器 | HTTP/WebSocket 调试入口、本地 Nav2 巡逻执行器、路线文件校验 | 感知算法、底盘驱动、Nav2 参数调优 |
 
-## 3. 运行链路解释
+常见 launch 与节点归属：
 
-### 3.1 底盘与导航闭环
+| 入口 | 来自 | 启动内容 |
+|---|---|---|
+| `ylhb_base bringup.launch.py` | `ylhb_base` | 底盘后端、IMU、RPLidar、robot_state_publisher、EKF |
+| `ylhb_base mapping.launch.py` | `ylhb_base` | SLAM Toolbox 建图 |
+| `ylhb_base navigation.launch.py` | `ylhb_base` | Nav2、map_server、AMCL |
+| `ylhb_mobile_bridge patrol_executor.launch.py` | `ylhb_mobile_bridge` | 本地路线巡逻执行器 |
+| `ylhb_mobile_bridge mobile_bridge.launch.py` | `ylhb_mobile_bridge` | HTTP/WebSocket mobile bridge |
+| `ylhb_perception perception.launch.py` | `ylhb_perception` | YOLO 检测与深度目标定位 |
+| `ylhb_llm llm.launch.py` | `ylhb_llm` | 任务、语音、UI、system supervisor 的可选组合 |
+
+## 4. 数据流与修改入口
+
+### 4.1 底盘闭环
 
 ```text
-Nav2 / teleop / UI / mobile bridge
+Nav2 / teleop / UI / mobile bridge / patrol_executor
   -> /cmd_vel
   -> zlac8015d_canopen_controller 或 base_controller
   -> /odom
@@ -82,7 +122,7 @@ Nav2 / teleop / UI / mobile bridge
 
 `ylhb_base` 中两个底盘后端互斥启动：默认是 `zlac8015d_canopen_controller`，通过 SocketCAN `can1` 控制 ZLAC8015D；`base_controller` 是 STM32 串口回退方案。两者都不发布底盘 TF，`odom -> base_footprint` 统一交给 EKF，避免 TF 冲突。
 
-### 3.2 建图链路
+### 4.2 建图链路
 
 ```text
 /scan + /odom + TF
@@ -94,7 +134,7 @@ Nav2 / teleop / UI / mobile bridge
 
 建图必须先启动底层 bringup，因为 `mapping.launch.py` 只启动 `slam_toolbox`，不启动雷达、底盘或 EKF。保存地图时统一写入 `~/ros2_DL/maps/`，避免旧版本把地图散落到 `src/`。
 
-### 3.3 定位与导航链路
+### 4.3 定位与单点导航链路
 
 ```text
 maps/my_map.yaml + /scan + /odom + TF
@@ -106,7 +146,21 @@ maps/my_map.yaml + /scan + /odom + TF
 
 `navigation.launch.py` 只启动 Nav2，不启动 bringup。AMCL 不强制使用建图原点，现场需要先发布 `map` frame 的 `/initialpose`。`scan_map_relocalization_node` 在粗位姿附近做二维激光到地图匹配，质量达标后再发布修正位姿；`amcl_swing_relocalization_node` 只做小幅原地摆头帮助 AMCL 收敛。
 
-### 3.4 视觉感知链路
+### 4.4 本地巡逻链路
+
+```text
+maps/route_patrol_*.json
+  -> patrol_executor_node
+  -> Nav2 NavigateToPose action
+  -> /patrol/status + /patrol/event
+  -> 到点后 /inspection_ai/text_command
+```
+
+本地巡逻执行器属于 `ylhb_mobile_bridge` 包，但它不是 Web bridge。
+它读取地图坐标路线文件，按目标点顺序调用 Nav2，处理暂停、恢复、取消、返航、
+循环和失败策略。它不修改 Nav2 参数、不清 costmap、不接管底盘驱动。
+
+### 4.5 视觉感知链路
 
 ```text
 ZED 2i RGB 图像
@@ -119,7 +173,7 @@ ZED 2i RGB 图像
 
 `ylhb_perception` 默认使用 Jetson 上编译好的 TensorRT engine：`src/ylhb_perception/models/yolo26.engine`。C++ TensorRT 节点负责实时检测，Python `object_localizer_node.py` 根据深度图和相机内参估算目标 3D 坐标。调试图默认关闭，避免 DDS 图像链路拖慢推理。
 
-### 3.5 任务、语音与 UI 链路
+### 4.6 任务、语音与 UI 链路
 
 ```text
 文字 / 语音 / UI / mobile bridge
@@ -130,7 +184,7 @@ ZED 2i RGB 图像
 
 `ylhb_llm` 不是底盘控制器本体，而是上层任务编排和交互层。`basic_motion_command_node` 可以把“前进、后退、左转、右转、停止”等短命令转换为短时 `/cmd_vel`；`inspection_task_node` 把巡检文本解析成 `TaskEvent`；`system_supervisor_node` 负责启动/停止底层、建图、导航、感知等系统进程；`inspection_display_ui_node` 提供本机中文显示界面。
 
-## 4. 修改功能时看哪里
+### 4.7 修改功能时看哪里
 
 | 修改目标 | 优先查看 | 注意事项 |
 |---|---|---|
@@ -139,10 +193,12 @@ ZED 2i RGB 图像
 | EKF 融合和 TF 发布 | `src/ylhb_base/config/ekf.yaml` | 保持 EKF 独占 `odom -> base_footprint` |
 | SLAM 参数 | `src/ylhb_base/config/slam_toolbox_params.yaml` | 先确认 `/scan`、`/odom`、TF 正常再调参数 |
 | Nav2 行为和 footprint | `src/ylhb_base/config/nav2_params.yaml` | 改 footprint、速度或恢复行为后运行导航配置测试 |
+| 本地巡逻路线 | `maps/route_patrol_*.json` | 坐标必须是 `map` frame，`start_pose` 应是机器人真实起点 |
+| 本地巡逻状态机 | `src/ylhb_mobile_bridge/ylhb_mobile_bridge/patrol_executor_node.py`、`patrol_route_store.py` | 改后运行两个 patrol pytest |
 | 语音、UI、任务话题 | `src/ylhb_llm/config/llm.yaml` | `/inspection_ai/*` 是任务层主命名空间 |
 | 感知模型和检测阈值 | `src/ylhb_perception/config/detector.yaml` | TensorRT engine 输入尺寸需与 `imgsz` 一致 |
 | 手机/Web 调试入口 | `src/ylhb_mobile_bridge/config/mobile_bridge.yaml` | bridge 只做外部协议到 ROS 的转换 |
-| 测试与回归 | `src/ylhb_base/test/`、`src/ylhb_llm/test/` | 配置变更应同步更新对应测试 |
+| 测试与回归 | `src/ylhb_base/test/`、`src/ylhb_mobile_bridge/test/`、`src/ylhb_llm/test/` | 配置或行为变更应同步更新对应测试 |
 
 ## 5. 工作空间规范
 

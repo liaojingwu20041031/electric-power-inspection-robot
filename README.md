@@ -30,9 +30,10 @@
 | 传感器接入 | RPLidar、HiPNUC IMU、ZED 2i，提供稳定设备别名和统一坐标系 |
 | 状态估计 | 轮速里程计与 IMU 经 `robot_localization` EKF 融合 |
 | 建图定位 | SLAM Toolbox 在线建图，AMCL 定位与 Scan-to-Map 重定位 |
-| 自主导航 | Nav2 全局规划、DWB 局部控制、动态障碍处理与低速恢复 |
+| 导航巡逻 | Nav2 单点导航、本地路线巡逻、到点任务触发、返航与暂停/恢复/取消 |
 | 视觉感知 | ZED 深度图像、YOLO、TensorRT 推理和目标空间定位入口 |
-| 巡检交互 | 中文控制界面、任务事件、系统状态管理、ASR/TTS 和语音指令 |
+| 任务交互 | 中文控制界面、任务事件、系统状态管理、ASR/TTS 和语音指令 |
+| 外部接口 | HTTP/WebSocket 状态与控制桥接、移动端低速调试入口 |
 | 调试运维 | Jetson 安装/构建/启动脚本、CAN 诊断、ROS 2 回归测试 |
 
 ## 系统架构
@@ -40,8 +41,13 @@
 ```mermaid
 flowchart LR
     UI[巡检界面 / 语音指令] --> TASK[任务与系统管理]
-    TASK --> NAV[Nav2 导航]
+    ROUTE[路线文件 / 巡逻命令] --> PATROL[本地巡逻执行器]
+    PATROL --> NAV[Nav2 导航]
+    PATROL --> TASK
     TASK --> PERCEPTION[视觉感知]
+    WEB[HTTP / WebSocket] --> BRIDGE[Mobile Bridge]
+    BRIDGE --> TASK
+    BRIDGE --> CMD
 
     NAV --> CMD[/cmd_vel/]
     CMD --> BASE[ZLAC8015D 底盘]
@@ -57,6 +63,9 @@ flowchart LR
     PERCEPTION --> TASK
 ```
 
+图中连线表示功能数据关系，不代表所有节点必须同时启动。实际启动依赖以主调试
+手册的“实机启动组合”为准。
+
 核心 TF 链：
 
 ```text
@@ -68,13 +77,18 @@ map -> odom -> base_footprint -> base_link -> laser_link
 
 | ROS 2 包 | 职责 |
 |---|---|
-| `ylhb_base` | CAN/串口底盘、URDF、机器人状态发布、EKF、SLAM、AMCL、Nav2 |
+| `ylhb_base` | CAN/串口底盘、URDF/TF、EKF、SLAM、AMCL、Nav2 和重定位辅助 |
 | `ylhb_perception` | ZED 图像输入、YOLO/TensorRT 推理、深度目标定位 |
-| `ylhb_llm` | 巡检任务解析、语音输入输出、任务状态、系统管理和显示界面 |
-| `ylhb_mobile_bridge` | HTTP/WebSocket 控制与状态桥接 |
+| `ylhb_llm` | 文本任务解析、语音输入输出、系统管理、基础运动命令和显示界面 |
+| `ylhb_mobile_bridge` | HTTP/WebSocket 调试桥接，以及独立的本地 Nav2 巡逻执行器 |
 | `ylhb_interfaces` | 巡检任务、状态、语音等自定义消息 |
 | `hipnuc_imu` | HiPNUC IMU 串口驱动 |
 | `rplidar_ros-ros2` | Slamtec RPLidar ROS 2 驱动 |
+| `zed-ros2-wrapper` | ZED 2i 图像、深度和相机信息发布 |
+
+运行入口与包职责不是同一概念。`bringup`、`mapping`、`navigation`、`zed`、
+`perception`、`inspection` 是运行组合；ROS 包表描述代码归属。完整启动依赖和
+数据流见 [重点使用与调试文档](src/PROJECT_DOC_zh.md)。
 
 ## 快速开始
 
