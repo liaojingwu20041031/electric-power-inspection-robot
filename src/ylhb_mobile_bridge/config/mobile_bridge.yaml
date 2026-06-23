@@ -9,6 +9,7 @@ mobile_bridge:
     map_topic: "/map"
     zlac_status_topic: "/zlac8015d/status"
     zlac_fault_topic: "/zlac8015d/fault"
+    system_mode_topic: "/inspection_ai/system_mode"
     status_rate_hz: 2.0
     max_linear_speed: 0.15
     max_angular_speed: 0.5

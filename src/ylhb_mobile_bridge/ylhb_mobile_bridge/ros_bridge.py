@@ -6,7 +6,7 @@ from typing import Dict, Optional
 import rclpy
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import (
@@ -40,6 +40,7 @@ class MobileRosBridge(Node):
         self.map_topic = self.get_parameter('map_topic').value
         self.zlac_status_topic = self.get_parameter('zlac_status_topic').value
         self.zlac_fault_topic = self.get_parameter('zlac_fault_topic').value
+        self.system_mode_topic = self.get_parameter('system_mode_topic').value
         self.max_linear_speed = min(
             float(self.get_parameter('max_linear_speed').value),
             0.15,
@@ -55,8 +56,11 @@ class MobileRosBridge(Node):
         self._last_odom_time: Optional[float] = None
         self._last_scan_time: Optional[float] = None
         self._last_map_time: Optional[float] = None
+        self._scan_range_min: Optional[float] = None
+        self._scan_range_max: Optional[float] = None
         self._zlac_status = 'unknown'
         self._task_status = 'idle'
+        self._system_mode = 'unknown'
         self._stop_timer: Optional[threading.Timer] = None
         self._nav_goal_handle = None
 
@@ -84,6 +88,12 @@ class MobileRosBridge(Node):
             qos_profile_sensor_data,
         )
         self.create_subscription(
+            OccupancyGrid,
+            self.map_topic,
+            self._on_map,
+            10,
+        )
+        self.create_subscription(
             String,
             self.zlac_status_topic,
             self._on_zlac_status,
@@ -94,6 +104,12 @@ class MobileRosBridge(Node):
             self.zlac_fault_topic,
             self._on_zlac_fault,
             10,
+        )
+        self.create_subscription(
+            String,
+            self.system_mode_topic,
+            self._on_system_mode,
+            initial_pose_qos_profile(),
         )
         self._nav_client = ActionClient(
             self,
@@ -112,6 +128,7 @@ class MobileRosBridge(Node):
             'map_topic': '/map',
             'zlac_status_topic': '/zlac8015d/status',
             'zlac_fault_topic': '/zlac8015d/fault',
+            'system_mode_topic': '/inspection_ai/system_mode',
             'status_rate_hz': 2.0,
             'max_linear_speed': 0.15,
             'max_angular_speed': 0.5,
@@ -125,8 +142,13 @@ class MobileRosBridge(Node):
     def _on_odom(self, _msg: Odometry) -> None:
         self._last_odom_time = time.time()
 
-    def _on_scan(self, _msg: LaserScan) -> None:
+    def _on_scan(self, msg: LaserScan) -> None:
         self._last_scan_time = time.time()
+        self._scan_range_min = round(msg.range_min, 3)
+        self._scan_range_max = round(msg.range_max, 3)
+
+    def _on_map(self, _msg: OccupancyGrid) -> None:
+        self._last_map_time = time.time()
 
     def _on_zlac_status(self, msg: String) -> None:
         self._zlac_status = msg.data or 'online'
@@ -135,11 +157,17 @@ class MobileRosBridge(Node):
         if msg.data:
             self._zlac_status = f'fault: {msg.data}'
 
+    def _on_system_mode(self, msg: String) -> None:
+        self._system_mode = msg.data.strip() or 'unknown'
+
     def _age(self, last_time: Optional[float]) -> Optional[float]:
         return None if last_time is None else round(time.time() - last_time, 3)
 
     def _topic_available(self, topic: str) -> bool:
         return topic in dict(self.get_topic_names_and_types())
+
+    def _topic_has_publishers(self, topic: str) -> bool:
+        return any(info.node_name for info in self.get_publishers_info_by_topic(topic))
 
     def _node_available(self, candidates: tuple[str, ...]) -> bool:
         names = set(self.get_node_names())
@@ -155,6 +183,7 @@ class MobileRosBridge(Node):
             ),
             'zlac_status': self._zlac_status,
             'task_status': self._task_status,
+            'system_mode': self._system_mode,
             'mapping_status': (
                 'running'
                 if self._node_available(
@@ -193,6 +222,9 @@ class MobileRosBridge(Node):
             'planner_server': self._node_available(('planner_server',)),
             'amcl': self._node_available(('amcl',)),
             'map_server': self._node_available(('map_server',)),
+            'bringup': self._node_available(('robot_state_publisher',)),
+            'rplidar_node': self._node_available(('rplidar_node',)),
+            'tf': self._topic_has_publishers('/tf'),
         }
         status = self.robot_status()
         return {
@@ -201,9 +233,14 @@ class MobileRosBridge(Node):
             'nodes': nodes,
             'last_odom_age_sec': status['last_odom_age_sec'],
             'last_scan_age_sec': status['last_scan_age_sec'],
+            'last_map_age_sec': self._age(self._last_map_time),
+            'scan_range_min': self._scan_range_min,
+            'scan_range_max': self._scan_range_max,
             'zlac_status': self._zlac_status,
             'mapping_status': status['mapping_status'],
             'nav2_status': status['nav2_status'],
+            'task_status': status['task_status'],
+            'system_mode': status['system_mode'],
         }
 
     def publish_velocity(

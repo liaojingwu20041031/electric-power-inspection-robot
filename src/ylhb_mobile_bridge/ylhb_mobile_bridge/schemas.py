@@ -55,6 +55,7 @@ class RobotStatus(BaseModel):
     can_status: Optional[str] = None
     zlac_status: Optional[str] = None
     task_status: Optional[str] = None
+    system_mode: Optional[str] = None
     mapping_status: Optional[str] = None
     nav2_status: Optional[str] = None
     last_odom_age_sec: Optional[float] = None
@@ -69,6 +70,11 @@ class DebugStatus(BaseModel):
     nodes: Dict[str, bool]
     last_odom_age_sec: Optional[float] = None
     last_scan_age_sec: Optional[float] = None
+    last_map_age_sec: Optional[float] = None
+    scan_range_min: Optional[float] = None
+    scan_range_max: Optional[float] = None
     zlac_status: Optional[str] = None
     mapping_status: Optional[str] = None
     nav2_status: Optional[str] = None
+    task_status: Optional[str] = None
+    system_mode: Optional[str] = None

@@ -172,6 +172,8 @@ def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAP
                 await asyncio.sleep(0.5)
         except WebSocketDisconnect:
             return
+        except Exception:
+            return
 
     return app
 
