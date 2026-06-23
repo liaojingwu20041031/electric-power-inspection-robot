@@ -7,6 +7,16 @@ import yaml
 
 URDF_PATH = Path(__file__).resolve().parents[1] / "urdf" / "ylhb.urdf.xacro"
 NAV2_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "nav2_params.yaml"
+EXPECTED_CHAMFERED_FOOTPRINT = [
+    [0.104, 0.235],
+    [0.144, 0.195],
+    [0.144, -0.195],
+    [0.104, -0.235],
+    [-0.281, -0.235],
+    [-0.321, -0.195],
+    [-0.321, 0.195],
+    [-0.281, 0.235],
+]
 
 
 def parse_xyz(text):
@@ -42,16 +52,6 @@ def body_box_xy_bounds(root, element_name):
     )
 
 
-def bounds_to_footprint(bounds):
-    min_x, max_x, min_y, max_y = bounds
-    return [
-        (max_x, max_y),
-        (max_x, min_y),
-        (min_x, min_y),
-        (min_x, max_y),
-    ]
-
-
 def costmap_footprint(config, name):
     params = config[name][name]["ros__parameters"]
     return ast.literal_eval(params["footprint"])
@@ -77,16 +77,29 @@ def test_body_geometry_center_relative_to_wheel_center():
     assert geometry_center == (-0.0885, 0.0, 0.15825)
 
 
-def test_costmap_footprints_match_urdf_body_xy_projection():
+def test_costmap_footprints_use_matching_chamfered_body_outline():
     root = ET.parse(URDF_PATH).getroot()
     visual_bounds = body_box_xy_bounds(root, "visual")
     collision_bounds = body_box_xy_bounds(root, "collision")
-    expected_footprint = bounds_to_footprint(visual_bounds)
 
     config = yaml.safe_load(NAV2_CONFIG_PATH.read_text(encoding="utf-8"))
     local_footprint = costmap_footprint(config, "local_costmap")
     global_footprint = costmap_footprint(config, "global_costmap")
 
     assert visual_bounds == collision_bounds
-    assert rounded_points(local_footprint) == rounded_points(global_footprint)
-    assert rounded_points(local_footprint) == rounded_points(expected_footprint)
+    assert local_footprint == global_footprint
+    assert local_footprint == EXPECTED_CHAMFERED_FOOTPRINT
+    assert len(local_footprint) == 8
+
+    min_x, max_x, min_y, max_y = visual_bounds
+    assert all(
+        min_x <= x <= max_x and min_y <= y <= max_y
+        for x, y in local_footprint
+    )
+    assert min(x for x, _ in local_footprint) == min_x
+    assert max(x for x, _ in local_footprint) == max_x
+    assert min(y for _, y in local_footprint) == min_y
+    assert max(y for _, y in local_footprint) == max_y
+    assert rounded_points(local_footprint) == rounded_points(
+        (x, -y) for x, y in local_footprint
+    )

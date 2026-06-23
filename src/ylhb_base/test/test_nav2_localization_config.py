@@ -122,6 +122,10 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     config = load_nav2_params()
     local = config["local_costmap"]["local_costmap"]["ros__parameters"]
     global_map = config["global_costmap"]["global_costmap"]["ros__parameters"]
+    local_obstacle = local["obstacle_layer"]
+    global_obstacle = global_map["obstacle_layer"]
+    local_scan = local_obstacle["scan"]
+    global_scan = global_obstacle["scan"]
 
     assert local["width"] == 4
     assert local["height"] == 4
@@ -132,8 +136,20 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     assert global_map["update_frequency"] == 2.0
     assert global_map["track_unknown_space"] is True
     assert global_map["footprint_padding"] == 0.02
-    assert global_map["plugins"] == ["static_layer", "inflation_layer"]
-    assert "obstacle_layer" not in global_map
+    assert global_map["plugins"] == ["static_layer", "obstacle_layer", "inflation_layer"]
+    assert global_obstacle["plugin"] == "nav2_costmap_2d::ObstacleLayer"
+    assert global_obstacle["enabled"] is True
+    assert global_obstacle["observation_sources"] == "scan"
+    assert global_scan["topic"] == "/scan"
+    assert global_scan["data_type"] == "LaserScan"
+    assert global_scan == local_scan
+    assert global_scan["clearing"] is local_scan["clearing"] is True
+    assert global_scan["marking"] is local_scan["marking"] is True
+    assert global_scan["max_obstacle_height"] == local_scan["max_obstacle_height"] == 2.0
+    assert global_scan["raytrace_max_range"] == local_scan["raytrace_max_range"] == 3.0
+    assert global_scan["raytrace_min_range"] == local_scan["raytrace_min_range"] == 0.10
+    assert global_scan["obstacle_max_range"] == local_scan["obstacle_max_range"] == 2.5
+    assert global_scan["obstacle_min_range"] == local_scan["obstacle_min_range"] == 0.10
     assert global_map["inflation_layer"]["inflation_radius"] == 0.35
     assert global_map["inflation_layer"]["cost_scaling_factor"] == 3.0
 

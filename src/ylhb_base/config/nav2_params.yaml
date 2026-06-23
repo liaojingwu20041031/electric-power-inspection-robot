@@ -224,8 +224,8 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      # 机器人矩形足迹，按 base_footprint 坐标填写。
-      footprint: "[ [0.144, 0.235], [0.144, -0.235], [-0.321, -0.235], [-0.321, 0.235] ]"
+      # 机器人导航碰撞足迹，按 base_footprint 坐标填写；基于矩形外廓四角各削 40mm。
+      footprint: "[ [0.104, 0.235], [0.144, 0.195], [0.144, -0.195], [0.104, -0.235], [-0.281, -0.235], [-0.321, -0.195], [-0.321, 0.195], [-0.281, 0.235] ]"
       # 给实车外廓保留 20mm 硬边界；居中避障主要交给膨胀层软代价。
       footprint_padding: 0.02
       # 局部地图只使用障碍层和膨胀层。
@@ -264,15 +264,31 @@ global_costmap:
       resolution: 0.05
       # 未知区域保留为未知，规划器是否可穿越由 allow_unknown 控制。
       track_unknown_space: true
-      footprint: "[ [0.144, 0.235], [0.144, -0.235], [-0.321, -0.235], [-0.321, 0.235] ]"
+      # 机器人导航碰撞足迹，和 local_costmap 保持一致。
+      footprint: "[ [0.104, 0.235], [0.144, 0.195], [0.144, -0.195], [0.104, -0.235], [-0.281, -0.235], [-0.321, -0.195], [-0.321, 0.195], [-0.281, 0.235] ]"
       # 给实车外廓保留 20mm 硬边界，和 local_costmap 保持一致。
       footprint_padding: 0.02
-      # 全局地图只使用静态地图和膨胀层；动态障碍交给局部地图处理。
-      plugins: ["static_layer", "inflation_layer"]
+      # 全局地图使用静态地图、激光障碍层和膨胀层，让全局规划可绕开临时障碍。
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         # 从 map_server 订阅静态地图。
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
+      obstacle_layer:
+        # 激光障碍层：根据 /scan 标记和清除障碍，参数和 local_costmap 保持一致。
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.10
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.10
       inflation_layer:
         # 障碍膨胀层扩大静态地图安全距离，和 local_costmap 保持一致。
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -291,7 +307,7 @@ planner_server:
     use_sim_time: False
     planner_plugins: ["GridBased"]
     GridBased:
-      # Smac 2D 使用代价地图碰撞检查，和矩形 footprint 配合比 Navfn 的点机器人模型更适合实车。
+      # Smac 2D 使用代价地图碰撞检查，和 polygon footprint 配合比 Navfn 的点机器人模型更适合实车。
       plugin: "nav2_smac_planner/SmacPlanner2D"
       # 目标附近 0.20m 内可接受，提升单目标到点精度。
       tolerance: 0.20
