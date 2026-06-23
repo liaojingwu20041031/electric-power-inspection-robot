@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'mobile_bridge_server = ylhb_mobile_bridge.mobile_bridge_server:main',
+            'patrol_executor_node = ylhb_mobile_bridge.patrol_executor_node:main',
         ],
     },
 )

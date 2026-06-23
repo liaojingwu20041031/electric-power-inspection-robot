@@ -136,6 +136,24 @@ ip -details link show can1
 ./scripts/run_on_jetson.sh inspection
 ```
 
+准备好 `maps/route_patrol_*.json` 后，本地 Nav2 巡逻执行器可用以下入口启动：
+
+```bash
+ros2 launch ylhb_mobile_bridge patrol_executor.launch.py \
+  auto_start:=false \
+  publish_initial_pose_on_startup:=true
+```
+
+`auto_start:=false` 表示只加载路线并发布初始位姿，随后停在 `idle` 等待人工确认。
+定位稳定、现场安全后，再发送开始命令：
+
+```bash
+ros2 topic pub --once /patrol/command std_msgs/msg/String "{data: start}"
+```
+
+路线格式、状态观察、暂停/恢复/取消和验收步骤见
+[重点使用与调试文档](src/PROJECT_DOC_zh.md#12-本地巡逻-patrol-调试)。
+
 键盘遥控：
 
 ```bash

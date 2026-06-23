@@ -9,9 +9,22 @@ from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
+
+
+def initial_pose_qos_profile() -> QoSProfile:
+    return QoSProfile(
+        depth=10,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
 
 
 class MobileRosBridge(Node):
@@ -19,15 +32,25 @@ class MobileRosBridge(Node):
         super().__init__('mobile_bridge')
         self._declare_parameters()
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
-        self.text_command_topic = self.get_parameter('text_command_topic').value
+        self.text_command_topic = self.get_parameter(
+            'text_command_topic'
+        ).value
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_topic = self.get_parameter('scan_topic').value
         self.map_topic = self.get_parameter('map_topic').value
         self.zlac_status_topic = self.get_parameter('zlac_status_topic').value
         self.zlac_fault_topic = self.get_parameter('zlac_fault_topic').value
-        self.max_linear_speed = min(float(self.get_parameter('max_linear_speed').value), 0.15)
-        self.max_angular_speed = min(float(self.get_parameter('max_angular_speed').value), 0.5)
-        self.default_cmd_duration_ms = int(self.get_parameter('default_cmd_duration_ms').value)
+        self.max_linear_speed = min(
+            float(self.get_parameter('max_linear_speed').value),
+            0.15,
+        )
+        self.max_angular_speed = min(
+            float(self.get_parameter('max_angular_speed').value),
+            0.5,
+        )
+        self.default_cmd_duration_ms = int(
+            self.get_parameter('default_cmd_duration_ms').value
+        )
 
         self._last_odom_time: Optional[float] = None
         self._last_scan_time: Optional[float] = None
@@ -38,13 +61,45 @@ class MobileRosBridge(Node):
         self._nav_goal_handle = None
 
         self._cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
-        self._text_pub = self.create_publisher(String, self.text_command_topic, 10)
-        self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
-        self.create_subscription(Odometry, self.odom_topic, self._on_odom, 10)
-        self.create_subscription(LaserScan, self.scan_topic, self._on_scan, qos_profile_sensor_data)
-        self.create_subscription(String, self.zlac_status_topic, self._on_zlac_status, 10)
-        self.create_subscription(String, self.zlac_fault_topic, self._on_zlac_fault, 10)
-        self._nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+        self._text_pub = self.create_publisher(
+            String,
+            self.text_command_topic,
+            10,
+        )
+        self._initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped,
+            '/initialpose',
+            initial_pose_qos_profile(),
+        )
+        self.create_subscription(
+            Odometry,
+            self.odom_topic,
+            self._on_odom,
+            10,
+        )
+        self.create_subscription(
+            LaserScan,
+            self.scan_topic,
+            self._on_scan,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            String,
+            self.zlac_status_topic,
+            self._on_zlac_status,
+            10,
+        )
+        self.create_subscription(
+            String,
+            self.zlac_fault_topic,
+            self._on_zlac_fault,
+            10,
+        )
+        self._nav_client = ActionClient(
+            self,
+            NavigateToPose,
+            'navigate_to_pose',
+        )
 
     def _declare_parameters(self) -> None:
         defaults = {
@@ -93,11 +148,27 @@ class MobileRosBridge(Node):
     def robot_status(self) -> dict:
         return {
             'online': True,
-            'can_status': 'online' if self._topic_available(self.cmd_vel_topic) else 'unknown',
+            'can_status': (
+                'online'
+                if self._topic_available(self.cmd_vel_topic)
+                else 'unknown'
+            ),
             'zlac_status': self._zlac_status,
             'task_status': self._task_status,
-            'mapping_status': 'running' if self._node_available(('slam_toolbox', 'async_slam_toolbox_node')) else 'not_running',
-            'nav2_status': 'running' if self._node_available(('bt_navigator', 'controller_server', 'planner_server')) else 'not_running',
+            'mapping_status': (
+                'running'
+                if self._node_available(
+                    ('slam_toolbox', 'async_slam_toolbox_node')
+                )
+                else 'not_running'
+            ),
+            'nav2_status': (
+                'running'
+                if self._node_available(
+                    ('bt_navigator', 'controller_server', 'planner_server')
+                )
+                else 'not_running'
+            ),
             'last_odom_age_sec': self._age(self._last_odom_time),
             'last_scan_age_sec': self._age(self._last_scan_time),
             'timestamp': time.time(),
@@ -111,8 +182,12 @@ class MobileRosBridge(Node):
             '/map': self._topic_available(self.map_topic),
         }
         nodes: Dict[str, bool] = {
-            'zlac8015d_canopen_controller': self._node_available(('zlac8015d_canopen_controller',)),
-            'slam_toolbox': self._node_available(('slam_toolbox', 'async_slam_toolbox_node')),
+            'zlac8015d_canopen_controller': self._node_available(
+                ('zlac8015d_canopen_controller',)
+            ),
+            'slam_toolbox': self._node_available(
+                ('slam_toolbox', 'async_slam_toolbox_node')
+            ),
             'bt_navigator': self._node_available(('bt_navigator',)),
             'controller_server': self._node_available(('controller_server',)),
             'planner_server': self._node_available(('planner_server',)),
@@ -131,17 +206,34 @@ class MobileRosBridge(Node):
             'nav2_status': status['nav2_status'],
         }
 
-    def publish_velocity(self, linear_x: float, angular_z: float, duration_ms: int) -> None:
-        linear_x = max(-self.max_linear_speed, min(self.max_linear_speed, linear_x))
-        angular_z = max(-self.max_angular_speed, min(self.max_angular_speed, angular_z))
-        duration_ms = max(50, min(3000, duration_ms or self.default_cmd_duration_ms))
+    def publish_velocity(
+        self,
+        linear_x: float,
+        angular_z: float,
+        duration_ms: int,
+    ) -> None:
+        linear_x = max(
+            -self.max_linear_speed,
+            min(self.max_linear_speed, linear_x),
+        )
+        angular_z = max(
+            -self.max_angular_speed,
+            min(self.max_angular_speed, angular_z),
+        )
+        duration_ms = max(
+            50,
+            min(3000, duration_ms or self.default_cmd_duration_ms),
+        )
         msg = Twist()
         msg.linear.x = linear_x
         msg.angular.z = angular_z
         self._cmd_pub.publish(msg)
         if self._stop_timer:
             self._stop_timer.cancel()
-        self._stop_timer = threading.Timer(duration_ms / 1000.0, self.stop_motion)
+        self._stop_timer = threading.Timer(
+            duration_ms / 1000.0,
+            self.stop_motion,
+        )
         self._stop_timer.daemon = True
         self._stop_timer.start()
 

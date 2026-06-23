@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
 
 
 SCRIPT_PATH = (
@@ -27,6 +28,15 @@ def test_initialpose_must_be_in_map_frame():
     assert scan_map.is_supported_initialpose_frame("/map") is True
     assert scan_map.is_supported_initialpose_frame("odom") is False
     assert scan_map.is_supported_initialpose_frame("") is False
+
+
+def test_initial_pose_publisher_uses_transient_local_reliable_qos():
+    scan_map = load_scan_map_module()
+    qos = scan_map.initial_pose_qos_profile()
+
+    assert qos.depth == 10
+    assert qos.reliability == ReliabilityPolicy.RELIABLE
+    assert qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
 
 
 def test_distance_field_uses_eight_connected_grid_distances():

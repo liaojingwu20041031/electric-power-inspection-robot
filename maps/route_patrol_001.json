@@ -1,0 +1,83 @@
+{
+  "version": 2,
+  "frame_id": "map",
+  "active_route_id": "route_patrol_001",
+  "start_pose": {
+    "name": "初始起点",
+    "pose": {
+      "x": 0.211,
+      "y": 0.234,
+      "yaw": -1.584
+    },
+    "publish_initial_pose": true,
+    "covariance": {
+      "x": 0.25,
+      "y": 0.25,
+      "yaw": 0.0685
+    }
+  },
+  "targets": [
+    {
+      "id": "target_001",
+      "name": "巡检点1",
+      "pose": {
+        "x": 0.299,
+        "y": -1.599,
+        "yaw": 3.102
+      },
+      "task_duration_sec": 5
+    },
+    {
+      "id": "target_002",
+      "name": "巡检点2",
+      "pose": {
+        "x": -0.669,
+        "y": -1.423,
+        "yaw": 0.013
+      },
+      "task_duration_sec": 5
+    },
+    {
+      "id": "target_003",
+      "name": "巡检点3",
+      "pose": {
+        "x": 2.073,
+        "y": -1.657,
+        "yaw": 0
+      },
+      "task_duration_sec": 5
+    },
+    {
+      "id": "target_004",
+      "name": "巡检点4",
+      "pose": {
+        "x": 3.041,
+        "y": -1.657,
+        "yaw": 0
+      },
+      "task_duration_sec": 5
+    }
+  ],
+  "routes": [
+    {
+      "id": "route_patrol_001",
+      "name": "本地巡逻路线",
+      "target_ids": [
+        "target_001",
+        "target_002",
+        "target_003",
+        "target_004"
+      ],
+      "return_to_start": true,
+      "loop": {
+        "enabled": true,
+        "wait_sec": 60000,
+        "max_cycles": 20
+      },
+      "goal_timeout_sec": 12000,
+      "max_retries_per_checkpoint": 3,
+      "failure_policy": "abort_and_return_home"
+    }
+  ],
+  "schedules": []
+}

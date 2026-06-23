@@ -24,6 +24,16 @@ def is_supported_initialpose_frame(frame_id):
     return frame_id.strip("/") == "map"
 
 
+def initial_pose_qos_profile():
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+    return QoSProfile(
+        depth=10,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
 def approximate_distance_field(occupied, resolution, max_cells=None):
     height, width = occupied.shape
     if max_cells is None:
@@ -99,7 +109,12 @@ def score_scan_points(
             distances.append(value)
 
     if not distances:
-        return MatchScore(score=0.0, mean_distance=float("inf"), inlier_ratio=0.0, used_points=0)
+        return MatchScore(
+            score=0.0,
+            mean_distance=float("inf"),
+            inlier_ratio=0.0,
+            used_points=0,
+        )
 
     mean_distance = float(np.mean(distances))
     inlier_ratio = float(np.mean(np.asarray(distances) <= inlier_distance))
@@ -134,9 +149,21 @@ def _best_pose_in_window(
 ):
     best = None
     sx, sy, syaw = seed_pose
-    for dx, dy, dyaw in _search_offsets(xy_radius, xy_step, yaw_radius, yaw_step):
+    offsets = _search_offsets(
+        xy_radius,
+        xy_step,
+        yaw_radius,
+        yaw_step,
+    )
+    for dx, dy, dyaw in offsets:
         pose = (sx + dx, sy + dy, syaw + dyaw)
-        score = score_scan_points(scan_points, pose, distance_field, origin, resolution)
+        score = score_scan_points(
+            scan_points,
+            pose,
+            distance_field,
+            origin,
+            resolution,
+        )
         if best is None or score.score > best.score.score:
             best = MatchResult(pose=pose, score=score)
     return best
@@ -238,7 +265,9 @@ def main(args=None):
             self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, self)
             self._initialpose_pub = self.create_publisher(
-                PoseWithCovarianceStamped, "/initialpose", 10
+                PoseWithCovarianceStamped,
+                "/initialpose",
+                initial_pose_qos_profile(),
             )
             self._scan_match_pub = self.create_publisher(
                 PoseStamped, "/scan_match_pose", 10
@@ -273,10 +302,17 @@ def main(args=None):
             self._latest_scan = msg
 
         def _is_own_correction(self, msg):
-            if self._last_published_pose is None or self._last_published_time is None:
+            if (
+                self._last_published_pose is None
+                or self._last_published_time is None
+            ):
                 return False
-            age = (self.get_clock().now() - self._last_published_time).nanoseconds / 1e9
-            if age > float(self.get_parameter("self_publish_ignore_seconds").value):
+            elapsed = self.get_clock().now() - self._last_published_time
+            age = elapsed.nanoseconds / 1e9
+            ignore_seconds = float(
+                self.get_parameter("self_publish_ignore_seconds").value
+            )
+            if age > ignore_seconds:
                 return False
             pose = msg.pose.pose
             last = self._last_published_pose
@@ -292,7 +328,9 @@ def main(args=None):
         def _on_initialpose(self, msg):
             frame_id = msg.header.frame_id
             if self._is_own_correction(msg):
-                self.get_logger().debug("ignoring self-published corrected /initialpose")
+                self.get_logger().debug(
+                    "ignoring self-published corrected /initialpose"
+                )
                 return
             if not is_supported_initialpose_frame(frame_id):
                 self.get_logger().error(
@@ -301,19 +339,30 @@ def main(args=None):
                 )
                 return
             if self._distance_field is None:
-                self.get_logger().warn("cannot refine pose yet: /map has not been received")
+                self.get_logger().warn(
+                    "cannot refine pose yet: /map has not been received"
+                )
                 return
             if self._latest_scan is None:
-                self.get_logger().warn("cannot refine pose yet: /scan has not been received")
+                self.get_logger().warn(
+                    "cannot refine pose yet: /scan has not been received"
+                )
                 return
 
             scan_points = self._scan_to_base_points(self._latest_scan)
             if not scan_points:
-                self.get_logger().warn("cannot refine pose: no valid laser points after filtering")
+                self.get_logger().warn(
+                    "cannot refine pose: "
+                    "no valid laser points after filtering"
+                )
                 return
 
             pose = msg.pose.pose
-            seed = (pose.position.x, pose.position.y, yaw_from_quaternion(pose.orientation))
+            seed = (
+                pose.position.x,
+                pose.position.y,
+                yaw_from_quaternion(pose.orientation),
+            )
             result = refine_pose_near_seed(
                 scan_points,
                 seed,
@@ -321,8 +370,12 @@ def main(args=None):
                 self._map_origin,
                 self._map_resolution,
                 min_score=float(self.get_parameter("min_score").value),
-                min_inlier_ratio=float(self.get_parameter("min_inlier_ratio").value),
-                max_mean_distance=float(self.get_parameter("max_mean_distance").value),
+                min_inlier_ratio=float(
+                    self.get_parameter("min_inlier_ratio").value
+                ),
+                max_mean_distance=float(
+                    self.get_parameter("max_mean_distance").value
+                ),
             )
 
             if result is None:
@@ -335,8 +388,11 @@ def main(args=None):
                 )
                 self.get_logger().warn(
                     "scan-map relocalization failed: "
-                    f"score={seed_score.score:.3f}, mean_distance={seed_score.mean_distance:.3f}, "
-                    f"inliers={seed_score.inlier_ratio:.2f}; not publishing a correction"
+                    f"score={seed_score.score:.3f}, "
+                    "mean_distance="
+                    f"{seed_score.mean_distance:.3f}, "
+                    f"inliers={seed_score.inlier_ratio:.2f}; "
+                    "not publishing a correction"
                 )
                 return
 
@@ -352,20 +408,29 @@ def main(args=None):
                     timeout=Duration(seconds=0.2),
                 )
             except TransformException as exc:
-                self.get_logger().warn(f"cannot transform scan to {base_frame}: {exc}")
+                self.get_logger().warn(
+                    f"cannot transform scan to {base_frame}: {exc}"
+                )
                 return []
 
             t = transform.transform.translation
             yaw = yaw_from_quaternion(transform.transform.rotation)
             cos_yaw = math.cos(yaw)
             sin_yaw = math.sin(yaw)
-            max_range = min(float(self.get_parameter("max_scan_range").value), scan.range_max)
+            max_range = min(
+                float(self.get_parameter("max_scan_range").value),
+                scan.range_max,
+            )
             stride = max(1, int(self.get_parameter("sample_stride").value))
             points = []
             angle = scan.angle_min
             for index, distance in enumerate(scan.ranges):
                 valid_range = scan.range_min <= distance <= max_range
-                if index % stride == 0 and valid_range and math.isfinite(distance):
+                if (
+                    index % stride == 0
+                    and valid_range
+                    and math.isfinite(distance)
+                ):
                     sx = math.cos(angle) * distance
                     sy = math.sin(angle) * distance
                     bx = t.x + cos_yaw * sx - sin_yaw * sy
@@ -382,7 +447,10 @@ def main(args=None):
             corrected.pose.pose.position.x = result.pose[0]
             corrected.pose.pose.position.y = result.pose[1]
             corrected.pose.pose.position.z = 0.0
-            set_quaternion_from_yaw(corrected.pose.pose.orientation, result.pose[2])
+            set_quaternion_from_yaw(
+                corrected.pose.pose.orientation,
+                result.pose[2],
+            )
 
             pose_msg = PoseStamped()
             pose_msg.header = corrected.header
