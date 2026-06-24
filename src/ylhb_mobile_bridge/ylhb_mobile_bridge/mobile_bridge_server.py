@@ -1,11 +1,21 @@
 import asyncio
 import logging
 import threading
+from typing import Optional
 
 import rclpy
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .process_manager import ProcessManager
 from .ros_bridge import MobileRosBridge
@@ -29,7 +39,10 @@ def task_to_text(command: TaskCommand) -> str:
     return '收到通用任务指令'
 
 
-def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAPI:
+def make_app(
+    bridge: MobileRosBridge,
+    process_manager: ProcessManager,
+) -> FastAPI:
     app = FastAPI(title='YLHB Mobile Bridge', version='0.1.0')
     app.add_middleware(
         CORSMiddleware,
@@ -39,21 +52,111 @@ def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAP
         allow_headers=['*'],
     )
 
+    def response_dict(response: ApiResponse) -> dict:
+        return response.dict()
+
     def ok(message: str, data=None) -> ApiResponse:
         return ApiResponse(ok=True, message=message, data=data)
 
-    def fail(error: str, exc: Exception) -> ApiResponse:
-        bridge.get_logger().error('%s: %s', error, exc)
-        return ApiResponse(ok=False, error=error, message=str(exc))
+    def fail(error: str, exc: Exception | str) -> ApiResponse:
+        message = str(exc)
+        bridge.get_logger().error('%s: %s', error, message)
+        return ApiResponse(ok=False, error=error, message=message)
+
+    def unauthorized_response() -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=response_dict(
+                ApiResponse(
+                    ok=False,
+                    error='unauthorized',
+                    message='unauthorized',
+                )
+            ),
+        )
+
+    def token_from_authorization(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        scheme, _, token = value.partition(' ')
+        if scheme.lower() == 'bearer' and token:
+            return token
+        return None
+
+    def token_valid(token: Optional[str]) -> bool:
+        return bool(token) and token == bridge.api_token
+
+    def require_http_token(request: Request) -> bool:
+        if not getattr(bridge, 'require_token', False):
+            return True
+        header_token = request.headers.get('x-api-token')
+        bearer_token = token_from_authorization(
+            request.headers.get('authorization')
+        )
+        return token_valid(header_token) or token_valid(bearer_token)
+
+    def require_ws_token(websocket: WebSocket) -> bool:
+        if not getattr(bridge, 'require_token', False):
+            return True
+        return token_valid(websocket.query_params.get('token'))
+
+    @app.middleware('http')
+    async def auth_middleware(request: Request, call_next):
+        if (
+            request.url.path.startswith('/api/')
+            and not require_http_token(request)
+        ):
+            return unauthorized_response()
+        return await call_next(request)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        _request: Request,
+        exc: RequestValidationError,
+    ):
+        return JSONResponse(
+            status_code=422,
+            content=response_dict(
+                ApiResponse(
+                    ok=False,
+                    error='validation_error',
+                    message='request validation failed',
+                    data={'detail': exc.errors()},
+                )
+            ),
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception(_request: Request, exc: HTTPException):
+        if exc.status_code == 401:
+            return unauthorized_response()
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=response_dict(
+                ApiResponse(
+                    ok=False,
+                    error=(
+                        'not_found'
+                        if exc.status_code == 404
+                        else 'http_error'
+                    ),
+                    message=str(exc.detail),
+                )
+            ),
+        )
 
     @app.get('/api/status')
     def status():
-        return bridge.robot_status()
+        return ok('status', bridge.robot_status())
 
     @app.post('/api/cmd_vel')
     def cmd_vel(command: VelocityCommand):
         try:
-            bridge.publish_velocity(command.linear_x, command.angular_z, command.duration_ms)
+            bridge.publish_velocity(
+                command.linear_x,
+                command.angular_z,
+                command.duration_ms,
+            )
             return ok('velocity command accepted')
         except Exception as exc:
             return fail('invalid_request', exc)
@@ -85,12 +188,16 @@ def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAP
 
     @app.get('/api/debug/status')
     def debug_status():
-        return bridge.debug_status()
+        return ok('debug status', bridge.debug_status())
 
     @app.post('/api/debug/chassis/test')
     def chassis_test(command: ChassisTestRequest):
         try:
-            bridge.publish_velocity(command.linear_x, command.angular_z, command.duration_ms)
+            bridge.publish_velocity(
+                command.linear_x,
+                command.angular_z,
+                command.duration_ms,
+            )
             return ok(f'chassis test {command.mode} accepted')
         except Exception as exc:
             return fail('invalid_request', exc)
@@ -105,7 +212,22 @@ def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAP
 
     @app.get('/api/debug/mapping/status')
     def mapping_status():
-        return bridge.debug_status()
+        try:
+            process = process_manager.process_status('mapping')
+            return ok('mapping status', bridge.mapping_status(process))
+        except Exception as exc:
+            return fail('process_error', exc)
+
+    @app.get('/api/debug/mapping/map_snapshot')
+    def map_snapshot(downsample: int = Query(default=1, ge=1, le=16)):
+        snapshot = bridge.map_snapshot(downsample=downsample)
+        if snapshot is None:
+            return ApiResponse(
+                ok=False,
+                error='no_map',
+                message='no map has been received',
+            )
+        return ok('map snapshot', snapshot)
 
     @app.post('/api/debug/mapping/start')
     def mapping_start():
@@ -130,12 +252,43 @@ def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAP
 
     @app.get('/api/debug/navigation/status')
     def navigation_status():
-        return bridge.debug_status()
+        return ok('navigation status', bridge.debug_status())
 
     @app.post('/api/debug/navigation/start')
     def navigation_start():
         try:
             return ok(process_manager.start_navigation())
+        except Exception as exc:
+            return fail('process_error', exc)
+
+    @app.get('/api/debug/system/status')
+    def system_status():
+        try:
+            return ok(
+                'system status',
+                {
+                    'bringup': process_manager.process_status('bringup'),
+                    'mapping': process_manager.process_status('mapping'),
+                },
+            )
+        except Exception as exc:
+            return fail('process_error', exc)
+
+    @app.post('/api/debug/system/start/{mode}')
+    def system_start(mode: str):
+        if mode not in ProcessManager.ALLOWED_MODES:
+            raise HTTPException(status_code=404, detail='mode not found')
+        try:
+            return ok(process_manager.start(mode))
+        except Exception as exc:
+            return fail('process_error', exc)
+
+    @app.post('/api/debug/system/stop/{mode}')
+    def system_stop(mode: str):
+        if mode not in ProcessManager.ALLOWED_MODES:
+            raise HTTPException(status_code=404, detail='mode not found')
+        try:
+            return ok(process_manager.stop(mode))
         except Exception as exc:
             return fail('process_error', exc)
 
@@ -150,8 +303,15 @@ def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAP
     @app.post('/api/debug/navigation/goal')
     def navigation_goal(request: NavigationGoalRequest):
         try:
-            accepted = bridge.send_navigation_goal(request.x, request.y, request.yaw)
-            return ok('goal accepted' if accepted else 'goal rejected', {'accepted': accepted})
+            accepted = bridge.send_navigation_goal(
+                request.x,
+                request.y,
+                request.yaw,
+            )
+            return ok(
+                'goal accepted' if accepted else 'goal rejected',
+                {'accepted': accepted},
+            )
         except Exception as exc:
             return fail('ros_unavailable', exc)
 
@@ -165,14 +325,67 @@ def make_app(bridge: MobileRosBridge, process_manager: ProcessManager) -> FastAP
 
     @app.websocket('/ws/status')
     async def ws_status(websocket: WebSocket):
+        if not require_ws_token(websocket):
+            await websocket.close(code=1008)
+            return
         await websocket.accept()
+        interval = 1.0 / max(
+            0.1,
+            float(getattr(bridge, 'status_rate_hz', 2.0)),
+        )
         try:
             while True:
-                await websocket.send_json(bridge.robot_status())
-                await asyncio.sleep(0.5)
+                await websocket.send_json(
+                    response_dict(ok('status', bridge.robot_status()))
+                )
+                await asyncio.sleep(interval)
         except WebSocketDisconnect:
+            bridge.stop_motion()
             return
         except Exception:
+            bridge.stop_motion()
+            return
+
+    @app.websocket('/ws/map')
+    async def ws_map(websocket: WebSocket):
+        if not require_ws_token(websocket):
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        try:
+            downsample = max(
+                1,
+                min(16, int(websocket.query_params.get('downsample', '1'))),
+            )
+        except ValueError:
+            downsample = 1
+        interval = 1.0 / max(
+            0.1,
+            float(getattr(bridge, 'map_stream_rate_hz', 1.0)),
+        )
+        try:
+            while True:
+                snapshot = bridge.map_snapshot(downsample=downsample)
+                if snapshot is None:
+                    await websocket.send_json(
+                        response_dict(
+                            ApiResponse(
+                                ok=False,
+                                error='no_map',
+                                message='no map has been received',
+                            )
+                        )
+                    )
+                else:
+                    await websocket.send_json(
+                        response_dict(ok('map snapshot', snapshot))
+                    )
+                await asyncio.sleep(interval)
+        except WebSocketDisconnect:
+            bridge.stop_motion()
+            return
+        except Exception:
+            bridge.stop_motion()
             return
 
     return app
@@ -182,7 +395,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     rclpy.init()
     bridge = MobileRosBridge()
-    executor_thread = threading.Thread(target=rclpy.spin, args=(bridge,), daemon=True)
+    executor_thread = threading.Thread(
+        target=rclpy.spin,
+        args=(bridge,),
+        daemon=True,
+    )
     executor_thread.start()
 
     workspace_dir = bridge.get_parameter('workspace_dir').value

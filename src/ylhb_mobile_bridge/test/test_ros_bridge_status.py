@@ -25,12 +25,17 @@ def make_bridge(
     bridge.odom_topic = "/odom"
     bridge.scan_topic = "/scan"
     bridge.map_topic = "/map"
+    bridge.imu_topic = "/imu/data"
     bridge.zlac_status_topic = "/zlac8015d/status"
     bridge.zlac_fault_topic = "/zlac8015d/fault"
     bridge.system_mode_topic = "/inspection_ai/system_mode"
     bridge._last_odom_time = None
     bridge._last_scan_time = None
     bridge._last_map_time = None
+    bridge._last_imu_time = None
+    bridge._latest_map = None
+    bridge._pose = None
+    bridge._velocity = None
     bridge._scan_range_min = None
     bridge._scan_range_max = None
     bridge._zlac_status = "unknown"
@@ -41,8 +46,12 @@ def make_bridge(
     bridge._topic_publishers = topic_publishers
 
     bridge.get_node_names = lambda: bridge._node_names
-    bridge.get_topic_names_and_types = lambda: list(bridge._topic_names_and_types.items())
-    bridge.get_publishers_info_by_topic = lambda topic: bridge._topic_publishers.get(topic, [])
+    bridge.get_topic_names_and_types = lambda: list(
+        bridge._topic_names_and_types.items()
+    )
+    bridge.get_publishers_info_by_topic = lambda topic: (
+        bridge._topic_publishers.get(topic, [])
+    )
     return bridge
 
 
@@ -58,8 +67,42 @@ def test_scan_callback_captures_range_min_max():
 def test_map_callback_updates_last_map_time():
     bridge = make_bridge()
     assert bridge._last_map_time is None
-    bridge._on_map(SimpleNamespace())
+    msg = SimpleNamespace()
+    bridge._on_map(msg)
     assert bridge._last_map_time is not None
+    assert bridge._latest_map is msg
+
+
+def test_odom_callback_caches_pose_and_velocity():
+    bridge = make_bridge()
+    msg = SimpleNamespace(
+        header=SimpleNamespace(frame_id="odom"),
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=1.25, y=-0.5),
+                orientation=SimpleNamespace(
+                    x=0.0,
+                    y=0.0,
+                    z=0.5,
+                    w=0.8660254,
+                ),
+            )
+        ),
+        twist=SimpleNamespace(
+            twist=SimpleNamespace(
+                linear=SimpleNamespace(x=0.1),
+                angular=SimpleNamespace(z=-0.2),
+            )
+        ),
+    )
+
+    bridge._on_odom(msg)
+
+    assert bridge._pose["frame"] == "odom"
+    assert bridge._pose["x"] == 1.25
+    assert bridge._pose["y"] == -0.5
+    assert round(bridge._pose["yaw"], 3) == 1.047
+    assert bridge._velocity == {"linear_x": 0.1, "angular_z": -0.2}
 
 
 def test_system_mode_callback_strips_whitespace():
@@ -80,10 +123,12 @@ def test_robot_status_includes_system_mode():
     status = bridge.robot_status()
     assert status["system_mode"] == "mapping"
     assert "task_status" in status
+    assert "pose" in status
+    assert "velocity" in status
     assert "timestamp" in status
 
 
-def test_debug_status_includes_all_ten_node_keys():
+def test_debug_status_includes_expected_node_keys():
     bridge = make_bridge()
     status = bridge.debug_status()
     expected_nodes = {
@@ -96,6 +141,7 @@ def test_debug_status_includes_all_ten_node_keys():
         "map_server",
         "bringup",
         "rplidar_node",
+        "imu",
         "tf",
     }
     assert set(status["nodes"].keys()) == expected_nodes
@@ -154,7 +200,12 @@ def test_debug_status_includes_task_status_and_system_mode():
 
 def test_debug_status_topics_include_all_four():
     bridge = make_bridge(
-        topic_names_and_types={"/cmd_vel": [], "/odom": [], "/scan": []}
+        topic_names_and_types={
+            "/cmd_vel": [],
+            "/odom": [],
+            "/scan": [],
+            "/imu/data": [],
+        }
     )
     status = bridge.debug_status()
     assert status["topics"] == {
@@ -162,7 +213,85 @@ def test_debug_status_topics_include_all_four():
         "/odom": True,
         "/scan": True,
         "/map": False,
+        "/imu/data": True,
     }
+
+
+def test_debug_status_includes_pose_velocity_and_map_meta():
+    bridge = make_bridge()
+    bridge._pose = {"frame": "odom", "x": 1.0, "y": 2.0, "yaw": 0.3}
+    bridge._velocity = {"linear_x": 0.1, "angular_z": 0.2}
+    bridge.map_metadata = lambda: {"width": 10, "height": 20}
+
+    status = bridge.debug_status()
+
+    assert status["pose"] == bridge._pose
+    assert status["velocity"] == bridge._velocity
+    assert status["map_meta"] == {"width": 10, "height": 20}
+
+
+def test_mapping_status_recommends_starting_bringup_when_prereqs_missing():
+    bridge = make_bridge()
+
+    status = bridge.mapping_status({"mode": "mapping", "running": False})
+
+    assert status["bringup_ready"] is False
+    assert status["map_available"] is False
+    assert status["recommended_next_action"] == "start_bringup"
+
+
+def test_mapping_status_recommends_starting_mapping_after_bringup_ready():
+    bridge = make_bridge(
+        topic_names_and_types={
+            "/odom": [],
+            "/scan": [],
+            "/imu/data": [],
+        },
+        topic_publishers={"/tf": [FakePublisherInfo("robot_state_publisher")]},
+    )
+
+    status = bridge.mapping_status({"mode": "mapping", "running": False})
+
+    assert status["bringup_ready"] is True
+    assert status["map_available"] is False
+    assert status["recommended_next_action"] == "start_mapping"
+
+
+def test_mapping_status_recommends_waiting_for_map_while_mapping_runs():
+    bridge = make_bridge(
+        topic_names_and_types={
+            "/odom": [],
+            "/scan": [],
+            "/imu/data": [],
+        },
+        topic_publishers={"/tf": [FakePublisherInfo("robot_state_publisher")]},
+    )
+
+    status = bridge.mapping_status({"mode": "mapping", "running": True})
+
+    assert status["bringup_ready"] is True
+    assert status["map_available"] is False
+    assert status["recommended_next_action"] == "wait_for_map"
+
+
+def test_mapping_status_recommends_save_when_map_is_available():
+    bridge = make_bridge(
+        node_names=["async_slam_toolbox_node"],
+        topic_names_and_types={
+            "/odom": [],
+            "/scan": [],
+            "/imu/data": [],
+        },
+        topic_publishers={"/tf": [FakePublisherInfo("robot_state_publisher")]},
+    )
+    bridge._latest_map = object()
+    bridge.map_metadata = lambda: {"width": 10, "height": 10}
+
+    status = bridge.mapping_status({"mode": "mapping", "running": True})
+
+    assert status["bringup_ready"] is True
+    assert status["map_available"] is True
+    assert status["recommended_next_action"] == "continue_mapping_or_save"
 
 
 def test_zlac_fault_updates_status():

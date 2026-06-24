@@ -7,10 +7,15 @@ mobile_bridge:
     odom_topic: "/odom"
     scan_topic: "/scan"
     map_topic: "/map"
+    imu_topic: "/imu/data"
     zlac_status_topic: "/zlac8015d/status"
     zlac_fault_topic: "/zlac8015d/fault"
     system_mode_topic: "/inspection_ai/system_mode"
     status_rate_hz: 2.0
+    map_stream_rate_hz: 1.0
+    map_max_size_px: 1024
+    require_token: false
+    api_token: ""
     max_linear_speed: 0.15
     max_angular_speed: 0.5
     default_cmd_duration_ms: 300

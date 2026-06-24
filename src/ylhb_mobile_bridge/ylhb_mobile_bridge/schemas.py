@@ -1,3 +1,4 @@
+import time
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
@@ -8,6 +9,7 @@ class ApiResponse(BaseModel):
     message: Optional[str] = None
     data: Optional[Any] = None
     error: Optional[str] = None
+    timestamp: float = Field(default_factory=time.time)
 
 
 class VelocityCommand(BaseModel):
@@ -34,7 +36,7 @@ class ChassisTestRequest(VelocityCommand):
 
 
 class MappingSaveRequest(BaseModel):
-    map_name: str = 'my_map'
+    map_name: str = Field(default='my_map', regex=r'^[A-Za-z0-9_-]+$')
 
 
 class InitialPoseRequest(BaseModel):

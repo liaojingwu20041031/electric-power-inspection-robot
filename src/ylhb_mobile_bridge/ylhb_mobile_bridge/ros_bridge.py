@@ -15,13 +15,26 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import String
+
+from .map_snapshot import (
+    occupancy_grid_metadata,
+    occupancy_grid_to_png_snapshot,
+)
 
 
 def initial_pose_qos_profile() -> QoSProfile:
     return QoSProfile(
         depth=10,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
+def map_qos_profile() -> QoSProfile:
+    return QoSProfile(
+        depth=1,
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.TRANSIENT_LOCAL,
     )
@@ -38,6 +51,7 @@ class MobileRosBridge(Node):
         self.odom_topic = self.get_parameter('odom_topic').value
         self.scan_topic = self.get_parameter('scan_topic').value
         self.map_topic = self.get_parameter('map_topic').value
+        self.imu_topic = self.get_parameter('imu_topic').value
         self.zlac_status_topic = self.get_parameter('zlac_status_topic').value
         self.zlac_fault_topic = self.get_parameter('zlac_fault_topic').value
         self.system_mode_topic = self.get_parameter('system_mode_topic').value
@@ -52,10 +66,28 @@ class MobileRosBridge(Node):
         self.default_cmd_duration_ms = int(
             self.get_parameter('default_cmd_duration_ms').value
         )
+        self.status_rate_hz = max(
+            0.1,
+            float(self.get_parameter('status_rate_hz').value),
+        )
+        self.map_stream_rate_hz = max(
+            0.1,
+            float(self.get_parameter('map_stream_rate_hz').value),
+        )
+        self.map_max_size_px = max(
+            1,
+            int(self.get_parameter('map_max_size_px').value),
+        )
+        self.require_token = bool(self.get_parameter('require_token').value)
+        self.api_token = str(self.get_parameter('api_token').value)
 
         self._last_odom_time: Optional[float] = None
         self._last_scan_time: Optional[float] = None
         self._last_map_time: Optional[float] = None
+        self._last_imu_time: Optional[float] = None
+        self._latest_map: Optional[OccupancyGrid] = None
+        self._pose: Optional[dict] = None
+        self._velocity: Optional[dict] = None
         self._scan_range_min: Optional[float] = None
         self._scan_range_max: Optional[float] = None
         self._zlac_status = 'unknown'
@@ -91,7 +123,13 @@ class MobileRosBridge(Node):
             OccupancyGrid,
             self.map_topic,
             self._on_map,
-            10,
+            map_qos_profile(),
+        )
+        self.create_subscription(
+            Imu,
+            self.imu_topic,
+            self._on_imu,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             String,
@@ -126,10 +164,15 @@ class MobileRosBridge(Node):
             'odom_topic': '/odom',
             'scan_topic': '/scan',
             'map_topic': '/map',
+            'imu_topic': '/imu/data',
             'zlac_status_topic': '/zlac8015d/status',
             'zlac_fault_topic': '/zlac8015d/fault',
             'system_mode_topic': '/inspection_ai/system_mode',
             'status_rate_hz': 2.0,
+            'map_stream_rate_hz': 1.0,
+            'map_max_size_px': 1024,
+            'require_token': False,
+            'api_token': '',
             'max_linear_speed': 0.15,
             'max_angular_speed': 0.5,
             'default_cmd_duration_ms': 300,
@@ -139,16 +182,40 @@ class MobileRosBridge(Node):
         for name, value in defaults.items():
             self.declare_parameter(name, value)
 
-    def _on_odom(self, _msg: Odometry) -> None:
+    def _on_odom(self, msg: Odometry) -> None:
         self._last_odom_time = time.time()
+        orientation = msg.pose.pose.orientation
+        siny_cosp = 2.0 * (
+            orientation.w * orientation.z
+            + orientation.x * orientation.y
+        )
+        cosy_cosp = 1.0 - 2.0 * (
+            orientation.y * orientation.y
+            + orientation.z * orientation.z
+        )
+        position = msg.pose.pose.position
+        self._pose = {
+            'frame': msg.header.frame_id or 'odom',
+            'x': float(position.x),
+            'y': float(position.y),
+            'yaw': math.atan2(siny_cosp, cosy_cosp),
+        }
+        self._velocity = {
+            'linear_x': float(msg.twist.twist.linear.x),
+            'angular_z': float(msg.twist.twist.angular.z),
+        }
 
     def _on_scan(self, msg: LaserScan) -> None:
         self._last_scan_time = time.time()
         self._scan_range_min = round(msg.range_min, 3)
         self._scan_range_max = round(msg.range_max, 3)
 
-    def _on_map(self, _msg: OccupancyGrid) -> None:
+    def _on_map(self, msg: OccupancyGrid) -> None:
         self._last_map_time = time.time()
+        self._latest_map = msg
+
+    def _on_imu(self, _msg: Imu) -> None:
+        self._last_imu_time = time.time()
 
     def _on_zlac_status(self, msg: String) -> None:
         self._zlac_status = msg.data or 'online'
@@ -167,7 +234,10 @@ class MobileRosBridge(Node):
         return topic in dict(self.get_topic_names_and_types())
 
     def _topic_has_publishers(self, topic: str) -> bool:
-        return any(info.node_name for info in self.get_publishers_info_by_topic(topic))
+        return any(
+            info.node_name
+            for info in self.get_publishers_info_by_topic(topic)
+        )
 
     def _node_available(self, candidates: tuple[str, ...]) -> bool:
         names = set(self.get_node_names())
@@ -200,6 +270,8 @@ class MobileRosBridge(Node):
             ),
             'last_odom_age_sec': self._age(self._last_odom_time),
             'last_scan_age_sec': self._age(self._last_scan_time),
+            'pose': self._pose,
+            'velocity': self._velocity,
             'timestamp': time.time(),
         }
 
@@ -209,6 +281,7 @@ class MobileRosBridge(Node):
             '/odom': self._topic_available(self.odom_topic),
             '/scan': self._topic_available(self.scan_topic),
             '/map': self._topic_available(self.map_topic),
+            '/imu/data': self._topic_available(self.imu_topic),
         }
         nodes: Dict[str, bool] = {
             'zlac8015d_canopen_controller': self._node_available(
@@ -224,6 +297,7 @@ class MobileRosBridge(Node):
             'map_server': self._node_available(('map_server',)),
             'bringup': self._node_available(('robot_state_publisher',)),
             'rplidar_node': self._node_available(('rplidar_node',)),
+            'imu': self._topic_has_publishers(self.imu_topic),
             'tf': self._topic_has_publishers('/tf'),
         }
         status = self.robot_status()
@@ -234,6 +308,7 @@ class MobileRosBridge(Node):
             'last_odom_age_sec': status['last_odom_age_sec'],
             'last_scan_age_sec': status['last_scan_age_sec'],
             'last_map_age_sec': self._age(self._last_map_time),
+            'last_imu_age_sec': self._age(self._last_imu_time),
             'scan_range_min': self._scan_range_min,
             'scan_range_max': self._scan_range_max,
             'zlac_status': self._zlac_status,
@@ -241,6 +316,53 @@ class MobileRosBridge(Node):
             'nav2_status': status['nav2_status'],
             'task_status': status['task_status'],
             'system_mode': status['system_mode'],
+            'pose': self._pose,
+            'velocity': self._velocity,
+            'map_meta': self.map_metadata(),
+        }
+
+    def map_metadata(self) -> Optional[dict]:
+        if self._latest_map is None:
+            return None
+        return occupancy_grid_metadata(self._latest_map)
+
+    def map_snapshot(self, downsample: int = 1) -> Optional[dict]:
+        if self._latest_map is None:
+            return None
+        return occupancy_grid_to_png_snapshot(
+            self._latest_map,
+            downsample=downsample,
+            max_size_px=self.map_max_size_px,
+        )
+
+    def mapping_status(self, process: Optional[dict] = None) -> dict:
+        status = self.robot_status()
+        bringup_ready = (
+            self._topic_available(self.odom_topic)
+            and self._topic_available(self.scan_topic)
+            and self._topic_available(self.imu_topic)
+            and self._topic_has_publishers('/tf')
+        )
+        map_available = self._latest_map is not None
+        mapping_running = status['mapping_status'] == 'running' or bool(
+            process and process.get('running')
+        )
+        if not bringup_ready:
+            recommended_next_action = 'start_bringup'
+        elif not mapping_running:
+            recommended_next_action = 'start_mapping'
+        elif not map_available:
+            recommended_next_action = 'wait_for_map'
+        else:
+            recommended_next_action = 'continue_mapping_or_save'
+        return {
+            'mapping_status': status['mapping_status'],
+            'bringup_ready': bringup_ready,
+            'map_available': map_available,
+            'recommended_next_action': recommended_next_action,
+            'last_map_age_sec': self._age(self._last_map_time),
+            'map_meta': self.map_metadata(),
+            'process': process,
         }
 
     def publish_velocity(

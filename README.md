@@ -13,10 +13,10 @@
   <img alt="License" src="https://img.shields.io/badge/Use-Research%20%26%20Development-64748B">
 </p>
 
-集成底盘控制、激光雷达、IMU、建图定位、自主导航、双目视觉、TensorRT 感知、
+集成底盘控制、激光雷达、IMU、RTK/GNSS 数据接入、建图定位、自主导航、双目视觉、TensorRT 感知、
 语音交互和巡检控制界面，提供从硬件接入到上层任务编排的一体化开发工作空间。
 
-[快速开始](#快速开始) · [系统架构](#系统架构) · [功能模块](#功能模块) · [项目文档](#项目文档)
+[快速开始](#快速开始) · [系统架构](#系统架构) · [功能模块](#功能模块) · [使用手册](#使用手册)
 
 </div>
 
@@ -27,7 +27,7 @@
 | 能力 | 实现 |
 |---|---|
 | 移动底盘 | ZLAC8015D V4 双轮差速底盘，PEAK PCAN-USB、SocketCAN、CANopen |
-| 传感器接入 | RPLidar、HiPNUC IMU、ZED 2i，提供稳定设备别名和统一坐标系 |
+| 传感器接入 | RPLidar、HiPNUC IMU、WTRTK980 RTK_4G、ZED 2i，提供稳定设备别名和统一坐标系 |
 | 状态估计 | 轮速里程计与 IMU 经 `robot_localization` EKF 融合 |
 | 建图定位 | SLAM Toolbox 在线建图，AMCL 定位与 Scan-to-Map 重定位 |
 | 导航巡逻 | Nav2 单点导航、本地路线巡逻、到点任务触发、返航与暂停/恢复/取消 |
@@ -55,6 +55,7 @@ flowchart LR
 
     LIDAR[RPLidar] --> SLAM[SLAM / AMCL]
     IMU[HiPNUC IMU] --> EKF[EKF 状态估计]
+    RTK[WTRTK980 RTK] --> GPS["/gps/fix + /gps/rtk_status"]
     ODOM --> EKF
     EKF --> NAV
     SLAM --> NAV
@@ -71,13 +72,14 @@ flowchart LR
 ```text
 map -> odom -> base_footprint -> base_link -> laser_link
                          `-----> imu_link
+                         `-----> gps_link
 ```
 
 ## 功能模块
 
 | ROS 2 包 | 职责 |
 |---|---|
-| `ylhb_base` | CAN/串口底盘、URDF/TF、EKF、SLAM、AMCL、Nav2 和重定位辅助 |
+| `ylhb_base` | CAN/串口底盘、URDF/TF、EKF、RTK NMEA 接入、SLAM、AMCL、Nav2 和重定位辅助 |
 | `ylhb_perception` | ZED 图像输入、YOLO/TensorRT 推理、深度目标定位 |
 | `ylhb_llm` | 文本任务解析、语音输入输出、系统管理、基础运动命令和显示界面 |
 | `ylhb_mobile_bridge` | HTTP/WebSocket 调试桥接，以及独立的本地 Nav2 巡逻执行器 |
@@ -135,6 +137,9 @@ ip -details link show can1
 ```bash
 # 底盘、IMU、雷达、robot_state_publisher 与 EKF
 ./scripts/run_on_jetson.sh bringup
+
+# 可选：同时启动 WTRTK980 RTK NMEA 数据发布
+ros2 launch ylhb_base bringup.launch.py enable_rtk:=true
 
 # 在线建图
 ./scripts/run_on_jetson.sh mapping
@@ -203,15 +208,21 @@ ros2 topic list -t
 ros2 topic hz /scan
 ros2 topic hz /imu/data
 ros2 topic hz /odom
+ros2 topic echo /gps/rtk_status --once
 ```
 
-## 项目文档
+WTRTK980 当前属于第一阶段接入：发布 `/gps/fix`、`/gps/nmea_sentence` 和
+`/gps/rtk_status` 供验证和显示使用，不参与 AMCL、Nav2、`map -> odom` 或巡逻路线计算。
+RTK 冒烟测试可运行：
 
-- [重点使用与调试文档](src/PROJECT_DOC_zh.md)：硬件接线、启动流程、ROS 话题和故障排查
-- [快速使用](docs/快速使用.md)：开发环境与常用启动命令
-- [项目概览](docs/项目概览.md)：软件包和系统边界
-- [接口约定](docs/接口约定.md)：巡检任务与语音消息接口
-- [电机官方通信协议](官方通信协议/)：ZLAC8015D V4 手册与 CANopen 示例
+```bash
+./scripts/rtk_smoke_test.sh
+```
+
+## 使用手册
+
+- [重点使用与调试文档](src/PROJECT_DOC_zh.md)：项目定位、硬件接线、启动流程、ROS 话题、接口约定和故障排查
+- [官方通信协议](官方通信协议/)：ZLAC8015D V4 手册、CANopen 示例和 RTK 接入资料
 - [CAD 机械模型](CAD/Retail-Cart-3D-Model/)：底盘、支架和结构件模型
 
 ## 使用说明
