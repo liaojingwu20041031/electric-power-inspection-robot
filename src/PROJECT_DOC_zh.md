@@ -1350,7 +1350,7 @@ APP 导航面板 -> 取消 -> POST /api/debug/navigation/cancel
 
 ### 15.7 安全限制
 
-- `/api/cmd_vel` 服务端强制限幅：线速度 ≤ 0.15 m/s，角速度 ≤ 0.5 rad/s，`duration_ms` 范围 50–3000ms，超时自动发布零速度。
+- `/api/cmd_vel` 默认配置限幅为线速度 ≤ 0.30 m/s、角速度 ≤ 0.55 rad/s；后端安全硬上限为 0.35 m/s 和 0.55 rad/s，底盘控制器还会最终限幅。`duration_ms` 范围 50–3000ms，超时自动发布零速度。
 - `/api/stop`、`/api/debug/chassis/stop`、`/ws/status` 断开、`/ws/map` 断开都会发布零速度。
 - 进程管理只允许白名单命令（`bringup`、`mapping`、`navigation`），通过 argv list 和 `shell=False` 调用 `scripts/run_on_jetson.sh`。
 - 长运行进程日志写入 `logs/mobile_bridge/<mode>.log`，避免 ROS launch 输出填满未消费 pipe 导致进程阻塞。

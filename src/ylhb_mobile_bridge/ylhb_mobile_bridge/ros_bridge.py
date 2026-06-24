@@ -23,6 +23,9 @@ from .map_snapshot import (
     occupancy_grid_to_png_snapshot,
 )
 
+CHASSIS_SAFE_MAX_LINEAR_SPEED = 0.35
+CHASSIS_SAFE_MAX_ANGULAR_SPEED = 0.55
+
 
 def initial_pose_qos_profile() -> QoSProfile:
     return QoSProfile(
@@ -55,13 +58,13 @@ class MobileRosBridge(Node):
         self.zlac_status_topic = self.get_parameter('zlac_status_topic').value
         self.zlac_fault_topic = self.get_parameter('zlac_fault_topic').value
         self.system_mode_topic = self.get_parameter('system_mode_topic').value
-        self.max_linear_speed = min(
-            float(self.get_parameter('max_linear_speed').value),
-            0.15,
+        self.max_linear_speed = self._safe_speed_limit(
+            self.get_parameter('max_linear_speed').value,
+            CHASSIS_SAFE_MAX_LINEAR_SPEED,
         )
-        self.max_angular_speed = min(
-            float(self.get_parameter('max_angular_speed').value),
-            0.5,
+        self.max_angular_speed = self._safe_speed_limit(
+            self.get_parameter('max_angular_speed').value,
+            CHASSIS_SAFE_MAX_ANGULAR_SPEED,
         )
         self.default_cmd_duration_ms = int(
             self.get_parameter('default_cmd_duration_ms').value
@@ -173,8 +176,8 @@ class MobileRosBridge(Node):
             'map_max_size_px': 1024,
             'require_token': False,
             'api_token': '',
-            'max_linear_speed': 0.15,
-            'max_angular_speed': 0.5,
+            'max_linear_speed': 0.30,
+            'max_angular_speed': 0.55,
             'default_cmd_duration_ms': 300,
             'workspace_dir': '/home/nvidia/ros2_DL',
             'default_map_path': '/home/nvidia/ros2_DL/maps/my_map',
@@ -211,6 +214,8 @@ class MobileRosBridge(Node):
         self._scan_range_max = round(msg.range_max, 3)
 
     def _on_map(self, msg: OccupancyGrid) -> None:
+        if not self._mapping_map_source_available():
+            return
         self._last_map_time = time.time()
         self._latest_map = msg
 
@@ -230,6 +235,10 @@ class MobileRosBridge(Node):
     def _age(self, last_time: Optional[float]) -> Optional[float]:
         return None if last_time is None else round(time.time() - last_time, 3)
 
+    @staticmethod
+    def _safe_speed_limit(configured_limit: float, safety_limit: float) -> float:
+        return min(float(configured_limit), safety_limit)
+
     def _topic_available(self, topic: str) -> bool:
         return topic in dict(self.get_topic_names_and_types())
 
@@ -242,6 +251,27 @@ class MobileRosBridge(Node):
     def _node_available(self, candidates: tuple[str, ...]) -> bool:
         names = set(self.get_node_names())
         return any(candidate in names for candidate in candidates)
+
+    def _mapping_node_available(self) -> bool:
+        return self._node_available(
+            ('slam_toolbox', 'async_slam_toolbox_node')
+        )
+
+    def _mapping_map_source_available(self) -> bool:
+        return (
+            self._mapping_node_available()
+            and not self._node_available(('map_server',))
+        )
+
+    def reset_mapping_map(self) -> None:
+        self._last_map_time = None
+        self._latest_map = None
+
+    def has_mapping_map(self) -> bool:
+        return (
+            self._latest_map is not None
+            and self._mapping_map_source_available()
+        )
 
     def robot_status(self) -> dict:
         return {
@@ -256,9 +286,7 @@ class MobileRosBridge(Node):
             'system_mode': self._system_mode,
             'mapping_status': (
                 'running'
-                if self._node_available(
-                    ('slam_toolbox', 'async_slam_toolbox_node')
-                )
+                if self._mapping_node_available()
                 else 'not_running'
             ),
             'nav2_status': (
@@ -322,12 +350,12 @@ class MobileRosBridge(Node):
         }
 
     def map_metadata(self) -> Optional[dict]:
-        if self._latest_map is None:
+        if not self.has_mapping_map():
             return None
         return occupancy_grid_metadata(self._latest_map)
 
     def map_snapshot(self, downsample: int = 1) -> Optional[dict]:
-        if self._latest_map is None:
+        if not self.has_mapping_map():
             return None
         return occupancy_grid_to_png_snapshot(
             self._latest_map,
@@ -343,7 +371,7 @@ class MobileRosBridge(Node):
             and self._topic_available(self.imu_topic)
             and self._topic_has_publishers('/tf')
         )
-        map_available = self._latest_map is not None
+        map_available = self.has_mapping_map()
         mapping_running = status['mapping_status'] == 'running' or bool(
             process and process.get('running')
         )
@@ -360,7 +388,9 @@ class MobileRosBridge(Node):
             'bringup_ready': bringup_ready,
             'map_available': map_available,
             'recommended_next_action': recommended_next_action,
-            'last_map_age_sec': self._age(self._last_map_time),
+            'last_map_age_sec': (
+                self._age(self._last_map_time) if map_available else None
+            ),
             'map_meta': self.map_metadata(),
             'process': process,
         }

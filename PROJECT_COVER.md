@@ -15,6 +15,8 @@
 - LLM 层已从旧业务语义清理为巡检任务初始化框架。
 - 默认任务话题切换为 `/inspection_ai/*`。
 - 保留底盘、导航、感知、语音、移动端桥接等可复用 ROS 2 框架。
+- Mobile Bridge 已形成面向 APP 的局域网调试接口，当前只覆盖状态查看、
+  底盘低速控制和建图调试。
 - 未实现正式巡检状态机、检查点执行闭环、检测服务、告警数据库或巡检报告导出。
 
 ## 技术栈概览
@@ -27,7 +29,7 @@
 | 导航 | RPLidar、IMU、SLAM Toolbox、Nav2、AMCL、EKF |
 | 感知 | ZED 2i、YOLO/TensorRT、OpenCV |
 | LLM/语音 | DashScope/Qwen、ASR、TTS、语音路由 |
-| UI/桥接 | PyQt 控制台、HTTP/WebSocket mobile bridge |
+| UI/桥接 | PyQt 控制台、HTTP/WebSocket mobile bridge，APP 调试接口 |
 | 后续规划 | LocateAnything-3B、LingBot-Map、巡检业务协议 |
 
 ## 初始化框架边界
@@ -39,8 +41,21 @@
   -> 建图与导航框架
   -> 感知输入框架
   -> LLM/语音/任务事件框架
-  -> UI 与移动端桥接占位
+  -> UI 与移动端调试桥接
 ```
+
+其中 mobile bridge 的 APP 对接边界已经收窄为现场调试用途：
+
+```text
+状态查看
+  -> 底盘 bringup 启停与低速 /cmd_vel 点动
+  -> SLAM Toolbox 建图启停、实时地图预览和地图保存
+```
+
+APP 当前不承载导航目标下发、巡逻、感知任务、语音任务或正式巡检业务流程。
+系统进程接口只向 APP 暴露 `bringup` 和 `mapping`；`navigation` 不作为 APP
+调试端口开放。建图预览只接受当前 SLAM Toolbox 的 `/map`，不会把导航
+`map_server` 发布的旧静态地图返回给 APP。
 
 正式电力巡检流程仍属于后续开发：
 
@@ -55,6 +70,8 @@
 ## 后续扩展方向
 
 - 开发板实机验证底盘、雷达、IMU、ZED、Nav2 和语音链路。
+- 将 mobile bridge 按现场需要配置为开机自启动，并继续保持 APP 接口只服务
+  低速底盘调试和建图调试。
 - 设计正式 `/inspection/*` 任务协议和巡检消息。
 - 增加站点、区域、路线和检查点配置。
 - 接入人员、安全帽、火源、烟雾、障碍物等路线级检测。
@@ -64,3 +81,4 @@
 ## 文档入口
 
 - [重点使用调试文档](src/PROJECT_DOC_zh.md)
+- [Mobile Bridge APP 调试接口](docs/mobile_debug_api.md)

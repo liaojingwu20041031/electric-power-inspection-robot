@@ -39,6 +39,10 @@ class MappingSaveRequest(BaseModel):
     map_name: str = Field(default='my_map', regex=r'^[A-Za-z0-9_-]+$')
 
 
+class MapRenameRequest(BaseModel):
+    new_name: str = Field(regex=r'^[A-Za-z0-9_-]+$')
+
+
 class InitialPoseRequest(BaseModel):
     x: float
     y: float

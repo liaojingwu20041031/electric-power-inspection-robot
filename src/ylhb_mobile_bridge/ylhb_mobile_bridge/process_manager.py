@@ -84,20 +84,30 @@ class ProcessManager:
             return f'{name} already stopped'
         self._logger.info('stopping %s pid=%s', name, process.pid)
         try:
-            if hasattr(os, 'killpg'):
-                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            else:
-                process.terminate()
+            self._send_signal(process, signal.SIGINT)
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            self._logger.warning('force killing %s pid=%s', name, process.pid)
-            if hasattr(os, 'killpg'):
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            else:
-                process.kill()
+            self._logger.warning(
+                'terminating %s pid=%s after SIGINT timeout',
+                name,
+                process.pid,
+            )
+            self._send_signal(process, signal.SIGTERM)
+            try:
+                process.wait(timeout=4)
+            except subprocess.TimeoutExpired:
+                self._logger.warning('force killing %s pid=%s', name, process.pid)
+                self._send_signal(process, signal.SIGKILL)
+                process.wait(timeout=4)
         finally:
             self._close_log(name)
         return f'{name} stopped'
+
+    def _send_signal(self, process: subprocess.Popen, sig: signal.Signals) -> None:
+        if hasattr(os, 'killpg'):
+            os.killpg(os.getpgid(process.pid), sig)
+        else:
+            process.send_signal(sig)
 
     def _close_log(self, name: str) -> None:
         handle = self._log_handles.pop(name, None)

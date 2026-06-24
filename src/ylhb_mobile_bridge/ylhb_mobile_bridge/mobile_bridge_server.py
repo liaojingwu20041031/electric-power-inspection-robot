@@ -17,18 +17,22 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from .map_manager import MapManager, MapManagerError
 from .process_manager import ProcessManager
 from .ros_bridge import MobileRosBridge
 from .schemas import (
     ApiResponse,
     ChassisTestRequest,
     InitialPoseRequest,
+    MapRenameRequest,
     MappingSaveRequest,
     NavigationGoalRequest,
     TaskCommand,
     TextCommand,
     VelocityCommand,
 )
+
+APP_SYSTEM_MODES = {'bringup', 'mapping'}
 
 
 def task_to_text(command: TaskCommand) -> str:
@@ -42,6 +46,7 @@ def task_to_text(command: TaskCommand) -> str:
 def make_app(
     bridge: MobileRosBridge,
     process_manager: ProcessManager,
+    default_map_path: Optional[str] = None,
 ) -> FastAPI:
     app = FastAPI(title='YLHB Mobile Bridge', version='0.1.0')
     app.add_middleware(
@@ -74,6 +79,32 @@ def make_app(
                 )
             ),
         )
+
+    def map_error_response(exc: MapManagerError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=response_dict(
+                ApiResponse(
+                    ok=False,
+                    error=exc.error,
+                    message=str(exc),
+                )
+            ),
+        )
+
+    configured_map_path = (
+        default_map_path
+        or getattr(process_manager, 'default_map_path', None)
+        or '/home/nvidia/ros2_DL/maps/my_map'
+    )
+    map_manager = MapManager(configured_map_path)
+
+    def map_is_in_use() -> bool:
+        is_running = getattr(process_manager, 'is_running', None)
+        if callable(is_running) and is_running('mapping'):
+            return True
+        nodes = bridge.debug_status().get('nodes') or {}
+        return bool(nodes.get('slam_toolbox') or nodes.get('map_server'))
 
     def token_from_authorization(value: Optional[str]) -> Optional[str]:
         if not value:
@@ -218,6 +249,48 @@ def make_app(
         except Exception as exc:
             return fail('process_error', exc)
 
+    @app.get('/api/debug/maps')
+    def maps_list():
+        try:
+            return ok('maps', map_manager.list_maps())
+        except Exception as exc:
+            return fail('map_operation_failed', exc)
+
+    @app.post('/api/debug/maps/{map_name}/rename')
+    def map_rename(map_name: str, request: MapRenameRequest):
+        if map_is_in_use():
+            return map_error_response(
+                MapManagerError(
+                    'map_in_use',
+                    'maps cannot be changed while SLAM Toolbox '
+                    'or map_server is running',
+                    409,
+                )
+            )
+        try:
+            return ok(
+                'map renamed',
+                map_manager.rename_map(map_name, request.new_name),
+            )
+        except MapManagerError as exc:
+            return map_error_response(exc)
+
+    @app.delete('/api/debug/maps/{map_name}')
+    def map_delete(map_name: str):
+        if map_is_in_use():
+            return map_error_response(
+                MapManagerError(
+                    'map_in_use',
+                    'maps cannot be changed while SLAM Toolbox '
+                    'or map_server is running',
+                    409,
+                )
+            )
+        try:
+            return ok('map deleted', map_manager.delete_map(map_name))
+        except MapManagerError as exc:
+            return map_error_response(exc)
+
     @app.get('/api/debug/mapping/map_snapshot')
     def map_snapshot(downsample: int = Query(default=1, ge=1, le=16)):
         snapshot = bridge.map_snapshot(downsample=downsample)
@@ -232,12 +305,19 @@ def make_app(
     @app.post('/api/debug/mapping/start')
     def mapping_start():
         try:
+            bridge.reset_mapping_map()
             return ok(process_manager.start_mapping())
         except Exception as exc:
             return fail('process_error', exc)
 
     @app.post('/api/debug/mapping/save')
     def mapping_save(request: MappingSaveRequest):
+        if not bridge.has_mapping_map():
+            return ApiResponse(
+                ok=False,
+                error='no_map',
+                message='no current SLAM map has been received',
+            )
         try:
             return ok('map saved', process_manager.save_map(request.map_name))
         except Exception as exc:
@@ -246,7 +326,9 @@ def make_app(
     @app.post('/api/debug/mapping/stop')
     def mapping_stop():
         try:
-            return ok(process_manager.stop('mapping'))
+            message = process_manager.stop('mapping')
+            bridge.reset_mapping_map()
+            return ok(message)
         except Exception as exc:
             return fail('process_error', exc)
 
@@ -276,19 +358,24 @@ def make_app(
 
     @app.post('/api/debug/system/start/{mode}')
     def system_start(mode: str):
-        if mode not in ProcessManager.ALLOWED_MODES:
+        if mode not in APP_SYSTEM_MODES:
             raise HTTPException(status_code=404, detail='mode not found')
         try:
+            if mode == 'mapping':
+                bridge.reset_mapping_map()
             return ok(process_manager.start(mode))
         except Exception as exc:
             return fail('process_error', exc)
 
     @app.post('/api/debug/system/stop/{mode}')
     def system_stop(mode: str):
-        if mode not in ProcessManager.ALLOWED_MODES:
+        if mode not in APP_SYSTEM_MODES:
             raise HTTPException(status_code=404, detail='mode not found')
         try:
-            return ok(process_manager.stop(mode))
+            message = process_manager.stop(mode)
+            if mode == 'mapping':
+                bridge.reset_mapping_map()
+            return ok(message)
         except Exception as exc:
             return fail('process_error', exc)
 
@@ -407,7 +494,11 @@ def main() -> None:
     host = bridge.get_parameter('host').value
     port = int(bridge.get_parameter('port').value)
     process_manager = ProcessManager(workspace_dir, default_map_path)
-    app = make_app(bridge, process_manager)
+    app = make_app(
+        bridge,
+        process_manager,
+        default_map_path=default_map_path,
+    )
 
     try:
         uvicorn.run(app, host=host, port=port)

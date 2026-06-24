@@ -16,8 +16,8 @@ mobile_bridge:
     map_max_size_px: 1024
     require_token: false
     api_token: ""
-    max_linear_speed: 0.15
-    max_angular_speed: 0.5
+    max_linear_speed: 0.30
+    max_angular_speed: 0.55
     default_cmd_duration_ms: 300
     workspace_dir: "/home/nvidia/ros2_DL"
     default_map_path: "/home/nvidia/ros2_DL/maps/my_map"

@@ -2,12 +2,36 @@ import time
 from types import SimpleNamespace
 from typing import Dict, List
 
+import pytest
+
 from ylhb_mobile_bridge.ros_bridge import MobileRosBridge
 
 
 class FakePublisherInfo:
     def __init__(self, node_name: str = "fake_node") -> None:
         self.node_name = node_name
+
+
+class FakePublisher:
+    def __init__(self) -> None:
+        self.messages = []
+
+    def publish(self, msg) -> None:
+        self.messages.append(msg)
+
+
+class FakeTimer:
+    def __init__(self, interval, callback) -> None:
+        self.interval = interval
+        self.callback = callback
+        self.daemon = False
+        self.cancelled = False
+
+    def start(self) -> None:
+        return None
+
+    def cancel(self) -> None:
+        self.cancelled = True
 
 
 def make_bridge(
@@ -55,6 +79,65 @@ def make_bridge(
     return bridge
 
 
+def make_velocity_bridge(
+    max_linear_speed: float = 0.30,
+    max_angular_speed: float = 0.55,
+) -> MobileRosBridge:
+    bridge = make_bridge()
+    bridge.max_linear_speed = max_linear_speed
+    bridge.max_angular_speed = max_angular_speed
+    bridge.default_cmd_duration_ms = 300
+    bridge._cmd_pub = FakePublisher()
+    bridge._stop_timer = None
+    return bridge
+
+
+def test_configured_speed_limits_are_capped_by_chassis_safety_limits():
+    assert MobileRosBridge._safe_speed_limit(0.50, 0.35) == 0.35
+    assert MobileRosBridge._safe_speed_limit(0.80, 0.55) == 0.55
+
+
+def test_publish_velocity_allows_new_default_speed_limits(monkeypatch):
+    monkeypatch.setattr(
+        "ylhb_mobile_bridge.ros_bridge.threading.Timer",
+        FakeTimer,
+    )
+    bridge = make_velocity_bridge()
+
+    bridge.publish_velocity(0.30, 0.55, 300)
+
+    msg = bridge._cmd_pub.messages[-1]
+    assert msg.linear.x == pytest.approx(0.30)
+    assert msg.angular.z == pytest.approx(0.55)
+
+
+def test_publish_velocity_clamps_requests_to_configured_limits(monkeypatch):
+    monkeypatch.setattr(
+        "ylhb_mobile_bridge.ros_bridge.threading.Timer",
+        FakeTimer,
+    )
+    bridge = make_velocity_bridge(
+        max_linear_speed=0.20,
+        max_angular_speed=0.40,
+    )
+
+    bridge.publish_velocity(0.30, -0.55, 300)
+
+    msg = bridge._cmd_pub.messages[-1]
+    assert msg.linear.x == pytest.approx(0.20)
+    assert msg.angular.z == pytest.approx(-0.40)
+
+
+def test_stop_motion_still_publishes_zero_velocity():
+    bridge = make_velocity_bridge()
+
+    bridge.stop_motion()
+
+    msg = bridge._cmd_pub.messages[-1]
+    assert msg.linear.x == 0.0
+    assert msg.angular.z == 0.0
+
+
 def test_scan_callback_captures_range_min_max():
     bridge = make_bridge()
     msg = SimpleNamespace(range_min=0.05, range_max=40.0)
@@ -65,12 +148,43 @@ def test_scan_callback_captures_range_min_max():
 
 
 def test_map_callback_updates_last_map_time():
-    bridge = make_bridge()
+    bridge = make_bridge(node_names=["slam_toolbox"])
     assert bridge._last_map_time is None
     msg = SimpleNamespace()
     bridge._on_map(msg)
     assert bridge._last_map_time is not None
     assert bridge._latest_map is msg
+
+
+def test_map_callback_ignores_map_when_slam_toolbox_is_not_running():
+    bridge = make_bridge(node_names=["map_server"])
+    msg = SimpleNamespace()
+
+    bridge._on_map(msg)
+
+    assert bridge._last_map_time is None
+    assert bridge._latest_map is None
+
+
+def test_map_callback_ignores_map_when_map_server_and_slam_run_together():
+    bridge = make_bridge(node_names=["slam_toolbox", "map_server"])
+    msg = SimpleNamespace()
+
+    bridge._on_map(msg)
+
+    assert bridge._last_map_time is None
+    assert bridge._latest_map is None
+
+
+def test_reset_mapping_map_clears_cached_map_and_timestamp():
+    bridge = make_bridge(node_names=["slam_toolbox"])
+    bridge._latest_map = object()
+    bridge._last_map_time = time.time()
+
+    bridge.reset_mapping_map()
+
+    assert bridge._latest_map is None
+    assert bridge._last_map_time is None
 
 
 def test_odom_callback_caches_pose_and_velocity():
@@ -255,6 +369,26 @@ def test_mapping_status_recommends_starting_mapping_after_bringup_ready():
     assert status["bringup_ready"] is True
     assert status["map_available"] is False
     assert status["recommended_next_action"] == "start_mapping"
+
+
+def test_mapping_status_does_not_report_cached_map_without_slam_toolbox():
+    bridge = make_bridge(
+        node_names=["map_server"],
+        topic_names_and_types={
+            "/odom": [],
+            "/scan": [],
+            "/imu/data": [],
+        },
+        topic_publishers={"/tf": [FakePublisherInfo("robot_state_publisher")]},
+    )
+    bridge._latest_map = object()
+    bridge._last_map_time = time.time()
+
+    status = bridge.mapping_status({"mode": "mapping", "running": False})
+
+    assert status["map_available"] is False
+    assert status["last_map_age_sec"] is None
+    assert status["map_meta"] is None
 
 
 def test_mapping_status_recommends_waiting_for_map_while_mapping_runs():
