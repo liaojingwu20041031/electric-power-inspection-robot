@@ -10,17 +10,35 @@
   <img alt="Jetson Orin Nano" src="https://img.shields.io/badge/Jetson-Orin%20Nano%20Super-76B900?logo=nvidia&logoColor=white">
   <img alt="Nav2" src="https://img.shields.io/badge/Navigation-Nav2-2563EB">
   <img alt="CANopen" src="https://img.shields.io/badge/Drive-CANopen-0F766E">
-  <img alt="License" src="https://img.shields.io/badge/Use-Research%20%26%20Development-64748B">
+  <img alt="React Native" src="https://img.shields.io/badge/APP-Expo%20React%20Native-000020?logo=expo&logoColor=white">
 </p>
 
 集成底盘控制、激光雷达、IMU、RTK/GNSS 数据接入、建图定位、自主导航、双目视觉、TensorRT 感知、
-语音交互和巡检控制界面，提供从硬件接入到上层任务编排的一体化开发工作空间。
+语音交互、巡检控制界面和移动端调试 APP，提供从硬件接入到上层任务编排的一体化开发工作空间。
 
-[快速开始](#快速开始) · [系统架构](#系统架构) · [功能模块](#功能模块) · [使用手册](#使用手册)
+[实机展示](#实机展示) · [核心能力](#核心能力) · [移动端-app](#移动端-app) · [系统架构](#系统架构) · [快速开始](#快速开始) · [项目文档](#项目文档)
 
 </div>
 
 ---
+
+## 实机展示
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="记录照片/MVIMG_20260625_161859..jpg" width="100%" alt="电力巡检机器人整机侧视图">
+    </td>
+    <td width="50%" align="center">
+      <img src="记录照片/MVIMG_20260625_161907..jpg" width="100%" alt="电力巡检机器人整机正视图">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="记录照片/MVIMG_20260625_161920..jpg" width="100%" alt="电力巡检机器人移动底盘与控制硬件">
+    </td>
+  </tr>
+</table>
 
 ## 核心能力
 
@@ -33,19 +51,44 @@
 | 导航巡逻 | Nav2 单点导航、本地路线巡逻、到点任务触发、返航与暂停/恢复/取消 |
 | 视觉感知 | ZED 深度图像、YOLO、TensorRT 推理和目标空间定位入口 |
 | 任务交互 | 中文控制界面、任务事件、系统状态管理、ASR/TTS 和语音指令 |
-| 外部接口 | HTTP/WebSocket 状态与控制桥接、移动端低速调试入口 |
+| 移动端调试 | Expo React Native APP、HTTP/WebSocket 实时状态、低速底盘控制和建图管理 |
 | 调试运维 | Jetson 安装/构建/启动脚本、CAN 诊断、ROS 2 回归测试 |
+
+## 移动端 APP
+
+配套调试端 [ylhb-robot-mobile](https://github.com/liaojingwu20041031/ylhb-robot-mobile)
+通过局域网连接 Jetson 上的 `ylhb_mobile_bridge`，用于现场联调，不替代正式巡检任务流程。
+
+| APP 功能 | 说明 |
+|---|---|
+| 连接与状态 | HTTP 连通性检测，实时查看底盘、雷达、IMU、里程计、建图进程和数据新鲜度 |
+| 实时推送 | WebSocket 推送机器人状态与当前 SLAM 地图快照 |
+| 底盘调试 | 低速方向控制、短时速度指令、自动归零和急停 |
+| 建图管理 | 启动/停止底层与建图进程，预览地图并保存到工作空间 |
+| 诊断信息 | 展示进程状态、PID、退出码和日志尾部，辅助现场排查 |
+
+启动机器人端桥接：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py
+```
+
+服务默认监听 `0.0.0.0:8000`。手机与 Jetson 需处于同一可信局域网，并在 APP
+中将地址设为 `http://<Jetson_IP>:8000`、关闭 `Mock Mode`。详细接口和安全限制见
+[Mobile Bridge APP 调试接口](docs/mobile_debug_api.md)。
 
 ## 系统架构
 
 ```mermaid
 flowchart LR
     UI[巡检界面 / 语音指令] --> TASK[任务与系统管理]
+    APP[移动端调试 APP] -->|HTTP / WebSocket| BRIDGE[Mobile Bridge]
     ROUTE[路线文件 / 巡逻命令] --> PATROL[本地巡逻执行器]
     PATROL --> NAV[Nav2 导航]
     PATROL --> TASK
     TASK --> PERCEPTION[视觉感知]
-    WEB[HTTP / WebSocket] --> BRIDGE[Mobile Bridge]
     BRIDGE --> TASK
     BRIDGE --> CMD
 
@@ -219,9 +262,11 @@ RTK 冒烟测试可运行：
 ./scripts/rtk_smoke_test.sh
 ```
 
-## 使用手册
+## 项目文档
 
 - [重点使用与调试文档](src/PROJECT_DOC_zh.md)：项目定位、硬件接线、启动流程、ROS 话题、接口约定和故障排查
+- [Mobile Bridge APP 调试接口](docs/mobile_debug_api.md)：移动端状态、底盘控制、建图流程和接口约定
+- [移动端 APP 仓库](https://github.com/liaojingwu20041031/ylhb-robot-mobile)：Expo React Native 局域网调试端
 - [官方通信协议](官方通信协议/)：ZLAC8015D V4 手册、CANopen 示例和 RTK 接入资料
 - [CAD 机械模型](CAD/Retail-Cart-3D-Model/)：底盘、支架和结构件模型
 
