@@ -159,22 +159,6 @@ def test_return_to_start_navigates_to_route_file_pose_last():
     assert logic.state == "succeeded"
 
 
-def test_return_to_start_status_names_home_navigation():
-    route, targets, start_pose, _data = first_target_scenario(return_to_start=True)
-    adapter = FakeAdapter([True])
-    logic = make_logic(adapter)
-
-    start(logic, route, targets, start_pose)
-    adapter.run_next_scheduled()
-    status = logic.status()
-
-    assert status["state"] == "returning_home"
-    assert status["navigation_phase"] == "return_home"
-    assert status["current_target_label"] == "返回初始点"
-    assert status["target_index"] is None
-    assert adapter.navigation_requests[-1][0] == start_pose
-
-
 def test_target_events_text_and_status_use_target_semantics():
     route, targets, start_pose, _data = scenario(return_to_start=False)
     adapter = FakeAdapter([True for _target in targets])
@@ -262,24 +246,6 @@ def test_pause_resume_and_cancel_during_loop_wait():
         adapter.run_next_scheduled()
 
     assert len(adapter.navigation_requests) == 2
-
-
-def test_waiting_loop_status_keeps_cycle_context():
-    route, targets, start_pose, _data = first_target_scenario(
-        return_to_start=True,
-        loop={"enabled": True, "wait_sec": 12.0, "max_cycles": 0},
-    )
-    adapter = FakeAdapter([True, True])
-    logic = make_logic(adapter)
-
-    start(logic, route, targets, start_pose)
-    adapter.run_next_scheduled()
-    status = logic.status()
-
-    assert status["state"] == "waiting_loop"
-    assert status["navigation_phase"] == "waiting_next_cycle"
-    assert status["current_target_label"] == "等待下一轮"
-    assert status["cycle_index"] == 1
 
 
 def test_cancel_cancels_current_goal_and_does_not_return_to_start():
@@ -384,14 +350,6 @@ def test_initial_pose_publisher_uses_transient_local_reliable_qos():
     assert qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
 
 
-def test_patrol_status_and_event_use_transient_local_reliable_qos():
-    qos = patrol_executor_node.patrol_status_qos_profile()
-
-    assert qos.depth == 10
-    assert qos.reliability == ReliabilityPolicy.RELIABLE
-    assert qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
-
-
 class FakeFuture:
     def __init__(self, result):
         self._result = result
@@ -444,20 +402,6 @@ def test_start_route_uses_start_pose_from_reloaded_route_file():
     assert started[0] == (route, targets, data["start_pose"]["pose"])
 
 
-def test_manual_start_command_uses_existing_direct_start_path():
-    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
-    started = []
-    node._parse_command = lambda _text: {"command": "start", "route_id": "route_patrol_001"}
-    node._start_route_from_file = lambda route_id: started.append(route_id) or True
-    node._start_route_when_ready = lambda _route_id: (_ for _ in ()).throw(
-        AssertionError("manual start should not use pending auto-start gate")
-    )
-
-    node._on_command(type("Msg", (), {"data": "start"})())
-
-    assert started == ["route_patrol_001"]
-
-
 def test_restarting_initial_pose_sequence_destroys_previous_timer():
     data = route_file_data()
     node = PatrolExecutorNode.__new__(PatrolExecutorNode)
@@ -502,7 +446,7 @@ def test_auto_start_waits_for_initial_pose_sequence_completion():
         },
     )()
     node._publish_initial_pose_from_route = lambda: True
-    node._start_route_when_ready = lambda route_id: started.append(route_id)
+    node._start_route_from_file = lambda route_id: started.append(route_id)
 
     node._on_startup_timer()
 
@@ -512,91 +456,3 @@ def test_auto_start_waits_for_initial_pose_sequence_completion():
     node._finish_initial_pose_sequence()
 
     assert started == [None]
-
-
-def test_pending_start_waits_for_nav2_without_starting_route():
-    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
-    node._pending_start_route_id = None
-    node._pending_start_timer = None
-    node.logic = type("Logic", (), {"state": "idle"})()
-    node._reload_route_file = lambda: True
-    node._route_data = route_file_data()
-    node._nav_client = type(
-        "NavClient",
-        (),
-        {"server_is_ready": lambda _self: False},
-    )()
-    node._is_nav2_active = lambda: True
-    node._has_localization_tf = lambda: True
-    node._start_route_from_file = lambda _route_id: (_ for _ in ()).throw(
-        AssertionError("route should not start before Nav2 action is ready")
-    )
-    statuses = []
-    node._publish_waiting_status = lambda state, message: statuses.append(
-        (state, message)
-    )
-    node.create_timer = lambda _period, _callback: "timer"
-    node.get_logger = lambda: type(
-        "Logger",
-        (),
-        {"info": lambda *_args: None},
-    )()
-
-    node._start_route_when_ready(None)
-    node._check_pending_start()
-
-    assert node._pending_start_timer == "timer"
-    assert statuses[-1][0] == "waiting_nav2"
-    assert "Nav2" in statuses[-1][1]
-
-
-def test_pending_start_continues_when_nav2_and_localization_are_ready():
-    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
-    node._pending_start_requested = True
-    node._pending_start_route_id = "route_patrol_001"
-    node._pending_start_timer = "timer"
-    node.logic = type("Logic", (), {"state": "idle"})()
-    node._reload_route_file = lambda: True
-    node._route_data = route_file_data()
-    node._nav_client = type(
-        "NavClient",
-        (),
-        {"server_is_ready": lambda _self: True},
-    )()
-    node._is_nav2_active = lambda: True
-    node._has_localization_tf = lambda: True
-    destroyed = []
-    started = []
-    node.destroy_timer = destroyed.append
-    node._load_and_start_route = lambda route_id: started.append(route_id) or True
-
-    node._check_pending_start()
-
-    assert destroyed == ["timer"]
-    assert node._pending_start_timer is None
-    assert node._pending_start_route_id is None
-    assert started == ["route_patrol_001"]
-
-
-def test_ready_pending_start_uses_shared_loader_without_manual_start_wrapper():
-    data = route_file_data()
-    route = get_route(data, data["active_route_id"])
-    targets = expand_route_targets(data, route["id"])
-    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
-    node._route_data = data
-    node._reload_route_file = lambda: True
-    started = []
-    node.logic = type(
-        "Logic",
-        (),
-        {
-            "state": "waiting_nav2",
-            "start_route": lambda _self, selected, expanded, start_pose: (
-                started.append((selected, expanded, start_pose)) or True
-            ),
-            "fail_to_start": lambda *_args: None,
-        },
-    )()
-
-    assert node._load_and_start_route(None)
-    assert started == [(route, targets, data["start_pose"]["pose"])]

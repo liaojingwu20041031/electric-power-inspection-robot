@@ -11,7 +11,6 @@ from .patrol_route_store import (
     load_route_file,
     resolve_route_file_path,
 )
-from .patrol_qos import patrol_status_qos_profile
 
 try:
     import rclpy
@@ -19,12 +18,9 @@ try:
     from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
     from nav2_msgs.action import NavigateToPose
     from rclpy.action import ActionClient
-    from rclpy.duration import Duration
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-    from rclpy.time import Time
     from std_msgs.msg import String
-    from tf2_ros import Buffer, TransformListener
 except ImportError:
     # Allows pure logic tests outside a sourced ROS environment.
     rclpy = None
@@ -38,9 +34,6 @@ ACTIVE_STATES = {
     "returning_home",
     "waiting_loop",
     "canceling",
-    "waiting_initial_pose",
-    "waiting_nav2",
-    "waiting_localization",
 }
 INITIAL_POSE_ALLOWED_STATES = {
     "idle",
@@ -142,13 +135,10 @@ class PatrolExecutorLogic:
         loop_wait_sec = None
         if self.route:
             loop_wait_sec = float(self.route["loop"]["wait_sec"])
-        navigation_phase = self._navigation_phase()
-        current_target_label = self._current_target_label(target, navigation_phase)
         return {
             "state": self.state,
             "route_id": self.route["id"] if self.route else None,
             "target_id": target["id"] if target else None,
-            "target_name": target.get("name") if target else None,
             "target_index": (
                 self.current_target_index if target is not None else None
             ),
@@ -156,43 +146,9 @@ class PatrolExecutorLogic:
             "cycle_index": self.cycle_index if self.route else None,
             "loop_wait_sec": loop_wait_sec,
             "home_pose_source": "route_file" if self.home_pose else None,
-            "navigation_phase": navigation_phase,
-            "current_target_label": current_target_label,
             "last_error": self.last_error,
             "timestamp": self._time_source(),
         }
-
-    def _navigation_phase(self) -> str:
-        if self.state == "returning_home":
-            return "return_home"
-        if self.state == "waiting_loop":
-            return "waiting_next_cycle"
-        if self.state in {"canceling", "canceled"}:
-            return "canceled"
-        if self.state == "paused":
-            return "paused"
-        if self.state == "running":
-            return "target"
-        if self.state in TERMINAL_STATES:
-            return self.state
-        return ""
-
-    @staticmethod
-    def _current_target_label(
-        target: Optional[Dict[str, Any]],
-        navigation_phase: str,
-    ) -> str:
-        if navigation_phase == "return_home":
-            return "返回初始点"
-        if navigation_phase == "waiting_next_cycle":
-            return "等待下一轮"
-        if navigation_phase == "paused":
-            return "已暂停"
-        if navigation_phase == "canceled":
-            return "已取消"
-        if target is not None:
-            return str(target.get("name") or target.get("id") or "")
-        return ""
 
     def _set_state(self, state: str, error: Optional[str] = None) -> None:
         self.state = state
@@ -489,20 +445,9 @@ class PatrolExecutorNode(Node):
         self._initial_pose_timer = None
         self._initial_pose_remaining = 0
         self._auto_start_after_initial_pose = False
-        self._pending_start_requested = False
-        self._pending_start_route_id: Optional[str] = None
-        self._pending_start_timer = None
 
-        self._status_pub = self.create_publisher(
-            String,
-            self.status_topic,
-            patrol_status_qos_profile(),
-        )
-        self._event_pub = self.create_publisher(
-            String,
-            self.event_topic,
-            patrol_status_qos_profile(),
-        )
+        self._status_pub = self.create_publisher(String, self.status_topic, 10)
+        self._event_pub = self.create_publisher(String, self.event_topic, 10)
         self._text_pub = self.create_publisher(
             String,
             self.text_command_topic,
@@ -529,8 +474,6 @@ class PatrolExecutorNode(Node):
             NavigateToPose,
             "navigate_to_pose",
         )
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
         self.logic = PatrolExecutorLogic(
             request_navigation=self._request_navigation,
             cancel_navigation=self._cancel_navigation,
@@ -653,7 +596,7 @@ class PatrolExecutorNode(Node):
             initial_pose_started = self._publish_initial_pose_from_route()
         if auto_start and not initial_pose_started:
             self._auto_start_after_initial_pose = False
-            self._start_route_when_ready(None)
+            self._start_route_from_file(None)
 
     def _parse_command(self, text: str) -> Dict[str, Any]:
         stripped = text.strip()
@@ -680,9 +623,7 @@ class PatrolExecutorNode(Node):
                 if not self.logic.resume():
                     raise ValueError(f"cannot resume while {self.logic.state}")
             elif command == "cancel":
-                if self._pending_start_requested:
-                    self._cancel_pending_start()
-                elif not self.logic.cancel():
+                if not self.logic.cancel():
                     raise ValueError(f"cannot cancel while {self.logic.state}")
             elif command == "reload":
                 if not self._reload_route_file():
@@ -707,9 +648,6 @@ class PatrolExecutorNode(Node):
                 f"Cannot start route while {self.logic.state}"
             )
             return False
-        return self._load_and_start_route(route_id)
-
-    def _load_and_start_route(self, route_id: Optional[str]) -> bool:
         if not self._reload_route_file():
             self.logic.fail_to_start(route_id, "route file load failed")
             return False
@@ -729,118 +667,6 @@ class PatrolExecutorNode(Node):
             return False
         started = self.logic.start_route(route, targets, home_pose)
         return started
-
-    def _start_route_when_ready(self, route_id: Optional[str]) -> bool:
-        if self.logic.state in ACTIVE_STATES:
-            self.get_logger().warning(
-                f"Cannot start route while {self.logic.state}"
-            )
-            return False
-        self._pending_start_route_id = route_id
-        self._pending_start_requested = True
-        self._check_pending_start()
-        if self._pending_start_requested or self._pending_start_timer is not None:
-            return True
-        return self.logic.state == "running"
-
-    def _check_pending_start(self) -> None:
-        if not getattr(self, "_pending_start_requested", False):
-            return
-        route_id = self._pending_start_route_id
-        if not self._reload_route_file():
-            self._clear_pending_start_timer()
-            self._pending_start_route_id = None
-            self._pending_start_requested = False
-            self.logic.fail_to_start(route_id, "route file load failed")
-            return
-        if (
-            getattr(self, "_initial_pose_timer", None) is not None
-            or getattr(self, "_initial_pose_remaining", 0) > 0
-        ):
-            self._publish_waiting_status(
-                "waiting_initial_pose",
-                "等待初始位姿发布完成",
-            )
-            self._ensure_pending_start_timer()
-            return
-        if not self._nav_client.server_is_ready():
-            self._publish_waiting_status(
-                "waiting_nav2",
-                "等待 Nav2 navigate_to_pose 动作服务就绪",
-            )
-            self._ensure_pending_start_timer()
-            return
-        if not self._is_nav2_active():
-            self._publish_waiting_status(
-                "waiting_nav2",
-                "等待 Nav2 lifecycle 节点进入 active",
-            )
-            self._ensure_pending_start_timer()
-            return
-        if not self._has_localization_tf():
-            self._publish_waiting_status(
-                "waiting_localization",
-                "等待定位 TF: map -> base_footprint 或 map -> odom",
-            )
-            self._ensure_pending_start_timer()
-            return
-        self._clear_pending_start_timer()
-        self._pending_start_route_id = None
-        self._pending_start_requested = False
-        self.logic.state = "idle"
-        self.logic.last_error = None
-        self._load_and_start_route(route_id)
-
-    def _cancel_pending_start(self) -> None:
-        self._clear_pending_start_timer()
-        self._pending_start_route_id = None
-        self._pending_start_requested = False
-        self.logic._set_state("canceled")
-
-    def _ensure_pending_start_timer(self) -> None:
-        if self._pending_start_timer is None:
-            self._pending_start_timer = self.create_timer(
-                1.0,
-                self._check_pending_start,
-            )
-
-    def _clear_pending_start_timer(self) -> None:
-        if self._pending_start_timer is not None:
-            self.destroy_timer(self._pending_start_timer)
-            self._pending_start_timer = None
-
-    def _publish_waiting_status(self, state: str, message: str) -> None:
-        self.logic.state = state
-        self.logic.last_error = message
-        status = self.logic.status()
-        status["message"] = message
-        self._publish_status(status)
-
-    def _is_nav2_active(self) -> bool:
-        try:
-            action_names = self.get_action_names_and_types()
-        except Exception:
-            return self._nav_client.server_is_ready()
-        return any(name == "/navigate_to_pose" for name, _types in action_names)
-
-    def _has_localization_tf(self) -> bool:
-        try:
-            return bool(
-                self._tf_buffer.can_transform(
-                    self.map_frame,
-                    "base_footprint",
-                    Time(),
-                    timeout=Duration(seconds=0.05),
-                )
-                or self._tf_buffer.can_transform(
-                    self.map_frame,
-                    "odom",
-                    Time(),
-                    timeout=Duration(seconds=0.05),
-                )
-            )
-        except Exception:
-            return False
 
     def _request_navigation(
         self,
@@ -1032,7 +858,7 @@ class PatrolExecutorNode(Node):
     def _finish_initial_pose_sequence(self) -> None:
         if self._auto_start_after_initial_pose:
             self._auto_start_after_initial_pose = False
-            self._start_route_when_ready(None)
+            self._start_route_from_file(None)
 
     def _check_schedules(self) -> None:
         if not self._route_data:
