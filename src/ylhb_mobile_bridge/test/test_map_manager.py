@@ -1,7 +1,10 @@
+import base64
+import io
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from PIL import Image
 
 from ylhb_mobile_bridge.map_manager import MapManager, MapManagerError
 
@@ -152,6 +155,92 @@ def test_delete_removes_complete_and_incomplete_maps(tmp_path):
     with pytest.raises(MapManagerError) as protected:
         manager.delete_map("my_map")
     assert protected.value.error == "default_map_protected"
+
+
+def test_preview_map_returns_png_base64_and_metadata(tmp_path):
+    write_map_pair(tmp_path, "factory")
+    manager = MapManager(tmp_path / "my_map")
+
+    preview = manager.preview_map("factory", max_size_px=32)
+
+    assert preview["map_meta"]["resolution"] == 0.05
+    assert preview["map_meta"]["origin"] == [1.0, 2.0, 0.0]
+    assert preview["map_meta"]["yaml_file"] == "factory.yaml"
+    assert preview["map_meta"]["pgm_file"] == "factory.pgm"
+    assert preview["png_base64"]
+    Image.open(io.BytesIO(base64.b64decode(preview["png_base64"]))).verify()
+
+
+def test_confirm_default_archives_old_default_and_routes(tmp_path):
+    write_map_pair(tmp_path, "my_map")
+    write_map_pair(tmp_path, "factory")
+    (tmp_path / "route_patrol_001.json").write_text("{}", encoding="utf-8")
+    manager = MapManager(tmp_path / "my_map")
+
+    result = manager.confirm_default("factory")
+
+    assert result["changed"] is True
+    assert result["default"]["name"] == "my_map"
+    assert (tmp_path / "my_map.yaml").exists()
+    assert (tmp_path / "my_map.pgm").exists()
+    assert "image: my_map.pgm" in (tmp_path / "my_map.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert not (tmp_path / "factory.yaml").exists()
+    assert not (tmp_path / "factory.pgm").exists()
+    assert not list(tmp_path.glob("route_patrol_*.json"))
+    assert result["archived_previous_map"]["yaml_file"].startswith(
+        "my_map_deprecated_"
+    )
+    archived_yaml = (
+        tmp_path / result["archived_previous_map"]["yaml_file"]
+    )
+    archived_pgm = result["archived_previous_map"]["pgm_file"]
+    assert f"image: {archived_pgm}" in archived_yaml.read_text(
+        encoding="utf-8"
+    )
+    assert result["archived_routes"][0]["to"].startswith(
+        "deprecated_route_patrol_001_"
+    )
+
+
+def test_confirm_default_is_noop_for_current_default(tmp_path):
+    write_map_pair(tmp_path, "my_map")
+    manager = MapManager(tmp_path / "my_map")
+
+    result = manager.confirm_default("my_map")
+
+    assert result["changed"] is False
+    assert result["default"]["name"] == "my_map"
+
+
+def test_confirm_default_rolls_back_when_route_archive_fails(tmp_path):
+    write_map_pair(tmp_path, "my_map")
+    write_map_pair(tmp_path, "factory")
+    route_path = tmp_path / "route_patrol_001.json"
+    route_path.write_text("{}", encoding="utf-8")
+    manager = MapManager(tmp_path / "my_map")
+    real_rename = Path.rename
+
+    def fail_route_archive(path, target):
+        if path.name == "route_patrol_001.json":
+            raise OSError("route archive failed")
+        return real_rename(path, target)
+
+    with patch.object(Path, "rename", fail_route_archive):
+        with pytest.raises(MapManagerError) as exc:
+            manager.confirm_default("factory")
+
+    assert exc.value.error == "map_operation_failed"
+    assert route_path.exists()
+    assert (tmp_path / "my_map.yaml").exists()
+    assert (tmp_path / "my_map.pgm").exists()
+    assert (tmp_path / "factory.yaml").exists()
+    assert (tmp_path / "factory.pgm").exists()
+    assert not list(tmp_path.glob("my_map_deprecated_*"))
+    assert "image: factory.pgm" in (tmp_path / "factory.yaml").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.parametrize("name", ["../bad", "bad.name", "", "bad/name"])

@@ -53,6 +53,10 @@ def make_bridge(
     bridge.zlac_status_topic = "/zlac8015d/status"
     bridge.zlac_fault_topic = "/zlac8015d/fault"
     bridge.system_mode_topic = "/inspection_ai/system_mode"
+    bridge.system_command_topic = "/inspection_ai/system_command"
+    bridge.system_status_topic = "/inspection_ai/system_status"
+    bridge.patrol_command_topic = "/patrol/command"
+    bridge.patrol_status_topic = "/patrol/status"
     bridge._last_odom_time = None
     bridge._last_scan_time = None
     bridge._last_map_time = None
@@ -65,6 +69,11 @@ def make_bridge(
     bridge._zlac_status = "unknown"
     bridge._task_status = "idle"
     bridge._system_mode = "unknown"
+    bridge._system_status = {}
+    bridge._patrol_status = {}
+    bridge._status_cache = {}
+    bridge._last_stop_motion_time = 0.0
+    bridge._last_stop_text_time = 0.0
     bridge._node_names = node_names
     bridge._topic_names_and_types = topic_names_and_types
     bridge._topic_publishers = topic_publishers
@@ -88,6 +97,9 @@ def make_velocity_bridge(
     bridge.max_angular_speed = max_angular_speed
     bridge.default_cmd_duration_ms = 300
     bridge._cmd_pub = FakePublisher()
+    bridge._text_pub = FakePublisher()
+    bridge._system_command_pub = FakePublisher()
+    bridge._patrol_command_pub = FakePublisher()
     bridge._stop_timer = None
     return bridge
 
@@ -128,6 +140,49 @@ def test_publish_velocity_clamps_requests_to_configured_limits(monkeypatch):
     assert msg.angular.z == pytest.approx(-0.40)
 
 
+def test_publish_zero_velocity_does_not_create_delayed_stop_timer(monkeypatch):
+    monkeypatch.setattr(
+        "ylhb_mobile_bridge.ros_bridge.threading.Timer",
+        FakeTimer,
+    )
+    bridge = make_velocity_bridge()
+
+    bridge.publish_velocity(0.0, 0.0, 300)
+
+    assert bridge._stop_timer is None
+    msg = bridge._cmd_pub.messages[-1]
+    assert msg.linear.x == 0.0
+    assert msg.angular.z == 0.0
+
+
+def test_publish_motion_replaces_existing_delayed_stop_timer(monkeypatch):
+    monkeypatch.setattr(
+        "ylhb_mobile_bridge.ros_bridge.threading.Timer",
+        FakeTimer,
+    )
+    bridge = make_velocity_bridge()
+
+    bridge.publish_velocity(0.1, 0.0, 300)
+    first_timer = bridge._stop_timer
+    bridge.publish_velocity(0.1, 0.0, 300)
+
+    assert first_timer.cancelled is True
+    assert bridge._stop_timer is not first_timer
+
+
+def test_stop_motion_debounces_repeated_zero_velocity(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("ylhb_mobile_bridge.ros_bridge.time.time", lambda: now[0])
+    bridge = make_velocity_bridge()
+
+    bridge.stop_motion()
+    bridge.stop_motion()
+    now[0] = 100.2
+    bridge.stop_motion()
+
+    assert len(bridge._cmd_pub.messages) == 2
+
+
 def test_stop_motion_still_publishes_zero_velocity():
     bridge = make_velocity_bridge()
 
@@ -136,6 +191,24 @@ def test_stop_motion_still_publishes_zero_velocity():
     msg = bridge._cmd_pub.messages[-1]
     assert msg.linear.x == 0.0
     assert msg.angular.z == 0.0
+
+
+def test_stop_all_deduplicates_stop_text_but_keeps_zero_velocity(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("ylhb_mobile_bridge.ros_bridge.time.time", lambda: now[0])
+    bridge = make_velocity_bridge()
+
+    bridge.stop_all()
+    now[0] = 100.2
+    bridge.stop_all()
+    now[0] = 102.2
+    bridge.stop_all()
+
+    assert len(bridge._cmd_pub.messages) == 3
+    assert [msg.data for msg in bridge._text_pub.messages] == [
+        "停止当前任务",
+        "停止当前任务",
+    ]
 
 
 def test_scan_callback_captures_range_min_max():
@@ -310,6 +383,44 @@ def test_debug_status_includes_task_status_and_system_mode():
     status = bridge.debug_status()
     assert status["task_status"] == "emergency_stop"
     assert status["system_mode"] == "fault"
+
+
+def test_status_graph_queries_are_cached_for_short_window(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("ylhb_mobile_bridge.ros_bridge.time.time", lambda: now[0])
+    bridge = make_bridge(node_names=["robot_state_publisher"])
+    calls = {"topics": 0, "nodes": 0}
+
+    def get_topics():
+        calls["topics"] += 1
+        return []
+
+    def get_nodes():
+        calls["nodes"] += 1
+        return bridge._node_names
+
+    bridge.get_topic_names_and_types = get_topics
+    bridge.get_node_names = get_nodes
+
+    bridge.debug_status()
+    bridge.debug_status()
+    now[0] = 101.1
+    bridge.debug_status()
+
+    assert calls["topics"] == 2
+    assert calls["nodes"] == 2
+
+
+def test_system_and_patrol_commands_publish_json_and_plain_command():
+    bridge = make_velocity_bridge()
+
+    bridge.publish_system_command("start_mapping", map_name="demo")
+    bridge.publish_patrol_command("pause")
+
+    payload = bridge._system_command_pub.messages[-1].data
+    assert '"command": "start_mapping"' in payload
+    assert '"map_name": "demo"' in payload
+    assert bridge._patrol_command_pub.messages[-1].data == "pause"
 
 
 def test_debug_status_topics_include_all_four():

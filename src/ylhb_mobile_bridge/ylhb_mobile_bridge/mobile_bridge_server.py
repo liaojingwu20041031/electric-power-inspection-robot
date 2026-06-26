@@ -256,6 +256,38 @@ def make_app(
         except Exception as exc:
             return fail('map_operation_failed', exc)
 
+    @app.get('/api/debug/maps/{map_name}/preview')
+    def map_preview(
+        map_name: str,
+        max_size_px: int = Query(default=1024, ge=1, le=4096),
+    ):
+        try:
+            return ok(
+                'map preview',
+                map_manager.preview_map(map_name, max_size_px),
+            )
+        except MapManagerError as exc:
+            return map_error_response(exc)
+
+    @app.post('/api/debug/maps/{map_name}/confirm_default')
+    def map_confirm_default(map_name: str):
+        if map_is_in_use():
+            return map_error_response(
+                MapManagerError(
+                    'map_in_use',
+                    'maps cannot be changed while SLAM Toolbox '
+                    'or map_server is running',
+                    409,
+                )
+            )
+        try:
+            return ok(
+                'default map confirmed',
+                map_manager.confirm_default(map_name),
+            )
+        except MapManagerError as exc:
+            return map_error_response(exc)
+
     @app.post('/api/debug/maps/{map_name}/rename')
     def map_rename(map_name: str, request: MapRenameRequest):
         if map_is_in_use():
@@ -346,6 +378,8 @@ def make_app(
     @app.get('/api/debug/system/status')
     def system_status():
         try:
+            if bridge.has_system_supervisor():
+                return ok('system status', bridge.system_status())
             return ok(
                 'system status',
                 {
@@ -361,9 +395,17 @@ def make_app(
         if mode not in APP_SYSTEM_MODES:
             raise HTTPException(status_code=404, detail='mode not found')
         try:
+            if not bridge.has_system_supervisor():
+                return ApiResponse(
+                    ok=False,
+                    error='supervisor_unavailable',
+                    message='system supervisor is not online',
+                )
             if mode == 'mapping':
                 bridge.reset_mapping_map()
-            return ok(process_manager.start(mode))
+            command = f'start_{mode}'
+            bridge.publish_system_command(command)
+            return ok(f'system command sent: {command}')
         except Exception as exc:
             return fail('process_error', exc)
 
@@ -372,12 +414,71 @@ def make_app(
         if mode not in APP_SYSTEM_MODES:
             raise HTTPException(status_code=404, detail='mode not found')
         try:
-            message = process_manager.stop(mode)
+            if not bridge.has_system_supervisor():
+                return ApiResponse(
+                    ok=False,
+                    error='supervisor_unavailable',
+                    message='system supervisor is not online',
+                )
+            command = f'stop_{mode}'
+            bridge.publish_system_command(command)
             if mode == 'mapping':
                 bridge.reset_mapping_map()
-            return ok(message)
+            return ok(f'system command sent: {command}')
         except Exception as exc:
             return fail('process_error', exc)
+
+    @app.get('/api/debug/patrol/status')
+    def patrol_status():
+        status = bridge.patrol_status()
+        if not status:
+            supervisor_status = (
+                bridge.system_status() if bridge.has_system_supervisor() else {}
+            )
+            executor_running = (
+                supervisor_status.get('patrol_executor') == 'running'
+            )
+            status = {
+                'state': 'idle' if executor_running else 'unavailable',
+                'executor_running': executor_running,
+                'message': (
+                    'patrol executor running'
+                    if executor_running
+                    else 'patrol executor is not running'
+                ),
+            }
+        else:
+            status = dict(status)
+            status.setdefault('executor_running', True)
+        return ok('patrol status', status)
+
+    def publish_patrol_api_command(command: str) -> ApiResponse:
+        bridge.publish_patrol_command(command)
+        return ok(f'patrol command sent: {command}')
+
+    @app.post('/api/debug/patrol/start')
+    def patrol_start():
+        return publish_patrol_api_command('start')
+
+    @app.post('/api/debug/patrol/pause')
+    def patrol_pause():
+        return publish_patrol_api_command('pause')
+
+    @app.post('/api/debug/patrol/resume')
+    def patrol_resume():
+        return publish_patrol_api_command('resume')
+
+    @app.post('/api/debug/patrol/cancel')
+    def patrol_cancel():
+        return publish_patrol_api_command('cancel')
+
+    @app.post('/api/debug/patrol/reload')
+    def patrol_reload():
+        return publish_patrol_api_command('reload')
+
+    @app.post('/api/debug/patrol/initialize')
+    def patrol_initialize():
+        return publish_patrol_api_command('initialize')
 
     @app.post('/api/debug/navigation/set_initial_pose')
     def set_initial_pose(request: InitialPoseRequest):
@@ -501,7 +602,7 @@ def main() -> None:
     )
 
     try:
-        uvicorn.run(app, host=host, port=port)
+        uvicorn.run(app, host=host, port=port, access_log=False)
     finally:
         bridge.stop_motion()
         bridge.destroy_node()

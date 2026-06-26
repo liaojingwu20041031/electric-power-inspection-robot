@@ -95,6 +95,14 @@ case "${MODE}" in
     ;;
   inspection)
     shift || true
+    for arg in "$@"; do
+      case "${arg}" in
+        enable_voice:=false|enable_voice_session:=false|enable_tts:=false)
+          echo "ERROR: inspection mode is the formal robot console; voice session and TTS must stay enabled. Use llm mode for offline/debug launches." >&2
+          exit 2
+          ;;
+      esac
+    done
     export DISPLAY="${DISPLAY:-:0}"
     if [ "${DISPLAY}" = "localhost:10.0" ] || [[ "${DISPLAY}" == localhost:* ]]; then
       export DISPLAY=":0"

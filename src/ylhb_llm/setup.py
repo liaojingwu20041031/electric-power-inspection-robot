@@ -1,7 +1,18 @@
 from glob import glob
+import os
 from setuptools import setup
 
 package_name = 'ylhb_llm'
+
+
+def qml_data_files():
+    entries = []
+    for root, _dirs, files in os.walk('qml'):
+        source_files = [os.path.join(root, name) for name in files]
+        if source_files:
+            entries.append((os.path.join('share', package_name, root), source_files))
+    return entries
+
 
 setup(
     name=package_name,
@@ -12,7 +23,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
-    ],
+    ] + qml_data_files(),
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='liaojingwu20041031',

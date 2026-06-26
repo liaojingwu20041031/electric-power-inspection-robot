@@ -1,16 +1,62 @@
 import json
 import os
 import signal
+import socket
 import subprocess
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
+
+
+START_PROCESS_MESSAGES = {
+    'bringup': '底盘与雷达已启动',
+    'navigation': '导航已启动',
+    'patrol_executor': '巡逻执行器已启动',
+    'zed': 'ZED 相机已启动',
+    'perception': '感知节点已启动',
+    'mobile_bridge': '移动端桥接已启动',
+    'mapping': '建图已启动',
+}
+
+STARTUP_STEP_LABELS = {
+    'starting_bringup': '等待底盘传感器',
+    'waiting_bringup': '等待底盘传感器',
+    'waiting_odom': '等待底盘传感器',
+    'waiting_scan': '等待底盘传感器',
+    'waiting_tf': '等待底盘传感器',
+    'starting_navigation': '等待地图',
+    'waiting_navigation': '等待地图',
+    'waiting_map': '等待地图',
+    'waiting_initialpose_subscribers': '等待地图',
+    'starting_executor': '发布初始位姿',
+    'waiting_executor': '发布初始位姿',
+    'waiting_route_file': '发布初始位姿',
+    'waiting_patrol_status': '发布初始位姿',
+    'waiting_initial_pose_published': '发布初始位姿',
+    'waiting_nav2_action': '等待 Nav2 动作服务',
+    'waiting_patrol_running': '等待巡逻执行器运行',
+    'patrol_started': '巡逻运行中',
+    'patrol_failed': '巡逻启动失败',
+}
+
+READINESS_ERROR_MESSAGES = {
+    'odom': '等待 /odom 发布者超时',
+    'scan': '等待 /scan 发布者超时',
+    'tf': '等待 /tf 发布者超时',
+    'map': '等待 /map 发布者超时',
+    'initialpose_subscribers': '等待 /initialpose 订阅者超时',
+    'nav2_action': 'Nav2 动作服务未就绪',
+    'executor': '巡逻执行器未就绪',
+    'route_file': '未找到正式巡逻路线文件',
+    'patrol_status': '等待 /patrol/status 发布者超时',
+}
 
 
 def latched_qos() -> QoSProfile:
@@ -25,6 +71,46 @@ def latched_qos() -> QoSProfile:
 def workspace_path(*parts: str) -> str:
     workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL'))
     return os.path.join(workspace_dir, *parts)
+
+
+def discover_jetson_ip() -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(('8.8.8.8', 80))
+        address = str(sock.getsockname()[0])
+        if address and not address.startswith('127.'):
+            return address
+    except OSError:
+        pass
+    finally:
+        sock.close()
+    try:
+        address = socket.gethostbyname(socket.gethostname())
+        return address if address and not address.startswith('127.') else '127.0.0.1'
+    except OSError:
+        return '127.0.0.1'
+
+
+def mobile_bridge_tcp_status(
+    process_running: bool,
+    connector=socket.create_connection,
+    host: str = '127.0.0.1',
+    port: int = 8000,
+) -> str:
+    if not process_running:
+        return 'stopped'
+    try:
+        sock = connector((host, port), timeout=0.4)
+        try:
+            return 'tcp_ok'
+        finally:
+            sock.close()
+    except Exception:
+        return 'tcp_error'
+
+
+def mobile_bridge_http_status(process_running: bool, **kwargs) -> str:
+    return mobile_bridge_tcp_status(process_running, **kwargs)
 
 
 class ManagedProcess:
@@ -86,6 +172,15 @@ class SystemSupervisorNode(Node):
         self.last_command = ''
         self.last_success = True
         self.last_message = 'system supervisor ready'
+        self.jetson_ip = discover_jetson_ip()
+        self.mobile_bridge_url = f'http://{self.jetson_ip}:8000'
+        self.mobile_bridge_http = 'stopped'
+        self.patrol_mode_state = 'idle'
+        self.patrol_error = ''
+        self.startup_step = ''
+        self.last_patrol_status: Dict[str, Any] = {}
+        self.last_patrol_event: Dict[str, Any] = {}
+        self.last_initial_pose_event: Dict[str, Any] = {}
 
         self.processes: Dict[str, ManagedProcess] = {
             'bringup': ManagedProcess('bringup', 'ros2 launch ylhb_base bringup.launch.py'),
@@ -104,6 +199,15 @@ class SystemSupervisorNode(Node):
                 'llm',
                 self.llm_launch_command(),
             ),
+            'mobile_bridge': ManagedProcess(
+                'mobile_bridge',
+                'ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py',
+            ),
+            'patrol_executor': ManagedProcess(
+                'patrol_executor',
+                'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
+                'auto_start:=true publish_initial_pose_on_startup:=true',
+            ),
         }
 
         self.status_pub = self.create_publisher(
@@ -118,9 +222,21 @@ class SystemSupervisorNode(Node):
             self.command_callback,
             10,
         )
+        self.create_subscription(
+            String,
+            '/patrol/status',
+            self.patrol_status_callback,
+            patrol_status_qos_profile(),
+        )
+        self.create_subscription(
+            String,
+            '/patrol/event',
+            self.patrol_event_callback,
+            patrol_status_qos_profile(),
+        )
         self.create_timer(1.0, self.publish_status)
         self.publish_status()
-        self.get_logger().info('System supervisor node started.')
+        self.log_info('系统监督节点已启动')
 
     def command_callback(self, msg: String) -> None:
         try:
@@ -139,7 +255,34 @@ class SystemSupervisorNode(Node):
 
         threading.Thread(target=self.handle_command, args=(command, payload), daemon=True).start()
 
+    def patrol_status_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            payload = {'raw': msg.data}
+        if isinstance(payload, dict):
+            self.last_patrol_status = payload
+
+    def patrol_event_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            payload = {'raw': msg.data}
+        if isinstance(payload, dict):
+            self.last_patrol_event = payload
+            if payload.get('event') == 'initial_pose_published':
+                self.last_initial_pose_event = payload
+
     def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
+        if command == 'start_patrol_mode':
+            self.start_patrol_mode(str(payload.get('profile') or 'navigation'))
+            return
+        if command == 'stop_patrol_mode':
+            self.stop_process('patrol_executor')
+            self.patrol_mode_state = 'idle'
+            self.startup_step = ''
+            self.set_result(command, True, '巡逻模式已停止')
+            return
         if command.startswith('start_'):
             name = command[len('start_'):]
             if name in self.processes:
@@ -154,6 +297,10 @@ class SystemSupervisorNode(Node):
                 if name == 'mapping':
                     self.publish_mode('ready')
                 return
+        if command == 'restart_mobile_bridge':
+            self.stop_process('mobile_bridge')
+            self.start_process('mobile_bridge')
+            return
         if command == 'restart_navigation':
             self.stop_process('navigation')
             self.start_process('navigation')
@@ -191,7 +338,7 @@ class SystemSupervisorNode(Node):
         proc = self.processes[name]
         with self.lock:
             if proc.is_running():
-                self.set_result_locked(f'start_{name}', True, f'{name} already running')
+                self.set_result_locked(f'start_{name}', True, f'{START_PROCESS_MESSAGES.get(name, name)}，已在运行')
                 return
             cmd = self.wrap_command(proc.command)
             proc.process = subprocess.Popen(
@@ -202,7 +349,7 @@ class SystemSupervisorNode(Node):
                 preexec_fn=os.setsid,
             )
             proc.last_message = f'started pid={proc.process.pid}'
-            self.set_result_locked(f'start_{name}', True, f'{name} started')
+            self.set_result_locked(f'start_{name}', True, START_PROCESS_MESSAGES.get(name, f'{name} 已启动'))
 
     def stop_process(self, name: str) -> None:
         if name == 'llm' and self.embedded_task_layer:
@@ -238,11 +385,243 @@ class SystemSupervisorNode(Node):
         self.set_result('start_robot_stack', True, '巡检节点启动命令已发送')
 
     def stop_robot_stack(self) -> None:
-        for name in ('navigation', 'perception', 'zed', 'bringup'):
+        for name in ('patrol_executor', 'navigation', 'perception', 'zed', 'bringup'):
             self.stop_process(name)
             time.sleep(0.2)
         self.publish_mode('ready')
         self.set_result('stop_robot_stack', True, '巡检运动、导航和感知节点已停止，AI/UI 保持运行')
+
+    def start_patrol_mode(self, profile: str = 'navigation') -> None:
+        profile = profile if profile in ('navigation', 'inspection') else 'navigation'
+        self.patrol_mode_state = 'starting'
+        self.patrol_error = ''
+        self.log_info('start_patrol_mode: 启动巡逻依赖')
+
+        self.startup_step = 'starting_bringup'
+        self.start_process('bringup')
+
+        if profile == 'inspection':
+            self.startup_step = 'starting_inspection'
+            self.start_process('zed')
+            self.start_process('perception')
+
+        self.startup_step = 'starting_navigation'
+        self.start_process('navigation')
+
+        self.startup_step = 'starting_executor'
+        self.start_process('patrol_executor')
+        self.patrol_mode_state = 'starting'
+        self.startup_step = 'waiting_executor'
+        self.set_result('start_patrol_mode', True, '巡逻依赖已启动，等待巡逻执行器就绪')
+
+    def build_patrol_readiness(self) -> Dict[str, bool]:
+        bringup = self.processes.get('bringup')
+        navigation = self.processes.get('navigation')
+        executor = self.processes.get('patrol_executor')
+        readiness = {
+            'bringup': bool(bringup and bringup.is_running()),
+            'navigation': bool(navigation and navigation.is_running()),
+            'executor': self.is_patrol_executor_ready(),
+            'route_file': self.has_patrol_route_file(),
+            'odom': self.topic_has_publishers('/odom'),
+            'scan': self.topic_has_publishers('/scan'),
+            'tf': self.topic_has_publishers('/tf'),
+            'map': self.topic_has_publishers('/map'),
+            'initialpose_subscribers': self.topic_has_subscribers('/initialpose'),
+            'nav2_action': self.has_nav2_action(),
+            'patrol_status': self.topic_has_publishers('/patrol/status'),
+            'initial_pose_published': self.has_initial_pose_published(),
+        }
+        return readiness
+
+    def build_light_patrol_readiness(self) -> Dict[str, bool]:
+        bringup = self.processes.get('bringup')
+        navigation = self.processes.get('navigation')
+        executor = self.processes.get('patrol_executor')
+        return {
+            'bringup': bool(bringup and bringup.is_running()),
+            'navigation': bool(navigation and navigation.is_running()),
+            'executor': bool(executor and executor.is_running()),
+            'route_file': self.has_patrol_route_file(),
+            'odom': False,
+            'scan': False,
+            'tf': False,
+            'map': False,
+            'initialpose_subscribers': False,
+            'nav2_action': False,
+            'patrol_status': False,
+            'initial_pose_published': False,
+        }
+
+    def wait_for_patrol_readiness(self, timeout_sec: float = 25.0) -> bool:
+        required_keys = (
+            'bringup',
+            'navigation',
+            'executor',
+            'route_file',
+            'odom',
+            'scan',
+            'tf',
+            'nav2_action',
+            'patrol_status',
+        )
+        deadline = time.monotonic() + timeout_sec
+        last_missing: List[str] = []
+        while time.monotonic() < deadline:
+            readiness = self.build_patrol_readiness()
+            last_missing = [key for key in required_keys if not readiness.get(key)]
+            if not last_missing:
+                self.patrol_error = ''
+                return True
+            self.startup_step = f"waiting_{last_missing[0]}"
+            self.patrol_error = '等待巡逻依赖: ' + ', '.join(last_missing)
+            time.sleep(0.25)
+        self.patrol_error = '巡逻依赖等待超时: ' + ', '.join(last_missing)
+        return False
+
+    def wait_for_core_sensors(self, timeout_sec: float = 25.0) -> bool:
+        return self.wait_for_readiness_keys(
+            ('bringup', 'odom', 'scan', 'tf'),
+            timeout_sec,
+            error_prefix='底盘与传感器等待超时',
+        )
+
+    def wait_for_navigation_ready(self, timeout_sec: float = 35.0) -> bool:
+        return self.wait_for_readiness_keys(
+            ('navigation', 'map', 'initialpose_subscribers'),
+            timeout_sec,
+            error_prefix='导航等待超时',
+        )
+
+    def wait_for_nav2_action_ready(self, timeout_sec: float = 25.0) -> bool:
+        return self.wait_for_readiness_keys(
+            ('nav2_action',),
+            timeout_sec,
+            error_prefix='Nav2 动作服务未就绪',
+        )
+
+    def wait_for_patrol_executor_ready(self, timeout_sec: float = 15.0) -> bool:
+        return self.wait_for_readiness_keys(
+            ('executor', 'route_file', 'patrol_status'),
+            timeout_sec,
+            error_prefix='巡逻执行器等待超时',
+        )
+
+    def wait_for_initial_pose_published(self, timeout_sec: float = 8.0) -> bool:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if self.has_initial_pose_published():
+                self.patrol_error = ''
+                return True
+            self.startup_step = 'waiting_initial_pose_published'
+            self.patrol_error = '等待巡逻执行器发布初始位姿'
+            time.sleep(0.1)
+        self.patrol_error = '等待初始位姿发布超时'
+        return False
+
+    def wait_for_readiness_keys(
+        self,
+        required_keys: Iterable[str],
+        timeout_sec: float,
+        error_prefix: str,
+    ) -> bool:
+        required = tuple(required_keys)
+        deadline = time.monotonic() + timeout_sec
+        last_missing: List[str] = []
+        while time.monotonic() < deadline:
+            readiness = self.build_patrol_readiness()
+            last_missing = [key for key in required if not readiness.get(key)]
+            if not last_missing:
+                self.patrol_error = ''
+                return True
+            self.startup_step = f"waiting_{last_missing[0]}"
+            self.patrol_error = self.readiness_wait_message(last_missing)
+            time.sleep(0.25)
+        self.patrol_error = self.readiness_timeout_message(error_prefix, last_missing)
+        return False
+
+    def readiness_wait_message(self, missing: List[str]) -> str:
+        if len(missing) == 1 and missing[0] in READINESS_ERROR_MESSAGES:
+            return '等待巡逻依赖: ' + READINESS_ERROR_MESSAGES[missing[0]]
+        return '等待巡逻依赖: ' + ', '.join(
+            READINESS_ERROR_MESSAGES.get(key, key) for key in missing
+        )
+
+    def readiness_timeout_message(self, error_prefix: str, missing: List[str]) -> str:
+        if len(missing) == 1 and missing[0] in READINESS_ERROR_MESSAGES:
+            return READINESS_ERROR_MESSAGES[missing[0]]
+        if error_prefix:
+            return f"{error_prefix}: " + ', '.join(
+                READINESS_ERROR_MESSAGES.get(key, key) for key in missing
+            )
+        return '等待巡逻依赖超时: ' + ', '.join(
+            READINESS_ERROR_MESSAGES.get(key, key) for key in missing
+        )
+
+    def wait_for_patrol_status(self, timeout_sec: float = 10.0) -> str:
+        deadline = time.monotonic() + timeout_sec
+        last_state = ''
+        while time.monotonic() < deadline:
+            status = getattr(self, 'last_patrol_status', {}) or {}
+            last_state = str(status.get('state') or status.get('status') or '')
+            if last_state in ('running', 'failed', 'succeeded', 'canceled', 'cancelled'):
+                if last_state == 'failed':
+                    self.patrol_error = str(
+                        status.get('message') or status.get('error') or '巡逻执行器报告失败'
+                    )
+                return last_state
+            time.sleep(0.2)
+        self.patrol_error = '等待 /patrol/status 进入 running 超时'
+        return last_state or 'timeout'
+
+    def is_patrol_executor_ready(self) -> bool:
+        process = self.processes.get('patrol_executor')
+        process_running = bool(process and process.is_running())
+        try:
+            subscribers = self.get_subscriptions_info_by_topic('/patrol/command')
+        except Exception:
+            subscribers = []
+        return process_running and bool(subscribers)
+
+    def has_patrol_route_file(self) -> bool:
+        try:
+            return any(
+                name.startswith('route_patrol_') and name.endswith('.json')
+                for name in os.listdir(os.path.dirname(self.default_navigation_map))
+            )
+        except Exception:
+            return False
+
+    def topic_has_publishers(self, topic: str) -> bool:
+        try:
+            return bool(self.get_publishers_info_by_topic(topic))
+        except Exception:
+            return False
+
+    def topic_has_subscribers(self, topic: str) -> bool:
+        try:
+            return bool(self.get_subscriptions_info_by_topic(topic))
+        except Exception:
+            return False
+
+    def has_initial_pose_published(self) -> bool:
+        event = getattr(self, 'last_initial_pose_event', {}) or {}
+        return event.get('event') == 'initial_pose_published'
+
+    def has_nav2_action(self) -> bool:
+        try:
+            action_names = self.get_action_names_and_types()
+        except Exception:
+            return False
+        return any(name == '/navigate_to_pose' for name, _types in action_names)
+
+    def wait_for_patrol_executor(self, timeout_sec: float = 2.0) -> bool:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if self.is_patrol_executor_ready():
+                return True
+            time.sleep(0.1)
+        return False
 
     def save_map(self, map_name: str) -> None:
         safe_name = ''.join(c for c in map_name if c.isalnum() or c in ('_', '-')).strip('_-')
@@ -329,14 +708,24 @@ class SystemSupervisorNode(Node):
         self.last_command = command
         self.last_success = bool(success)
         self.last_message = message
-        self.get_logger().info(f'{command}: {message}')
+        self.log_info(f'{command}: {message}')
         self.publish_status_locked()
 
+    def log_info(self, message: str) -> None:
+        try:
+            self.get_logger().info(message)
+        except AttributeError:
+            pass
+
     def publish_status(self) -> None:
+        mobile_bridge = self.processes.get('mobile_bridge')
+        self.mobile_bridge_http = mobile_bridge_tcp_status(
+            bool(mobile_bridge and mobile_bridge.is_running())
+        )
         with self.lock:
             self.publish_status_locked()
 
-    def publish_status_locked(self) -> None:
+    def build_status_payload(self) -> Dict[str, Any]:
         payload = {
             'schema_version': '1.0',
             'timestamp': time.time(),
@@ -349,6 +738,28 @@ class SystemSupervisorNode(Node):
                 payload[name] = 'embedded'
             else:
                 payload[name] = 'running' if proc.is_running() else 'stopped'
+        patrol_state = getattr(self, 'patrol_mode_state', 'idle')
+        if patrol_state in ('starting', 'running'):
+            patrol_readiness = self.build_patrol_readiness()
+        else:
+            patrol_readiness = self.build_light_patrol_readiness()
+        payload.update({
+            'mobile_bridge_http': self.mobile_bridge_http,
+            'mobile_bridge_url': self.mobile_bridge_url,
+            'jetson_ip': self.jetson_ip,
+            'patrol_mode_state': patrol_state,
+            'patrol_readiness': patrol_readiness,
+            'patrol_error': getattr(self, 'patrol_error', ''),
+            'startup_step': getattr(self, 'startup_step', ''),
+            'startup_step_label': STARTUP_STEP_LABELS.get(
+                getattr(self, 'startup_step', ''),
+                getattr(self, 'startup_step', ''),
+            ),
+        })
+        return payload
+
+    def publish_status_locked(self) -> None:
+        payload = self.build_status_payload()
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.status_pub.publish(msg)

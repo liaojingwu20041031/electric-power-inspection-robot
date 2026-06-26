@@ -52,6 +52,7 @@ class VoiceOutputNode(Node):
             self.get_parameter('interrupt_current_playback').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
         self.queue: 'queue.PriorityQueue[tuple[int, float, SayText]]' = queue.PriorityQueue()
+        self._queued_say_keys: set[tuple[str, str]] = set()
         self.stop_event = threading.Event()
         self.current_task_id = ''
         self.tts_cache: dict[tuple[str, str, str, str], bytes] = {}
@@ -77,6 +78,11 @@ class VoiceOutputNode(Node):
         if msg.interrupt:
             self.clear_queue()
             self.interrupt_playback()
+        text = msg.text.strip()
+        key = (str(msg.task_id), text)
+        if key in self._queued_say_keys:
+            return
+        self._queued_say_keys.add(key)
         self.queue.put((-int(msg.priority), time.time(), msg))
 
     def play_loop(self) -> None:
@@ -85,6 +91,7 @@ class VoiceOutputNode(Node):
                 _priority, _ts, msg = self.queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+            self._queued_say_keys.discard((str(msg.task_id), msg.text.strip()))
             try:
                 text = msg.text.strip()
                 if text:
@@ -249,6 +256,7 @@ class VoiceOutputNode(Node):
         self.publish_status()
 
     def clear_queue(self) -> None:
+        self._queued_say_keys.clear()
         while True:
             try:
                 self.queue.get_nowait()

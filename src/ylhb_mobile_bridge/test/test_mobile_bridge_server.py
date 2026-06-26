@@ -41,6 +41,10 @@ class FakeBridge:
         self.stopped = False
         self.mapping_map_reset_count = 0
         self.mapping_map_available = False
+        self.system_commands = []
+        self.patrol_commands = []
+        self.system_status_payload = {}
+        self.patrol_status_payload = {}
 
     def get_logger(self):
         return FakeLogger()
@@ -78,6 +82,21 @@ class FakeBridge:
 
     def stop_motion(self):
         self.stopped = True
+
+    def publish_system_command(self, command, **extra):
+        self.system_commands.append((command, extra))
+
+    def has_system_supervisor(self):
+        return bool(self.system_status_payload)
+
+    def system_status(self):
+        return self.system_status_payload
+
+    def publish_patrol_command(self, command):
+        self.patrol_commands.append(command)
+
+    def patrol_status(self):
+        return self.patrol_status_payload
 
 
 class FakeProcessManager:
@@ -279,6 +298,37 @@ def test_map_management_api_lists_renames_and_deletes_maps(tmp_path):
     ]
 
 
+def test_map_management_api_previews_map(tmp_path):
+    write_map_pair(tmp_path, "my_map")
+    write_map_pair(tmp_path, "factory")
+    client = make_client(default_map_path=str(tmp_path / "my_map"))
+
+    response = client.get("/api/debug/maps/factory/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["map_meta"]["yaml_file"] == "factory.yaml"
+    assert body["data"]["png_base64"]
+
+
+def test_map_management_api_confirms_default_and_archives_routes(tmp_path):
+    write_map_pair(tmp_path, "my_map")
+    write_map_pair(tmp_path, "factory")
+    (tmp_path / "route_patrol_001.json").write_text("{}", encoding="utf-8")
+    client = make_client(default_map_path=str(tmp_path / "my_map"))
+
+    response = client.post("/api/debug/maps/factory/confirm_default")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["default"]["name"] == "my_map"
+    assert body["data"]["archived_routes"][0]["to"].startswith(
+        "deprecated_route_patrol_001_"
+    )
+
+
 @pytest.mark.parametrize(
     ("method", "path", "json", "status_code", "error"),
     [
@@ -343,21 +393,30 @@ def test_map_mutations_are_rejected_while_map_is_in_use(tmp_path, active_node):
         json={"new_name": "new_factory"},
     )
     delete = client.delete("/api/debug/maps/factory")
+    confirm = client.post("/api/debug/maps/factory/confirm_default")
 
     assert rename.status_code == 409
     assert rename.json()["error"] == "map_in_use"
     assert delete.status_code == 409
     assert delete.json()["error"] == "map_in_use"
+    assert confirm.status_code == 409
+    assert confirm.json()["error"] == "map_in_use"
 
 
 def test_system_start_and_stop_routes_restrict_modes():
-    client = make_client()
+    bridge = FakeBridge()
+    bridge.system_status_payload = {"success": True, "message": "ready"}
+    client = make_client(bridge)
 
     start = client.post("/api/debug/system/start/bringup").json()
     stop = client.post("/api/debug/system/stop/mapping").json()
 
     assert start["ok"] is True
     assert stop["ok"] is True
+    assert bridge.system_commands == [
+        ("start_bringup", {}),
+        ("stop_mapping", {}),
+    ]
     response = client.post("/api/debug/system/start/localization")
 
     assert response.status_code == 404
@@ -382,6 +441,8 @@ def test_system_process_routes_do_not_expose_navigation(action):
 )
 def test_mapping_start_routes_clear_previous_map(path):
     bridge = FakeBridge()
+    if path.startswith("/api/debug/system/"):
+        bridge.system_status_payload = {"success": True, "message": "ready"}
 
     response = make_client(bridge).post(path)
 
@@ -399,6 +460,8 @@ def test_mapping_start_routes_clear_previous_map(path):
 )
 def test_mapping_stop_routes_clear_cached_map(path):
     bridge = FakeBridge()
+    if path.startswith("/api/debug/system/"):
+        bridge.system_status_payload = {"success": True, "message": "ready"}
 
     response = make_client(bridge).post(path)
 
@@ -408,25 +471,74 @@ def test_mapping_stop_routes_clear_cached_map(path):
 
 
 def test_system_status_returns_bringup_and_mapping_processes():
-    response = make_client().get("/api/debug/system/status")
+    bridge = FakeBridge()
+    bridge.system_status_payload = {
+        "bringup": "running",
+        "mapping": "stopped",
+        "success": True,
+    }
+
+    response = make_client(bridge).get("/api/debug/system/status")
 
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert set(body["data"]) == {"bringup", "mapping"}
-    assert body["data"]["bringup"]["mode"] == "bringup"
-    assert body["data"]["mapping"]["mode"] == "mapping"
+    assert body["data"]["bringup"] == "running"
+    assert body["data"]["mapping"] == "stopped"
 
 
 @pytest.mark.parametrize("mode", ["bringup", "mapping"])
 def test_system_start_routes_use_unified_response_envelope(mode):
-    response = make_client().post(f"/api/debug/system/start/{mode}")
+    bridge = FakeBridge()
+    bridge.system_status_payload = {"success": True, "message": "ready"}
+
+    response = make_client(bridge).post(f"/api/debug/system/start/{mode}")
 
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert body["message"] == f"{mode} started"
+    assert body["message"] == f"system command sent: start_{mode}"
     assert "timestamp" in body
+
+
+def test_system_start_requires_supervisor_online():
+    response = make_client().post("/api/debug/system/start/bringup")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] == "supervisor_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "command"),
+    [
+        ("/api/debug/patrol/start", "start"),
+        ("/api/debug/patrol/pause", "pause"),
+        ("/api/debug/patrol/resume", "resume"),
+        ("/api/debug/patrol/cancel", "cancel"),
+        ("/api/debug/patrol/reload", "reload"),
+        ("/api/debug/patrol/initialize", "initialize"),
+    ],
+)
+def test_patrol_command_routes_publish_to_patrol_topic(endpoint, command):
+    bridge = FakeBridge()
+
+    response = make_client(bridge).post(endpoint)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert bridge.patrol_commands == [command]
+
+
+def test_patrol_status_route_reports_executor_missing_when_no_status():
+    response = make_client().get("/api/debug/patrol/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["executor_running"] is False
+    assert body["data"]["state"] == "unavailable"
 
 
 def test_http_token_auth_allows_header_and_rejects_missing_token():

@@ -1,0 +1,322 @@
+from unittest.mock import Mock
+
+from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
+from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
+
+from ylhb_llm import system_supervisor_node
+from ylhb_llm.system_supervisor_node import SystemSupervisorNode
+
+
+class FakeProcess:
+    def __init__(self, running=False):
+        self._running = running
+
+    def is_running(self):
+        return self._running
+
+
+def test_mobile_bridge_commands_start_stop_and_restart():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'mobile_bridge': FakeProcess()}
+    node.start_process = Mock()
+    node.stop_process = Mock()
+    node.set_result = Mock()
+
+    node.handle_command('start_mobile_bridge', {})
+    node.start_process.assert_called_once_with('mobile_bridge')
+
+    node.handle_command('stop_mobile_bridge', {})
+    node.stop_process.assert_called_once_with('mobile_bridge')
+
+    node.handle_command('restart_mobile_bridge', {})
+    assert node.stop_process.call_args_list[-1].args == ('mobile_bridge',)
+    assert node.start_process.call_args_list[-1].args == ('mobile_bridge',)
+
+
+def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {
+        'bringup': FakeProcess(),
+        'zed': FakeProcess(),
+        'perception': FakeProcess(),
+        'navigation': FakeProcess(),
+        'llm': FakeProcess(),
+        'patrol_executor': FakeProcess(),
+    }
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.set_result = Mock()
+    sequence = []
+    node.wait_for_core_sensors = Mock()
+    node.wait_for_navigation_ready = Mock()
+    node.wait_for_patrol_executor_ready = Mock()
+    node.wait_for_initial_pose_published = Mock()
+    node.wait_for_nav2_action_ready = Mock()
+    node.wait_for_patrol_status = Mock()
+    node.start_process.side_effect = lambda name: sequence.append(f'start_{name}')
+
+    node.handle_command('start_patrol_mode', {'profile': 'navigation'})
+
+    assert sequence == [
+        'start_bringup',
+        'start_navigation',
+        'start_patrol_executor',
+    ]
+    node.wait_for_core_sensors.assert_not_called()
+    node.wait_for_navigation_ready.assert_not_called()
+    node.wait_for_patrol_executor_ready.assert_not_called()
+    node.wait_for_initial_pose_published.assert_not_called()
+    node.wait_for_nav2_action_ready.assert_not_called()
+    node.wait_for_patrol_status.assert_not_called()
+    node.publish_patrol_command.assert_not_called()
+    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻依赖已启动，等待巡逻执行器就绪')
+
+
+def test_start_patrol_mode_inspection_profile_starts_perception_stack():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {}
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.set_result = Mock()
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_patrol_executor_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
+    node.wait_for_nav2_action_ready = Mock(return_value=True)
+    node.wait_for_patrol_status = Mock(return_value='running')
+
+    node.handle_command('start_patrol_mode', {'profile': 'inspection'})
+
+    assert [call.args[0] for call in node.start_process.call_args_list] == [
+        'bringup',
+        'zed',
+        'perception',
+        'navigation',
+        'patrol_executor',
+    ]
+    node.publish_patrol_command.assert_not_called()
+
+
+def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.set_result = Mock()
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_patrol_executor_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
+    node.wait_for_nav2_action_ready = Mock(return_value=False)
+
+    node.handle_command('start_patrol_mode', {})
+
+    assert [call.args[0] for call in node.start_process.call_args_list] == [
+        'bringup',
+        'navigation',
+        'patrol_executor',
+    ]
+    node.wait_for_initial_pose_published.assert_not_called()
+    node.wait_for_nav2_action_ready.assert_not_called()
+    node.publish_patrol_command.assert_not_called()
+    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻依赖已启动，等待巡逻执行器就绪')
+
+
+def test_start_patrol_mode_does_not_wait_for_patrol_status_or_forward_start():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.set_result = Mock()
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_patrol_executor_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
+    node.wait_for_nav2_action_ready = Mock(return_value=True)
+    node.wait_for_patrol_status = Mock(return_value='failed')
+
+    node.handle_command('start_patrol_mode', {})
+
+    node.wait_for_patrol_status.assert_not_called()
+    node.publish_patrol_command.assert_not_called()
+    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻依赖已启动，等待巡逻执行器就绪')
+
+
+def test_patrol_control_commands_are_not_handled_by_system_supervisor():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.publish_patrol_command = Mock()
+    node.set_result = Mock()
+    node.is_patrol_executor_ready = Mock(return_value=False)
+
+    node.handle_command('pause_patrol', {})
+    node.handle_command('resume_patrol', {})
+    node.handle_command('cancel_patrol', {})
+    node.handle_command('reload_patrol_route', {})
+
+    node.publish_patrol_command.assert_not_called()
+    assert [call.args[2] for call in node.set_result.call_args_list] == [
+        'Unknown system command: pause_patrol',
+        'Unknown system command: resume_patrol',
+        'Unknown system command: cancel_patrol',
+        'Unknown system command: reload_patrol_route',
+    ]
+
+
+def test_stop_patrol_mode_stops_executor_without_forwarding_cancel():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.publish_patrol_command = Mock()
+    node.set_result = Mock()
+    node.stop_process = Mock()
+
+    node.handle_command('stop_patrol_mode', {})
+
+    node.publish_patrol_command.assert_not_called()
+    node.stop_process.assert_called_once_with('patrol_executor')
+    node.set_result.assert_called_with('stop_patrol_mode', True, '巡逻模式已停止')
+
+
+def test_mobile_bridge_tcp_status_is_stopped_without_process():
+    assert system_supervisor_node.mobile_bridge_tcp_status(False) == 'stopped'
+
+
+def test_mobile_bridge_tcp_status_reports_connection_failure():
+    def failing_connector(*_args, **_kwargs):
+        raise OSError('connection refused')
+
+    assert system_supervisor_node.mobile_bridge_tcp_status(True, connector=failing_connector) == 'tcp_error'
+
+
+def test_mobile_bridge_tcp_status_reports_tcp_ok():
+    class FakeSocket:
+        def close(self):
+            pass
+
+    assert system_supervisor_node.mobile_bridge_tcp_status(
+        True,
+        connector=lambda *_args, **_kwargs: FakeSocket(),
+    ) == 'tcp_ok'
+
+
+def test_status_payload_contains_mobile_bridge_fields():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {
+        'bringup': FakeProcess(),
+        'mobile_bridge': FakeProcess(running=True),
+    }
+    node.embedded_task_layer = False
+    node.last_command = ''
+    node.last_success = True
+    node.last_message = 'ready'
+    node.mobile_bridge_http = 'http_ok'
+    node.mobile_bridge_url = 'http://192.168.1.50:8000'
+    node.jetson_ip = '192.168.1.50'
+
+    payload = node.build_status_payload()
+
+    assert payload['mobile_bridge'] == 'running'
+    assert payload['mobile_bridge_http'] == 'http_ok'
+    assert payload['mobile_bridge_url'] == 'http://192.168.1.50:8000'
+    assert payload['jetson_ip'] == '192.168.1.50'
+
+
+def test_status_payload_contains_patrol_orchestration_fields():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {
+        'bringup': FakeProcess(running=True),
+        'navigation': FakeProcess(),
+        'patrol_executor': FakeProcess(running=True),
+    }
+    node.embedded_task_layer = False
+    node.last_command = ''
+    node.last_success = True
+    node.last_message = 'ready'
+    node.mobile_bridge_http = 'stopped'
+    node.mobile_bridge_url = 'http://127.0.0.1:8000'
+    node.jetson_ip = '127.0.0.1'
+    node.patrol_mode_state = 'starting'
+    node.patrol_error = ''
+    node.startup_step = 'waiting_navigation'
+    node.build_patrol_readiness = Mock(return_value={
+        'bringup': True,
+        'navigation': False,
+        'executor': True,
+        'route_file': True,
+        'nav2_action': False,
+    })
+
+    payload = node.build_status_payload()
+
+    assert payload['patrol_mode_state'] == 'starting'
+    assert payload['startup_step'] == 'waiting_navigation'
+    assert payload['startup_step_label'] == '等待地图'
+    assert payload['patrol_readiness']['navigation'] is False
+    assert payload['patrol_error'] == ''
+
+
+def test_status_payload_does_not_duplicate_patrol_progress_labels():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {}
+    node.embedded_task_layer = False
+    node.last_command = ''
+    node.last_success = True
+    node.last_message = 'ready'
+    node.mobile_bridge_http = 'stopped'
+    node.mobile_bridge_url = 'http://127.0.0.1:8000'
+    node.jetson_ip = '127.0.0.1'
+    node.patrol_mode_state = 'idle'
+    node.patrol_error = ''
+    node.startup_step = ''
+    node.last_patrol_status = {
+        'state': 'running',
+        'target_index': 1,
+        'target_count': 4,
+        'target_name': '巡检点2',
+        'cycle_index': 2,
+    }
+    node.build_light_patrol_readiness = Mock(return_value={})
+
+    payload = node.build_status_payload()
+
+    assert 'patrol_progress_label' not in payload
+    assert 'current_target_label' not in payload
+    assert 'patrol_cycle_label' not in payload
+
+
+def test_supervisor_uses_same_patrol_status_qos_as_executor():
+    qos = system_supervisor_node.patrol_status_qos_profile()
+    executor_qos = patrol_status_qos_profile()
+
+    assert qos.depth == executor_qos.depth == 10
+    assert qos.reliability == executor_qos.reliability == ReliabilityPolicy.RELIABLE
+    assert qos.durability == executor_qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
+
+
+def test_readiness_errors_use_chinese_messages_for_navigation_dependencies():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    states = [
+        {
+            'navigation': True,
+            'map': True,
+            'initialpose_subscribers': False,
+        }
+    ]
+    node.build_patrol_readiness = Mock(side_effect=lambda: states[-1])
+
+    assert node.wait_for_readiness_keys(
+        ('navigation', 'map', 'initialpose_subscribers'),
+        timeout_sec=0.01,
+        error_prefix='',
+    ) is False
+
+    assert node.startup_step == 'waiting_initialpose_subscribers'
+    assert node.patrol_error == '等待 /initialpose 订阅者超时'
+
+
+def test_patrol_event_marks_initial_pose_published_before_nav2_action_wait():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.last_patrol_event = {}
+    node.last_initial_pose_event = {}
+
+    msg = type('Msg', (), {'data': '{"event":"initial_pose_published","remaining":2}'})()
+    node.patrol_event_callback(msg)
+
+    assert node.last_initial_pose_event['event'] == 'initial_pose_published'
+    assert node.wait_for_initial_pose_published(timeout_sec=0.01) is True

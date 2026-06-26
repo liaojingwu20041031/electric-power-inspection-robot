@@ -40,6 +40,7 @@ class InspectionTaskNode(Node):
         self.declare_parameter('request_timeout_sec', 12.0)
         self.declare_parameter('enable_llm_parse', False)
         self.declare_parameter('publish_raw_json', True)
+        self.declare_parameter('emergency_stop_reply_cooldown_sec', 2.0)
 
         self.system_mode = 'ready'
         self.latest_detection_json = ''
@@ -61,6 +62,10 @@ class InspectionTaskNode(Node):
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.enable_llm_parse = bool(self.get_parameter('enable_llm_parse').value)
         self.publish_raw_json = bool(self.get_parameter('publish_raw_json').value)
+        self.emergency_stop_reply_cooldown_sec = float(
+            self.get_parameter('emergency_stop_reply_cooldown_sec').value
+        )
+        self._last_emergency_stop_reply_time = 0.0
 
         self.task_event_pub = self.create_publisher(TaskEvent, self.get_parameter('task_event_topic').value, 10)
         self.say_pub = self.create_publisher(SayText, self.get_parameter('say_text_topic').value, 10)
@@ -82,7 +87,8 @@ class InspectionTaskNode(Node):
         task_id = str(payload.get('task_id') or self.next_task_id(decision['intent']))
         self.active_task_id = task_id
         self.publish_task_event(task_id, decision, payload)
-        self.say(task_id, decision['reply_cn'], priority=decision.get('priority', 5))
+        if self.should_publish_reply(decision['intent'], decision['reply_cn']):
+            self.say(task_id, decision['reply_cn'], priority=decision.get('priority', 5))
         self.update_context(
             state='task_event_published',
             active_task_id=task_id,
@@ -142,6 +148,23 @@ class InspectionTaskNode(Node):
             'raw_text': text,
             'timestamp': time.time(),
         }
+
+    def should_publish_reply(
+        self,
+        intent: str,
+        reply_cn: str,
+        now: Optional[float] = None,
+    ) -> bool:
+        if intent != 'emergency_stop' or reply_cn != '已收到停止指令。':
+            return True
+        now = time.time() if now is None else now
+        if (
+            now - self._last_emergency_stop_reply_time
+            < self.emergency_stop_reply_cooldown_sec
+        ):
+            return False
+        self._last_emergency_stop_reply_time = now
+        return True
 
     def publish_task_event(self, task_id: str, decision: Dict[str, Any], source_payload: Dict[str, Any]) -> None:
         msg = TaskEvent()

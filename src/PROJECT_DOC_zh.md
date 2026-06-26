@@ -31,7 +31,7 @@
 | 导航 | RPLidar、IMU、WTRTK980 RTK 数据源、SLAM Toolbox、Nav2、AMCL、EKF |
 | 感知 | ZED 2i、YOLO/TensorRT、OpenCV |
 | LLM/语音 | DashScope/Qwen、ASR、TTS、语音路由 |
-| UI/桥接 | PyQt 控制台、HTTP/WebSocket mobile bridge |
+| UI/桥接 | PyQt5 QtQuick/QML 本体操控台、HTTP/WebSocket mobile bridge |
 | 后续规划 | LocateAnything-3B、LingBot-Map、巡检业务协议 |
 
 ### 初始化框架边界
@@ -81,7 +81,7 @@ ROS 包名、launch 模式和业务功能混在一起看。
 | 建图定位 | SLAM Toolbox 建图、地图保存、AMCL 定位、Scan-to-Map 修正 | `mapping`、`navigation`、`scan_map_relocalization_node` | `/map`、`map -> odom`、`/initialpose` 修正 |
 | 导航与巡逻 | Nav2 单点导航、本地路线巡逻、到点任务触发、返航、暂停/恢复/取消 | `navigation`、`patrol_executor.launch.py` | Nav2 action、`/patrol/status`、`/patrol/event` |
 | 视觉感知 | ZED 2i 图像/深度、YOLO/TensorRT 检测、目标空间定位 | `zed`、`perception` | `/perception/detections`、`/perception/localized_objects` |
-| 任务与交互 | 文本/语音命令、任务事件、TTS、中文显示 UI、系统进程 supervisor | `llm`、`inspection` | `/inspection_ai/*`、短时 `/cmd_vel`、UI |
+| 任务与交互 | 文本/语音命令、任务事件、TTS、中文 QML 本体操控台、系统进程 supervisor | `llm`、`inspection` | `/inspection_ai/*`、短时 `/cmd_vel`、UI |
 | 外部调试接口 | HTTP/WebSocket 调试、移动端状态查询、低速控制、系统启动/停止入口 | `mobile_bridge.launch.py` | Web API、WebSocket、ROS 话题转发 |
 
 当前仓库已经包含机器人底层、导航、感知和交互框架；完整巡检业务闭环、检测服务 API、告警数据库、报告导出、LocateAnything-3B 推理和 LingBot-Map 实际接入仍属于后续扩展。
@@ -141,7 +141,8 @@ zed -> perception -> inspection
 - `ylhb_mobile_bridge` 同时包含 HTTP/WebSocket bridge 和本地巡逻执行器。
   前者服务手机/Web 调试，后者直接调用 Nav2；两者共享包但职责不同。
 - `ylhb_llm` 是任务/语音/UI 层，不是底盘控制器。它可以发布短时 `/cmd_vel`
-  或系统命令，但不替代 Nav2 和底盘驱动。
+  或系统命令，但不替代 Nav2 和底盘驱动。本体 QML UI 只通过
+  `/inspection_ai/system_command` 请求 supervisor 管理进程。
 
 ## 3. ROS 包职责
 
@@ -244,7 +245,7 @@ ZED 2i RGB 图像
   -> /inspection_ai/task_event、/inspection_ai/say_text、/cmd_vel 或系统进程动作
 ```
 
-`ylhb_llm` 不是底盘控制器本体，而是上层任务编排和交互层。`basic_motion_command_node` 可以把“前进、后退、左转、右转、停止”等短命令转换为短时 `/cmd_vel`；`inspection_task_node` 把巡检文本解析成 `TaskEvent`；`system_supervisor_node` 负责启动/停止底层、建图、导航、感知等系统进程；`inspection_display_ui_node` 提供本机中文显示界面。
+`ylhb_llm` 不是底盘控制器本体，而是上层任务编排和交互层。`basic_motion_command_node` 可以把“前进、后退、左转、右转、停止”等短命令转换为短时 `/cmd_vel`；`inspection_task_node` 把巡检文本解析成 `TaskEvent`；`system_supervisor_node` 负责启动/停止底层、建图、导航、感知和 mobile bridge 等系统进程；`inspection_display_ui_node` 提供本机中文 QML 操控台。
 
 ### 4.7 修改功能时看哪里
 
@@ -261,6 +262,7 @@ ZED 2i RGB 图像
 | 语音、UI、任务话题 | `src/ylhb_llm/config/llm.yaml` | `/inspection_ai/*` 是任务层主命名空间 |
 | 感知模型和检测阈值 | `src/ylhb_perception/config/detector.yaml` | TensorRT engine 输入尺寸需与 `imgsz` 一致 |
 | 手机/Web 调试入口 | `src/ylhb_mobile_bridge/config/mobile_bridge.yaml` | bridge 只做外部协议到 ROS 的转换 |
+| 本体 QML 操控台 | `src/ylhb_llm/ylhb_llm/ui_backend.py`、`ui_ros_bridge.py`、`src/ylhb_llm/qml/` | UI 只发布 ROS 命令，不直接调用 mobile bridge HTTP API |
 | 测试与回归 | `src/ylhb_base/test/`、`src/ylhb_mobile_bridge/test/`、`src/ylhb_llm/test/` | 配置或行为变更应同步更新对应测试 |
 
 ## 5. 工作空间规范
@@ -1120,9 +1122,25 @@ ros2 topic echo /perception/localized_objects
 ~/ros2_DL/src/ylhb_perception/models/yolo26.engine
 ```
 
-## 14. AI 任务层与显示 UI
+## 14. AI 任务层与本体 UI 控制台
 
-文字调试优先关闭语音和 TTS：
+`inspection` 是机器人本体的正式 UI 控制台入口。它固定启动 QML 显示 UI、
+系统 supervisor、内嵌 AI 任务层、连续语音会话和 TTS：
+
+```bash
+cd ~/ros2_DL
+export DISPLAY=:0
+./scripts/run_on_jetson.sh inspection
+```
+
+正式 UI 控制台启动时，`enable_display_ui`、`enable_system_supervisor`、
+`enable_voice`、`enable_voice_session` 和 `enable_tts` 必须同步开启。
+`inspection` 模式会拒绝 `enable_voice:=false`、`enable_voice_session:=false`
+或 `enable_tts:=false`。`enable_capture_voice:=false` 是默认值，只表示不启用
+一次性录音识别服务，不等同于关闭连续语音会话。
+
+`llm.launch.py` 和 `./scripts/run_on_jetson.sh llm` 是任务层/离线调试入口。
+文字调试或无屏调试可以关闭 UI、语音或 TTS：
 
 ```bash
 cd ~/ros2_DL
@@ -1164,17 +1182,39 @@ ros2 topic echo /inspection_ai/task_context_status
 | `/inspection_ai/system_status` | `std_msgs/String` | system supervisor 状态 JSON |
 | `/inspection_ai/system_mode` | `std_msgs/String` | `ready`、`mapping`、`fault` 等系统模式 |
 
+mobile bridge 进程控制命令为 `start_mobile_bridge`、`stop_mobile_bridge` 和
+`restart_mobile_bridge`。这些命令由 `system_supervisor_node` 执行，restart
+明确先停止再启动。本体 UI 不直接调用 bridge 的 HTTP 启动接口。
+
+`/inspection_ai/system_status` 保留既有字段，并增加：
+
+| 字段 | 含义 |
+|---|---|
+| `mobile_bridge` | supervisor 进程状态，`running` 或 `stopped` |
+| `mobile_bridge_http` | 本机 `/api/status` 健康检查，`http_ok`、`http_error` 或 `stopped` |
+| `mobile_bridge_url` | 手机 APP 使用的 `http://<Jetson_IP>:8000` |
+| `jetson_ip` | supervisor 自动探测的 Jetson 局域网 IP |
+
 正式 `/inspection/*` 任务、告警和巡检记录协议尚未实现。当前不要把
 `/inspection_ai/*` 占位接口描述为已经完成的正式业务协议。
 
-启动本机显示 UI 和 supervisor：
+`inspection` 模式会启动显示 UI、系统 supervisor、内嵌 AI 任务层、连续语音会话和 TTS。UI 可以发出启动/停止底层、建图、导航、感知和 mobile bridge 等系统命令；核心 ROS 节点仍以各自 launch 管理。
+
+本体 UI 保留 `inspection_display_ui_node` 入口和 `enable_display_ui`、
+`enable_system_supervisor`、`fullscreen`、`display`、`force_local_display`
+launch 参数。`enable_display_ui:=false` 表示不启动本体 QML UI，只适合
+`llm` 开发/离线调试入口，不是正式机器人控制台启动方式。页面包括总览、APP
+桥接、系统状态、运动控制、建图和日志。运动控制默认锁定，10 秒无操作自动重新锁定；急停始终发布零速度和 `emergency_stop`。
+
+QtQuick/QML 依赖：
 
 ```bash
-export DISPLAY=:0
-./scripts/run_on_jetson.sh inspection
+sudo apt install python3-pyqt5.qtquick qml-module-qtquick2 \
+  qml-module-qtquick-window2 qml-module-qtquick-controls2 \
+  qml-module-qtquick-layouts qml-module-qtqml-models2
 ```
 
-`inspection` 模式会启动显示 UI、系统 supervisor 和内嵌 AI 任务层。UI 可以发出启动/停止底层、建图、导航、感知等系统命令；核心 ROS 节点仍以各自 launch 管理。
+详细设计见 [本体 QML 操控台](../docs/robot_display_ui.md)。
 
 如需 DashScope：
 
@@ -1206,9 +1246,9 @@ ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py
 curl http://localhost:8000/api/status
 ```
 
-返回统一 JSON 信封且 `data.online: true` 即正常。当前 bridge 本身仍需先启动；
-如果要做到手机打开后完全免 SSH，后续应把 `mobile_bridge` 配成 systemd
-自启动服务。
+返回统一 JSON 信封且 `data.online: true` 即正常。bridge 可以单独启动，也可以
+在本体 QML 操控台的“APP 桥接”页面通过 `system_supervisor_node` 启动、停止或重启。
+该路径只发布 `/inspection_ai/system_command`，不直接调用 bridge 的 HTTP 调试 API。
 
 本地巡逻执行器也在 `ylhb_mobile_bridge` 包中，但它不是 HTTP/WebSocket 服务，两者共享包但职责不同：
 
@@ -1508,3 +1548,7 @@ ros2 launch ylhb_perception perception.launch.py --show-args
 - Jetson 物理屏幕使用 `DISPLAY=:0`。
 - SSH X11 的 `localhost:10.0` 会显示到远程电脑，不适合现场屏幕。
 - `./scripts/run_on_jetson.sh inspection` 会把 SSH 转发 DISPLAY 自动改成本机显示。
+- `enable_display_ui:=false` 表示主动不启动 QML UI；确认当前是否误用了 `llm`
+  调试入口或传入了关闭 UI 的 launch 参数。
+- 如果日志出现 `BYTE_ARRAY`/`STRING_ARRAY` 参数类型错误，优先检查语音词表参数声明；
+  这属于 ROS 2 Humble 空字符串数组参数类型问题，不是 QML 显示问题。

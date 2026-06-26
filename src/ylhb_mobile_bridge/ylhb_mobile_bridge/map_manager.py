@@ -1,7 +1,11 @@
+import base64
+import io
 import re
+import time
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
 import yaml
 
 
@@ -116,6 +120,67 @@ class MapManager:
         maps = [self._inspect(name) for name in sorted(names)]
         return {'maps': maps, 'count': len(maps)}
 
+    @staticmethod
+    def _pgm_to_png_base64(
+        pgm_path: Path,
+        max_size_px: int = 1024,
+    ) -> str:
+        max_size_px = max(1, int(max_size_px))
+        with Image.open(pgm_path) as source_image:
+            image = source_image.convert('RGB')
+            longest_edge = max(image.size)
+            if longest_edge > max_size_px:
+                scale = max_size_px / longest_edge
+                size = (
+                    max(1, int(image.width * scale)),
+                    max(1, int(image.height * scale)),
+                )
+                nearest = getattr(
+                    getattr(Image, 'Resampling', Image),
+                    'NEAREST',
+                )
+                image = image.resize(size, resample=nearest)
+            buffer = io.BytesIO()
+            image.save(buffer, format='PNG', optimize=True)
+        return base64.b64encode(buffer.getvalue()).decode('ascii')
+
+    def preview_map(
+        self,
+        name: str,
+        max_size_px: int = 1024,
+    ) -> dict[str, Any]:
+        yaml_path, pgm_path = self._paths(name)
+        info = self._inspect(name)
+        if not any(self._present(path) for path in (yaml_path, pgm_path)):
+            raise MapManagerError('map_not_found', 'map not found', 404)
+        if not info['valid']:
+            raise MapManagerError(
+                'invalid_map_pair',
+                'only complete valid map pairs can be previewed',
+                409,
+            )
+        try:
+            png_base64 = self._pgm_to_png_base64(pgm_path, max_size_px)
+        except Exception as exc:
+            raise MapManagerError(
+                'map_operation_failed',
+                f'failed to preview map: {exc}',
+                500,
+            ) from exc
+        return {
+            'map_meta': {
+                'name': info['name'],
+                'yaml_file': info['yaml_file'],
+                'pgm_file': info['pgm_file'],
+                'resolution': info['resolution'],
+                'origin': info['origin'],
+                'size_bytes': info['size_bytes'],
+                'modified_at': info['modified_at'],
+                'is_default': info['is_default'],
+            },
+            'png_base64': png_base64,
+        }
+
     def _require_mutable_name(self, name: str) -> tuple[Path, Path]:
         paths = self._paths(name)
         if name == self.default_name:
@@ -207,3 +272,145 @@ class MapManager:
                 500,
             ) from exc
         return {'name': name, 'deleted': deleted}
+
+    def _archive_target(self, stem: str, suffix: str) -> Path:
+        base = self.maps_dir / f'{stem}_{suffix}'
+        candidate = base
+        counter = 1
+        while (
+            self._present(candidate.with_suffix('.yaml'))
+            or self._present(candidate.with_suffix('.pgm'))
+            or self._present(candidate.with_suffix('.json'))
+        ):
+            candidate = self.maps_dir / f'{stem}_{suffix}_{counter}'
+            counter += 1
+        return candidate
+
+    def _archive_route_targets(self, suffix: str) -> list[tuple[Path, Path]]:
+        routes = sorted(self.maps_dir.glob('route_patrol_*.json'))
+        targets: list[tuple[Path, Path]] = []
+        for route_path in routes:
+            target = self.maps_dir / f'deprecated_{route_path.stem}_{suffix}.json'
+            counter = 1
+            while self._present(target):
+                target = (
+                    self.maps_dir
+                    / f'deprecated_{route_path.stem}_{suffix}_{counter}.json'
+                )
+                counter += 1
+            targets.append((route_path, target))
+        return targets
+
+    def confirm_default(self, name: str) -> dict[str, Any]:
+        source_yaml, source_pgm = self._paths(name)
+        if name == self.default_name:
+            info = self._inspect(name)
+            if not info['valid']:
+                raise MapManagerError(
+                    'invalid_map_pair',
+                    'default map pair is invalid',
+                    409,
+                )
+            return {
+                'changed': False,
+                'default': info,
+                'archived_previous_map': None,
+                'archived_routes': [],
+            }
+
+        if not any(self._present(path) for path in (source_yaml, source_pgm)):
+            raise MapManagerError('map_not_found', 'map not found', 404)
+        source = self._inspect(name)
+        if not source['valid']:
+            raise MapManagerError(
+                'invalid_map_pair',
+                'only complete valid map pairs can become default',
+                409,
+            )
+
+        default_yaml, default_pgm = self._paths(self.default_name)
+        current_default = self._inspect(self.default_name)
+        if not current_default['valid']:
+            raise MapManagerError(
+                'invalid_map_pair',
+                'current default map pair is invalid',
+                409,
+            )
+
+        suffix = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+        archive_stem = self._archive_target(
+            f'{self.default_name}_deprecated',
+            suffix,
+        )
+        archive_yaml = archive_stem.with_suffix('.yaml')
+        archive_pgm = archive_stem.with_suffix('.pgm')
+        route_targets = self._archive_route_targets(suffix)
+        moved: list[tuple[Path, Path]] = []
+        original_source_yaml = source_yaml.read_bytes()
+        original_default_yaml = default_yaml.read_bytes()
+
+        def move(src: Path, dst: Path) -> None:
+            if self._present(dst):
+                raise MapManagerError(
+                    'map_exists',
+                    f'target file already exists: {dst.name}',
+                    409,
+                )
+            src.rename(dst)
+            moved.append((src, dst))
+
+        try:
+            move(default_yaml, archive_yaml)
+            move(default_pgm, archive_pgm)
+            move(source_yaml, default_yaml)
+            move(source_pgm, default_pgm)
+            archived_document = yaml.safe_load(original_default_yaml)
+            archived_document['image'] = archive_pgm.name
+            archive_yaml.write_text(
+                yaml.safe_dump(archived_document, sort_keys=False),
+                encoding='utf-8',
+            )
+            document = yaml.safe_load(original_source_yaml)
+            document['image'] = default_pgm.name
+            default_yaml.write_text(
+                yaml.safe_dump(document, sort_keys=False),
+                encoding='utf-8',
+            )
+            archived_routes = []
+            for route_path, target in route_targets:
+                move(route_path, target)
+                archived_routes.append(
+                    {'from': route_path.name, 'to': target.name}
+                )
+        except Exception as exc:
+            self._rollback_moves(moved)
+            if source_yaml.exists():
+                source_yaml.write_bytes(original_source_yaml)
+            if default_yaml.exists():
+                default_yaml.write_bytes(original_default_yaml)
+            if isinstance(exc, MapManagerError):
+                raise
+            raise MapManagerError(
+                'map_operation_failed',
+                f'failed to confirm default map: {exc}',
+                500,
+            ) from exc
+
+        return {
+            'changed': True,
+            'default': self._inspect(self.default_name),
+            'archived_previous_map': {
+                'yaml_file': archive_yaml.name,
+                'pgm_file': archive_pgm.name,
+            },
+            'archived_routes': archived_routes,
+        }
+
+    @staticmethod
+    def _rollback_moves(moved: list[tuple[Path, Path]]) -> None:
+        for original, current in reversed(moved):
+            try:
+                if current.exists() or current.is_symlink():
+                    current.rename(original)
+            except OSError:
+                pass

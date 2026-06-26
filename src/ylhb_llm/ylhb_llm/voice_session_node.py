@@ -22,6 +22,7 @@ from .voice_stability import (
     is_context_followup_text,
     normalize_voice_text,
 )
+from .ros_params import declare_string_array_parameter
 
 
 ASR_TIMEOUT_MARKER = '__ASR_TIMEOUT__'
@@ -70,8 +71,8 @@ class VoiceSessionNode(Node):
         self.declare_parameter('ignore_empty_asr_after_event_sec', 6.0)
         self.declare_parameter('context_followup_timeout_sec', 8.0)
         self.declare_parameter('single_wake_default', True)
-        self.declare_parameter('followup_words', [])
-        self.declare_parameter('voice_close_words', [])
+        declare_string_array_parameter(self, 'followup_words')
+        declare_string_array_parameter(self, 'voice_close_words')
 
         self.enabled = bool(self.get_parameter('enabled').value)
         input_device = str(self.get_parameter('audio_input_device').value)

@@ -9,6 +9,7 @@ from std_msgs.msg import String
 
 from ylhb_interfaces.msg import SayText, TaskStatus
 
+from .ros_params import declare_string_array_parameter
 from .voice_stability import VoiceIntent, VoiceRoutingPolicy, classify_voice_intent, normalize_voice_text
 
 
@@ -31,17 +32,17 @@ class VoiceCommandRouterNode(Node):
         self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
         self.declare_parameter('task_status_topic', '/inspection_ai/task_status')
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
-        self.declare_parameter('motion_aliases', [])
-        self.declare_parameter('system_commands', [])
-        self.declare_parameter('voice_close_words', [])
-        self.declare_parameter('safety_words', [])
-        self.declare_parameter('cancel_words', [])
-        self.declare_parameter('system_feedback_words', [])
-        self.declare_parameter('general_qa_words', [])
-        self.declare_parameter('inspection_words', [])
-        self.declare_parameter('background_words', [])
-        self.declare_parameter('followup_words', [])
-        self.declare_parameter('incomplete_motion_words', [])
+        declare_string_array_parameter(self, 'motion_aliases')
+        declare_string_array_parameter(self, 'system_commands')
+        declare_string_array_parameter(self, 'voice_close_words')
+        declare_string_array_parameter(self, 'safety_words')
+        declare_string_array_parameter(self, 'cancel_words')
+        declare_string_array_parameter(self, 'system_feedback_words')
+        declare_string_array_parameter(self, 'general_qa_words')
+        declare_string_array_parameter(self, 'inspection_words')
+        declare_string_array_parameter(self, 'background_words')
+        declare_string_array_parameter(self, 'followup_words')
+        declare_string_array_parameter(self, 'incomplete_motion_words')
         self.declare_parameter('ignore_unknown_voice', True)
 
         self.system_mode = 'ready'

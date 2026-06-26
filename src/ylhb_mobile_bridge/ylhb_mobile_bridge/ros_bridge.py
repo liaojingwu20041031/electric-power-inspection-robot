@@ -1,4 +1,5 @@
 import math
+import json
 import threading
 import time
 from typing import Dict, Optional
@@ -58,6 +59,18 @@ class MobileRosBridge(Node):
         self.zlac_status_topic = self.get_parameter('zlac_status_topic').value
         self.zlac_fault_topic = self.get_parameter('zlac_fault_topic').value
         self.system_mode_topic = self.get_parameter('system_mode_topic').value
+        self.system_command_topic = self.get_parameter(
+            'system_command_topic'
+        ).value
+        self.system_status_topic = self.get_parameter(
+            'system_status_topic'
+        ).value
+        self.patrol_command_topic = self.get_parameter(
+            'patrol_command_topic'
+        ).value
+        self.patrol_status_topic = self.get_parameter(
+            'patrol_status_topic'
+        ).value
         self.max_linear_speed = self._safe_speed_limit(
             self.get_parameter('max_linear_speed').value,
             CHASSIS_SAFE_MAX_LINEAR_SPEED,
@@ -96,6 +109,11 @@ class MobileRosBridge(Node):
         self._zlac_status = 'unknown'
         self._task_status = 'idle'
         self._system_mode = 'unknown'
+        self._system_status: dict = {}
+        self._patrol_status: dict = {}
+        self._status_cache: dict = {}
+        self._last_stop_motion_time = 0.0
+        self._last_stop_text_time = 0.0
         self._stop_timer: Optional[threading.Timer] = None
         self._nav_goal_handle = None
 
@@ -103,6 +121,16 @@ class MobileRosBridge(Node):
         self._text_pub = self.create_publisher(
             String,
             self.text_command_topic,
+            10,
+        )
+        self._system_command_pub = self.create_publisher(
+            String,
+            self.system_command_topic,
+            10,
+        )
+        self._patrol_command_pub = self.create_publisher(
+            String,
+            self.patrol_command_topic,
             10,
         )
         self._initial_pose_pub = self.create_publisher(
@@ -152,6 +180,18 @@ class MobileRosBridge(Node):
             self._on_system_mode,
             initial_pose_qos_profile(),
         )
+        self.create_subscription(
+            String,
+            self.system_status_topic,
+            self._on_system_status,
+            initial_pose_qos_profile(),
+        )
+        self.create_subscription(
+            String,
+            self.patrol_status_topic,
+            self._on_patrol_status,
+            initial_pose_qos_profile(),
+        )
         self._nav_client = ActionClient(
             self,
             NavigateToPose,
@@ -171,6 +211,10 @@ class MobileRosBridge(Node):
             'zlac_status_topic': '/zlac8015d/status',
             'zlac_fault_topic': '/zlac8015d/fault',
             'system_mode_topic': '/inspection_ai/system_mode',
+            'system_command_topic': '/inspection_ai/system_command',
+            'system_status_topic': '/inspection_ai/system_status',
+            'patrol_command_topic': '/patrol/command',
+            'patrol_status_topic': '/patrol/status',
             'status_rate_hz': 2.0,
             'map_stream_rate_hz': 1.0,
             'map_max_size_px': 1024,
@@ -232,6 +276,19 @@ class MobileRosBridge(Node):
     def _on_system_mode(self, msg: String) -> None:
         self._system_mode = msg.data.strip() or 'unknown'
 
+    def _parse_json_message(self, raw: str) -> dict:
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def _on_system_status(self, msg: String) -> None:
+        self._system_status = self._parse_json_message(msg.data)
+
+    def _on_patrol_status(self, msg: String) -> None:
+        self._patrol_status = self._parse_json_message(msg.data)
+
     def _age(self, last_time: Optional[float]) -> Optional[float]:
         return None if last_time is None else round(time.time() - last_time, 3)
 
@@ -239,8 +296,31 @@ class MobileRosBridge(Node):
     def _safe_speed_limit(configured_limit: float, safety_limit: float) -> float:
         return min(float(configured_limit), safety_limit)
 
+    def _cached_value(self, key: str, ttl_sec: float, builder):
+        now = time.time()
+        cached = self._status_cache.get(key)
+        if cached and now - cached[0] < ttl_sec:
+            return cached[1]
+        value = builder()
+        self._status_cache[key] = (now, value)
+        return value
+
+    def _cached_topic_names(self) -> set[str]:
+        return self._cached_value(
+            'topic_names',
+            0.5,
+            lambda: set(dict(self.get_topic_names_and_types())),
+        )
+
+    def _cached_node_names(self) -> set[str]:
+        return self._cached_value(
+            'node_names',
+            0.5,
+            lambda: set(self.get_node_names()),
+        )
+
     def _topic_available(self, topic: str) -> bool:
-        return topic in dict(self.get_topic_names_and_types())
+        return topic in self._cached_topic_names()
 
     def _topic_has_publishers(self, topic: str) -> bool:
         return any(
@@ -249,7 +329,7 @@ class MobileRosBridge(Node):
         )
 
     def _node_available(self, candidates: tuple[str, ...]) -> bool:
-        names = set(self.get_node_names())
+        names = self._cached_node_names()
         return any(candidate in names for candidate in candidates)
 
     def _mapping_node_available(self) -> bool:
@@ -274,6 +354,9 @@ class MobileRosBridge(Node):
         )
 
     def robot_status(self) -> dict:
+        return self._cached_value('robot_status', 0.5, self._robot_status_uncached)
+
+    def _robot_status_uncached(self) -> dict:
         return {
             'online': True,
             'can_status': (
@@ -304,6 +387,9 @@ class MobileRosBridge(Node):
         }
 
     def debug_status(self) -> dict:
+        return self._cached_value('debug_status', 0.5, self._debug_status_uncached)
+
+    def _debug_status_uncached(self) -> dict:
         topics = {
             '/cmd_vel': self._topic_available(self.cmd_vel_topic),
             '/odom': self._topic_available(self.odom_topic),
@@ -417,6 +503,11 @@ class MobileRosBridge(Node):
         msg.linear.x = linear_x
         msg.angular.z = angular_z
         self._cmd_pub.publish(msg)
+        if linear_x == 0.0 and angular_z == 0.0:
+            if self._stop_timer:
+                self._stop_timer.cancel()
+                self._stop_timer = None
+            return
         if self._stop_timer:
             self._stop_timer.cancel()
         self._stop_timer = threading.Timer(
@@ -426,7 +517,14 @@ class MobileRosBridge(Node):
         self._stop_timer.daemon = True
         self._stop_timer.start()
 
-    def stop_motion(self) -> None:
+    def stop_motion(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and now - self._last_stop_motion_time < 0.15:
+            return
+        self._last_stop_motion_time = now
+        if self._stop_timer:
+            self._stop_timer.cancel()
+            self._stop_timer = None
         msg = Twist()
         self._cmd_pub.publish(msg)
 
@@ -437,8 +535,36 @@ class MobileRosBridge(Node):
         self._text_pub.publish(msg)
 
     def stop_all(self) -> None:
-        self.stop_motion()
-        self.publish_text_command('停止当前任务')
+        self.stop_motion(force=True)
+        now = time.time()
+        if now - self._last_stop_text_time >= 2.0:
+            self._last_stop_text_time = now
+            self.publish_text_command('停止当前任务')
+
+    def publish_system_command(self, command: str, **extra) -> None:
+        payload = {
+            'schema_version': '1.0',
+            'source': 'mobile_bridge',
+            'command': command,
+            **extra,
+        }
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self._system_command_pub.publish(msg)
+
+    def has_system_supervisor(self) -> bool:
+        return bool(self._system_status)
+
+    def system_status(self) -> dict:
+        return dict(self._system_status)
+
+    def publish_patrol_command(self, command: str) -> None:
+        msg = String()
+        msg.data = command
+        self._patrol_command_pub.publish(msg)
+
+    def patrol_status(self) -> dict:
+        return dict(self._patrol_status)
 
     def publish_initial_pose(self, x: float, y: float, yaw: float) -> None:
         msg = PoseWithCovarianceStamped()
