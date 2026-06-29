@@ -125,6 +125,64 @@ def test_generate_route_preview_creates_png_without_gui_application(tmp_path):
     assert preview["image_mtime_ns"] > 0
     assert preview["target_count"] == 1
     assert preview["route_file"] == str(tmp_path / "route_patrol_001.json")
+    assert preview["image_valid"] is True
+    assert preview["image_error"] == ""
+    assert preview["image_format"] == "png"
+    assert Path(preview["image_path"]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+    from PIL import Image
+
+    with Image.open(preview["image_path"]) as image:
+        image.verify()
+
+
+def test_generate_route_preview_deletes_bad_cache_and_regenerates(tmp_path):
+    map_yaml = tmp_path / "my_map.yaml"
+    map_pgm = tmp_path / "my_map.pgm"
+    map_pgm.write_bytes(b"P5\n80 80\n255\n" + bytes([245]) * 6400)
+    map_yaml.write_text(
+        "\n".join(
+            [
+                "image: my_map.pgm",
+                "resolution: 0.05",
+                "origin: [-0.5, -0.5, 0]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    write_route(tmp_path / "route_patrol_001.json", 1)
+    first = generate_route_preview(map_yaml, force=True)
+    image_path = Path(first["image_path"])
+    image_path.write_bytes(b"not a png")
+
+    preview = generate_route_preview(map_yaml, force=False)
+
+    assert preview["ok"] is True
+    assert preview["image_path"] == str(image_path)
+    assert preview["image_valid"] is True
+    assert preview["image_error"] == ""
+    assert image_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_generate_route_preview_reports_png_write_failure(tmp_path, monkeypatch):
+    map_yaml = tmp_path / "my_map.yaml"
+    map_pgm = tmp_path / "my_map.pgm"
+    map_pgm.write_bytes(b"P5\n10 10\n255\n" + bytes([245]) * 100)
+    map_yaml.write_text("image: my_map.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n", encoding="utf-8")
+    write_route(tmp_path / "route_patrol_001.json", 1)
+
+    def write_bad_preview(_map_image, output_path, *_args, **_kwargs):
+        output_path.write_bytes(b"bad")
+
+    monkeypatch.setattr("ylhb_llm.route_preview._draw_preview", write_bad_preview)
+
+    preview = generate_route_preview(map_yaml, force=True)
+
+    assert preview["ok"] is False
+    assert preview["overlay_ok"] is False
+    assert preview["image_valid"] is False
+    assert preview["image_format"] == "png"
+    assert "路线预览图生成失败" in preview["message"]
 
 
 def test_generate_route_preview_outputs_minimum_1000px_wide_png(tmp_path):

@@ -29,6 +29,7 @@ except ModuleNotFoundError:
 WORKSPACE_DIR = Path(os.environ.get("WS_DIR", "/home/nvidia/ros2_DL")).expanduser()
 DEFAULT_MAP_YAML = WORKSPACE_DIR / "maps" / "my_map.yaml"
 ROUTE_PATTERN = re.compile(r"^route_patrol_(\d+)\.json$")
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,38 @@ def _active_route(route_data: Dict[str, Any]) -> Dict[str, Any]:
     return routes[0] if routes else {}
 
 
+def validate_png(path: Path) -> Tuple[bool, str]:
+    path = Path(path)
+    if not path.exists():
+        return False, "missing"
+    try:
+        if path.stat().st_size <= 0:
+            return False, "empty"
+        with path.open("rb") as file_obj:
+            if file_obj.read(len(PNG_MAGIC)) != PNG_MAGIC:
+                return False, "invalid png header"
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.verify()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def needs_regenerate_preview(output_path: Path, force: bool) -> bool:
+    if force:
+        return True
+    valid, _error = validate_png(output_path)
+    if valid:
+        return False
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
 def _draw_preview(
     map_image: Path,
     output_path: Path,
@@ -250,7 +283,18 @@ def _draw_preview(
         fill="#111827",
         font=font,
     )
-    image.save(output_path, "PNG")
+    tmp_path = output_path.with_suffix(".tmp.png")
+    try:
+        image.save(tmp_path, "PNG")
+        valid, error = validate_png(tmp_path)
+        if not valid:
+            raise RuntimeError(f"临时 PNG 无效: {error}")
+        os.replace(tmp_path, output_path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def generate_route_preview(map_yaml_path: Path = DEFAULT_MAP_YAML, force: bool = False) -> Dict[str, Any]:
@@ -262,6 +306,9 @@ def generate_route_preview(map_yaml_path: Path = DEFAULT_MAP_YAML, force: bool =
         "image_url": "",
         "image_path": "",
         "image_exists": False,
+        "image_valid": False,
+        "image_error": "",
+        "image_format": "png",
         "image_bytes": 0,
         "image_mtime_ns": 0,
         "source": str(map_yaml),
@@ -289,7 +336,7 @@ def generate_route_preview(map_yaml_path: Path = DEFAULT_MAP_YAML, force: bool =
         active_route_id = str(route.get("id") or route_data.get("active_route_id") or "")
         signature = _route_signature([map_yaml, map_info["image"], route_path], active_route_id)
         output_path = Path("/tmp") / f"ylhb_route_preview_{signature}.png"
-        if force or not output_path.exists():
+        if needs_regenerate_preview(output_path, force):
             try:
                 _draw_preview(
                     map_info["image"],
@@ -305,6 +352,21 @@ def generate_route_preview(map_yaml_path: Path = DEFAULT_MAP_YAML, force: bool =
                 if exc.name == "PIL" or "PIL" in str(exc):
                     raise RuntimeError("缺少 python3-pil/Pillow 依赖") from exc
                 raise
+        image_valid, image_error = validate_png(output_path)
+        if not image_valid:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return {
+                **base_failure,
+                "message": f"路线预览图生成失败: {image_error}",
+                "image_error": image_error,
+                "image_path": str(output_path),
+                "image_url": output_path.as_uri(),
+                "image_exists": output_path.exists(),
+                "route_file": str(route_path),
+            }
         targets = expand_route_targets(route_data, active_route_id)
         image_stat = output_path.stat() if output_path.exists() else None
         return {
@@ -315,6 +377,9 @@ def generate_route_preview(map_yaml_path: Path = DEFAULT_MAP_YAML, force: bool =
             "image_url": output_path.as_uri(),
             "image_path": str(output_path),
             "image_exists": output_path.exists(),
+            "image_valid": image_valid,
+            "image_error": image_error,
+            "image_format": "png",
             "image_bytes": image_stat.st_size if image_stat else 0,
             "image_mtime_ns": image_stat.st_mtime_ns if image_stat else 0,
             "source": output_path.as_uri(),

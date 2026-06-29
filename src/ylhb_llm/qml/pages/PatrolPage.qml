@@ -9,14 +9,15 @@ ScrollView {
     clip: true
     contentWidth: availableWidth
     property var readiness: backend.systemStatus.patrol_readiness || ({})
-    property bool patrolStarting: backend.patrolModeState === "starting"
-    property bool patrolRunning: backend.patrolModeState === "running"
-        || backend.patrolStatus.state === "waiting_initial_pose"
+    property bool patrolCommandSent: backend.patrolModeState === "command_sent" || backend.patrolModeState === "starting"
+    property bool patrolRunning: backend.patrolStatus.state === "waiting_initial_pose"
         || backend.patrolStatus.state === "waiting_nav2"
         || backend.patrolStatus.state === "waiting_localization"
         || backend.patrolStatus.state === "running"
         || backend.patrolStatus.state === "paused"
         || backend.patrolStatus.state === "returning_home"
+        || backend.patrolStatus.state === "waiting_loop"
+        || backend.patrolStatus.state === "canceling"
     property bool inspectionProfile: backend.patrolStartProfile === "inspection"
     property var readinessItems: [
         { "label": "底盘", "key": "bringup" },
@@ -58,11 +59,13 @@ ScrollView {
                     anchors.margins: 12
                     source: backend.routePreviewImageSource
                     fillMode: Image.PreserveAspectFit
+                    asynchronous: true
                     cache: false
-                    visible: backend.routePreviewOk && status !== Image.Error
+                    sourceSize.width: 1600
+                    visible: backend.routePreviewOk && routePreviewImage.status === Image.Ready
                     onStatusChanged: {
                         parent.imageLoadError = status === Image.Error
-                            ? "路线预览加载失败，请检查图片文件和权限"
+                            ? "路线预览图解码失败，请点击重绘预览"
                             : ""
                     }
                 }
@@ -70,10 +73,18 @@ ScrollView {
                     anchors.centerIn: parent
                     text: backend.routePreviewLoading
                         ? "路线预览加载中"
-                        : (parent.imageLoadError || backend.routePreviewMessage || "路线图未生成")
+                        : (parent.imageLoadError
+                            || (!backend.routePreviewOk
+                                ? backend.routePreviewMessage
+                                : (backend.routePreview.image_exists !== true
+                                    ? "路线预览图文件不存在"
+                                    : "路线预览图未生成")))
                     color: Theme.muted
                     font.pixelSize: 18
-                    visible: !backend.routePreviewOk || parent.imageLoadError.length > 0
+                    visible: backend.routePreviewLoading
+                        || parent.imageLoadError.length > 0
+                        || !backend.routePreviewOk
+                        || routePreviewImage.status !== Image.Ready
                 }
             }
 
@@ -84,7 +95,7 @@ ScrollView {
                 StatusCard {
                     Layout.fillWidth: true
                     title: "巡逻状态"
-                    value: root.patrolStarting
+                    value: root.patrolCommandSent
                         ? ("启动中: " + (backend.systemStatus.startup_step_label || "准备依赖"))
                         : (backend.patrolProgressLabel || backend.patrolStatusText)
                     statusColor: backend.patrolStatus.state === "running" || backend.patrolReady ? Theme.success : Theme.warning
@@ -182,7 +193,7 @@ ScrollView {
                 }
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 158
+                    Layout.preferredHeight: 184
                     radius: 8
                     color: Theme.surface
                     border.color: Theme.border
@@ -205,7 +216,15 @@ ScrollView {
                         }
                         Label {
                             text: "图片状态: " + (backend.routePreview.image_exists === true ? "存在" : "不存在")
+                                + " / valid=" + String(backend.routePreview.image_valid === true)
                                 + " / " + String(backend.routePreview.image_bytes || 0) + " bytes"
+                            color: Theme.text
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
+                        Label {
+                            text: "image_url: " + (backend.routePreview.image_url || "-")
+                                + " / image_error: " + (backend.routePreview.image_error || "-")
                             color: Theme.text
                             wrapMode: Text.Wrap
                             Layout.fillWidth: true
@@ -247,29 +266,35 @@ ScrollView {
         RowLayout {
             Layout.fillWidth: true
             WarmButton {
-                text: root.patrolStarting
+                text: root.patrolCommandSent
                     ? ("启动中: " + (backend.systemStatus.startup_step_label || "准备中"))
                     : "一键启动巡逻模式"
-                enabled: !root.patrolStarting && !root.patrolRunning
+                enabled: !root.patrolCommandSent && !root.patrolRunning
                 Layout.fillWidth: true
                 onClicked: backend.startPatrolMode()
             }
             WarmButton {
                 text: "暂停巡逻"
-                enabled: backend.patrolControlsEnabled
+                enabled: backend.patrolStatus.state === "running"
+                    || backend.patrolStatus.state === "returning_home"
+                    || backend.patrolStatus.state === "waiting_loop"
                 buttonColor: Theme.warning
                 Layout.fillWidth: true
                 onClicked: backend.sendSystemCommand("pause_patrol")
             }
             WarmButton {
                 text: "继续巡逻"
-                enabled: backend.patrolControlsEnabled
+                enabled: backend.patrolStatus.state === "paused"
                 Layout.fillWidth: true
                 onClicked: backend.sendSystemCommand("resume_patrol")
             }
             WarmButton {
                 text: "取消巡逻"
-                enabled: backend.patrolControlsEnabled || root.patrolStarting
+                enabled: backend.patrolStatus.state === "running"
+                    || backend.patrolStatus.state === "paused"
+                    || backend.patrolStatus.state === "returning_home"
+                    || backend.patrolStatus.state === "waiting_loop"
+                    || backend.patrolStatus.state === "canceling"
                 buttonColor: Theme.danger
                 Layout.fillWidth: true
                 onClicked: backend.sendSystemCommand("cancel_patrol")

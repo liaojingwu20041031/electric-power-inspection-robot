@@ -137,7 +137,7 @@ class PatrolExecutorLogic:
         if self.route and self.route.get("loop"):
             loop_wait_sec = float(self.route["loop"].get("wait_sec", 0.0))
         navigation_phase = self._navigation_phase()
-        current_target_label = self._current_target_label(target, navigation_phase)
+        current_target_label = self._current_target_label(target, navigation_phase, len(self.targets))
         return {
             "state": self.state,
             "route_id": self.route["id"] if self.route else None,
@@ -169,14 +169,20 @@ class PatrolExecutorLogic:
         self,
         target: Optional[Dict[str, Any]],
         navigation_phase: str,
+        target_count: int,
     ) -> str:
+        if navigation_phase == "target" and target:
+            name = str(target.get("name") or target.get("id") or "")
+            return f"第 {self.current_target_index + 1} / {target_count} 个检查点：{name}"
+        if navigation_phase == "failed":
+            return f"巡逻失败：{self.last_error}" if self.last_error else "巡逻失败"
         labels = {
             "return_home": "返回初始点",
             "waiting_next_cycle": "等待下一轮",
             "canceling": "正在取消",
             "canceled": "已取消",
-            "failed": "巡逻失败",
             "succeeded": "巡逻完成",
+            "idle": "待命",
         }
         if navigation_phase in labels:
             return labels[navigation_phase]

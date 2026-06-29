@@ -54,14 +54,16 @@ def test_route_preview_refresh_runs_in_background_thread():
     calls = []
     release_loader = threading.Event()
 
-    def preview_loader():
+    def preview_loader(force=False):
         release_loader.wait(timeout=2.0)
-        calls.append('loaded')
+        calls.append(force)
         return {
             'ok': True,
             'preview_type': 'route_overlay',
             'overlay_ok': True,
             'image_url': 'file:///tmp/preview.png',
+            'image_exists': True,
+            'image_valid': True,
             'message': 'ok',
             'targets': [{'id': 'target_001', 'name': 'A'}],
         }
@@ -77,7 +79,7 @@ def test_route_preview_refresh_runs_in_background_thread():
     release_loader.set()
     backend._route_preview_thread.join(timeout=2.0)
     assert process_events_until(lambda: backend.routePreviewOk)
-    assert calls == ['loaded']
+    assert calls == [False]
     assert backend.routePreviewOk is True
     assert 'target_001' in backend.patrolTasks
 
@@ -91,7 +93,7 @@ def test_route_preview_result_is_applied_on_qt_main_thread():
         FakeBridge(),
         UiState(),
         clock=lambda: 100.0,
-        route_preview_loader=lambda: {'ok': True, 'preview_type': 'route_overlay', 'overlay_ok': True, 'targets': []},
+        route_preview_loader=lambda force=False: {'ok': True, 'preview_type': 'route_overlay', 'overlay_ok': True, 'image_url': 'file:///tmp/preview.png', 'image_exists': True, 'image_valid': True, 'targets': []},
     )
     backend.routePreviewChanged.connect(lambda: applied_threads.append(QThread.currentThread()))
     backend._route_preview_thread.join(timeout=2.0)
@@ -108,7 +110,7 @@ def test_reload_patrol_route_command_uses_supervisor_and_refreshes_route_preview
         FakeBridge(),
         UiState(),
         clock=lambda: 100.0,
-        route_preview_loader=lambda: calls.append('loaded') or {'ok': True, 'targets': []},
+        route_preview_loader=lambda force=False: calls.append(force) or {'ok': True, 'targets': []},
     )
     backend._route_preview_thread.join(timeout=2.0)
 
@@ -118,7 +120,7 @@ def test_reload_patrol_route_command_uses_supervisor_and_refreshes_route_preview
 
     assert backend.bridge.system_commands == [('reload_patrol_route', {})]
     assert backend.bridge.patrol_commands == []
-    assert calls == ['loaded', 'loaded']
+    assert calls == [False, True]
 
 
 def test_patrol_commands_use_supervisor_and_are_debounced():
@@ -270,6 +272,7 @@ def test_route_preview_direct_properties_are_exposed_for_qml():
         'overlay_ok': True,
         'image_url': 'file:///tmp/preview.png',
         'image_exists': True,
+        'image_valid': True,
         'image_mtime_ns': 12345,
         'message': 'ok',
     }
@@ -288,6 +291,7 @@ def test_route_preview_image_source_is_empty_for_non_overlay_or_missing_file():
         'overlay_ok': False,
         'image_url': 'file:///tmp/raw-map.png',
         'image_exists': True,
+        'image_valid': True,
     }
 
     assert backend.routePreviewImageSource == ''
@@ -298,9 +302,25 @@ def test_route_preview_image_source_is_empty_for_non_overlay_or_missing_file():
         'overlay_ok': True,
         'image_url': 'file:///tmp/missing-overlay.png',
         'image_exists': False,
+        'image_valid': True,
     }
 
     assert backend.routePreviewImageSource == ''
+
+    backend.state.route_preview = {
+        'ok': True,
+        'preview_type': 'route_overlay',
+        'overlay_ok': True,
+        'image_url': 'file:///tmp/bad-overlay.png',
+        'image_exists': True,
+        'image_valid': False,
+        'image_error': 'bad png',
+        'message': 'ok',
+    }
+
+    assert backend.routePreviewOk is False
+    assert backend.routePreviewImageSource == ''
+    assert backend.routePreviewMessage == 'bad png'
 
 
 def test_route_preview_ok_requires_route_overlay():

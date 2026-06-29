@@ -182,7 +182,7 @@ def test_target_events_text_and_status_use_target_semantics():
     assert first_status["loop_wait_sec"] == route["loop"]["wait_sec"]
     assert first_status["home_pose_source"] == "route_file"
     assert first_status["navigation_phase"] == "target"
-    assert first_status["current_target_label"] == targets[0]["name"]
+    assert first_status["current_target_label"] == f"第 1 / {len(targets)} 个检查点：{targets[0]['name']}"
 
 
 def test_status_labels_special_navigation_phases():
@@ -234,7 +234,13 @@ def test_terminal_status_labels_include_failed_and_succeeded():
     failed_status = failed.status()
     assert failed_status["state"] == "failed"
     assert failed_status["navigation_phase"] == "failed"
-    assert failed_status["current_target_label"] == "巡逻失败"
+    assert failed_status["current_target_label"] == "巡逻失败：bad route"
+
+
+def test_idle_status_label_is_standby():
+    logic = make_logic(FakeAdapter())
+
+    assert logic.status()["current_target_label"] == "待命"
 
 
 def test_loop_waits_after_return_then_starts_next_cycle():

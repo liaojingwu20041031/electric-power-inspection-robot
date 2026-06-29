@@ -41,6 +41,8 @@ STARTUP_STEP_LABELS = {
     'waiting_patrol_status': '发布初始位姿',
     'waiting_initial_pose_published': '发布初始位姿',
     'waiting_patrol_running': '等待巡逻执行器运行',
+    'patrol_start_sent': '等待巡逻执行器响应',
+    'waiting_executor_response': '等待巡逻执行器响应',
     'patrol_started': '巡逻运行中',
     'patrol_failed': '巡逻启动失败',
 }
@@ -178,6 +180,8 @@ class SystemSupervisorNode(Node):
         self.patrol_error = ''
         self.startup_step = ''
         self.last_patrol_status: Dict[str, Any] = {}
+        self.last_patrol_status_received_at = 0.0
+        self.last_patrol_start_request_id = ''
         self.last_patrol_event: Dict[str, Any] = {}
         self.last_initial_pose_event: Dict[str, Any] = {}
 
@@ -262,6 +266,21 @@ class SystemSupervisorNode(Node):
             payload = {'raw': msg.data}
         if isinstance(payload, dict):
             self.last_patrol_status = payload
+            self.last_patrol_status_received_at = time.time()
+            state = str(payload.get('state') or payload.get('status') or '')
+            if state == 'running':
+                self.patrol_mode_state = 'running'
+                self.startup_step = 'patrol_started'
+                self.patrol_error = ''
+            elif state == 'failed':
+                self.patrol_mode_state = 'failed'
+                self.startup_step = 'patrol_failed'
+            elif state in ('canceled', 'cancelled'):
+                self.patrol_mode_state = 'canceled'
+            elif state == 'succeeded':
+                self.patrol_mode_state = 'succeeded'
+            elif state == 'idle' and self.patrol_mode_state in ('starting', 'command_sent'):
+                self.startup_step = 'waiting_executor_response'
 
     def patrol_event_callback(self, msg: String) -> None:
         try:
@@ -422,15 +441,53 @@ class SystemSupervisorNode(Node):
         self.startup_step = 'starting_executor'
         self.start_process('patrol_executor')
         self.startup_step = 'waiting_executor'
-        self.wait_for_patrol_command_subscriber(3.0)
-        self.publish_patrol_command('start')
-        self.patrol_mode_state = 'running'
-        self.startup_step = 'patrol_started'
-        self.set_result('start_patrol_mode', True, '巡逻模式已启动')
+        started_at = time.time()
+        heartbeat_ok = self.wait_for_patrol_status_heartbeat(started_at, 5.0)
+        subscriber_ok = self.wait_for_patrol_command_subscriber(3.0)
+        request_id = f"patrol_start_{int(time.time() * 1000)}"
+        self.publish_patrol_command('start', request_id=request_id)
+        time.sleep(0.5)
+        status_state = str((self.last_patrol_status or {}).get('state') or '')
+        if status_state in ('', 'idle'):
+            self.publish_patrol_command('start', request_id=request_id)
+        if status_state == 'running':
+            self.patrol_mode_state = 'running'
+            self.startup_step = 'patrol_started'
+        else:
+            self.patrol_mode_state = 'command_sent'
+            self.startup_step = 'patrol_start_sent'
+        warnings = []
+        if not heartbeat_ok:
+            warnings.append('未确认 /patrol/status heartbeat')
+        if not subscriber_ok:
+            warnings.append('未确认 /patrol/command 订阅者')
+        if warnings:
+            self.patrol_error = 'warning: ' + '；'.join(warnings)
+        message = '巡逻启动命令已发送，等待执行器进入运行状态'
+        if warnings:
+            message = f"{message}（{self.patrol_error}）"
+        self.set_result('start_patrol_mode', True, message)
 
-    def publish_patrol_command(self, command: str) -> None:
+    def publish_patrol_command(self, command: str, request_id: str = '') -> None:
+        if not request_id:
+            request_id = (
+                f"patrol_start_{int(time.time() * 1000)}"
+                if command == 'start'
+                else f"patrol_{command}_{int(time.time() * 1000)}"
+            )
+        if command == 'start':
+            self.last_patrol_start_request_id = request_id
         msg = String()
-        msg.data = json.dumps({'command': command}, ensure_ascii=False)
+        msg.data = json.dumps(
+            {
+                'schema_version': '1.0',
+                'command': command,
+                'source': 'system_supervisor',
+                'timestamp': time.time(),
+                'request_id': request_id,
+            },
+            ensure_ascii=False,
+        )
         self.patrol_command_pub.publish(msg)
 
     def build_patrol_readiness(self) -> Dict[str, bool]:
@@ -646,6 +703,14 @@ class SystemSupervisorNode(Node):
             time.sleep(0.1)
         return False
 
+    def wait_for_patrol_status_heartbeat(self, since: float, timeout_sec: float = 5.0) -> bool:
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            if getattr(self, 'last_patrol_status_received_at', 0.0) >= since:
+                return True
+            time.sleep(0.1)
+        return False
+
     def wait_for_patrol_executor(self, timeout_sec: float = 2.0) -> bool:
         return self.wait_for_patrol_command_subscriber(timeout_sec)
 
@@ -765,7 +830,7 @@ class SystemSupervisorNode(Node):
             else:
                 payload[name] = 'running' if proc.is_running() else 'stopped'
         patrol_state = getattr(self, 'patrol_mode_state', 'idle')
-        if patrol_state in ('starting', 'running'):
+        if patrol_state in ('starting', 'command_sent', 'running'):
             patrol_readiness = self.build_patrol_readiness()
         else:
             patrol_readiness = self.build_light_patrol_readiness()
@@ -785,6 +850,7 @@ class SystemSupervisorNode(Node):
             'patrol_diagnostics': {
                 'last_patrol_event': getattr(self, 'last_patrol_event', {}),
                 'last_initial_pose_event': getattr(self, 'last_initial_pose_event', {}),
+                'last_patrol_start_request_id': getattr(self, 'last_patrol_start_request_id', ''),
             },
         })
         return payload

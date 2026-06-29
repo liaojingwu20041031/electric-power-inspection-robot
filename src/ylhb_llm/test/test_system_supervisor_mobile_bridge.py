@@ -56,7 +56,11 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.last_patrol_status = {'state': 'idle'}
+    node.last_patrol_status_received_at = 100.0
     node.set_result = Mock()
+    node.log_info = Mock()
     sequence = []
     node.wait_for_core_sensors = Mock()
     node.wait_for_navigation_ready = Mock()
@@ -80,8 +84,13 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
     node.wait_for_nav2_action_ready.assert_not_called()
     node.wait_for_patrol_status.assert_not_called()
     node.wait_for_patrol_command_subscriber.assert_called_once_with(3.0)
-    node.publish_patrol_command.assert_called_once_with('start')
-    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻模式已启动')
+    assert node.publish_patrol_command.call_args_list[-1].args[0] == 'start'
+    assert node.patrol_mode_state == 'command_sent'
+    node.set_result.assert_called_with(
+        'start_patrol_mode',
+        True,
+        '巡逻启动命令已发送，等待执行器进入运行状态',
+    )
 
 
 def test_start_patrol_mode_inspection_profile_starts_perception_stack():
@@ -90,7 +99,11 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.last_patrol_status = {'state': 'idle'}
+    node.last_patrol_status_received_at = 100.0
     node.set_result = Mock()
+    node.log_info = Mock()
     node.wait_for_core_sensors = Mock(return_value=True)
     node.wait_for_navigation_ready = Mock(return_value=True)
     node.wait_for_patrol_executor_ready = Mock(return_value=True)
@@ -107,7 +120,7 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
         'navigation',
         'patrol_executor',
     ]
-    node.publish_patrol_command.assert_called_once_with('start')
+    assert node.publish_patrol_command.call_count == 2
 
 
 def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
@@ -115,7 +128,11 @@ def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.last_patrol_status = {'state': 'idle'}
+    node.last_patrol_status_received_at = 100.0
     node.set_result = Mock()
+    node.log_info = Mock()
     node.wait_for_core_sensors = Mock(return_value=True)
     node.wait_for_navigation_ready = Mock(return_value=True)
     node.wait_for_patrol_executor_ready = Mock(return_value=True)
@@ -131,8 +148,12 @@ def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
     ]
     node.wait_for_initial_pose_published.assert_not_called()
     node.wait_for_nav2_action_ready.assert_not_called()
-    node.publish_patrol_command.assert_called_once_with('start')
-    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻模式已启动')
+    assert node.publish_patrol_command.call_args_list[-1].args[0] == 'start'
+    node.set_result.assert_called_with(
+        'start_patrol_mode',
+        True,
+        '巡逻启动命令已发送，等待执行器进入运行状态',
+    )
 
 
 def test_start_patrol_mode_does_not_wait_for_patrol_status_but_forwards_start():
@@ -140,7 +161,11 @@ def test_start_patrol_mode_does_not_wait_for_patrol_status_but_forwards_start():
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.last_patrol_status = {'state': 'idle'}
+    node.last_patrol_status_received_at = 100.0
     node.set_result = Mock()
+    node.log_info = Mock()
     node.wait_for_core_sensors = Mock(return_value=True)
     node.wait_for_navigation_ready = Mock(return_value=True)
     node.wait_for_patrol_executor_ready = Mock(return_value=True)
@@ -151,8 +176,12 @@ def test_start_patrol_mode_does_not_wait_for_patrol_status_but_forwards_start():
     node.handle_command('start_patrol_mode', {})
 
     node.wait_for_patrol_status.assert_not_called()
-    node.publish_patrol_command.assert_called_once_with('start')
-    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻模式已启动')
+    assert node.publish_patrol_command.call_args_list[-1].args[0] == 'start'
+    node.set_result.assert_called_with(
+        'start_patrol_mode',
+        True,
+        '巡逻启动命令已发送，等待执行器进入运行状态',
+    )
 
 
 def test_patrol_control_commands_are_forwarded_by_system_supervisor():
@@ -198,6 +227,9 @@ def test_start_patrol_reuses_running_processes_and_republishes_start():
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.last_patrol_status = {'state': 'idle'}
+    node.last_patrol_status_received_at = 100.0
     node.set_result = Mock()
     node.log_info = Mock()
 
@@ -208,17 +240,64 @@ def test_start_patrol_reuses_running_processes_and_republishes_start():
         'navigation',
         'patrol_executor',
     ]
-    node.publish_patrol_command.assert_called_once_with('start')
+    assert node.publish_patrol_command.call_count == 2
+
+
+def test_start_patrol_mode_warns_without_subscriber_or_heartbeat_and_never_sets_running():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=False)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=False)
+    node.last_patrol_status = {}
+    node.set_result = Mock()
+    node.log_info = Mock()
+
+    node.handle_command('start_patrol_mode', {})
+
+    assert node.patrol_mode_state == 'command_sent'
+    assert 'warning' in node.patrol_error
+    assert node.publish_patrol_command.call_count == 2
+    node.set_result.assert_called_once()
+    assert node.set_result.call_args.args[1] is True
+
+
+def test_patrol_status_callback_is_business_state_source():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'command_sent'
+    node.startup_step = 'patrol_start_sent'
+    node.patrol_error = 'warning: waiting'
+
+    msg = type('Msg', (), {'data': json.dumps({'state': 'idle'})})()
+    node.patrol_status_callback(msg)
+    assert node.patrol_mode_state == 'command_sent'
+    assert node.startup_step == 'waiting_executor_response'
+
+    msg.data = json.dumps({'state': 'running'})
+    node.patrol_status_callback(msg)
+    assert node.patrol_mode_state == 'running'
+    assert node.startup_step == 'patrol_started'
+    assert node.patrol_error == ''
+
+    msg.data = json.dumps({'state': 'failed'})
+    node.patrol_status_callback(msg)
+    assert node.patrol_mode_state == 'failed'
 
 
 def test_publish_patrol_command_sends_json_to_patrol_command_topic():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.patrol_command_pub = FakePublisher()
+    node.last_patrol_start_request_id = ''
 
     node.publish_patrol_command('start')
 
     payload = json.loads(node.patrol_command_pub.messages[-1].data)
     assert payload['command'] == 'start'
+    assert payload['schema_version'] == '1.0'
+    assert payload['source'] == 'system_supervisor'
+    assert isinstance(payload['timestamp'], float)
+    assert payload['request_id'].startswith('patrol_start_')
+    assert node.last_patrol_start_request_id == payload['request_id']
 
 
 def test_patrol_executor_launch_command_disables_auto_start():

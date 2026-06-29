@@ -53,7 +53,7 @@ class UiBackend(QObject):
         bridge,
         state: UiState,
         clock: Callable[[], float] = time.monotonic,
-        route_preview_loader: Callable[[], Dict[str, Any]] = generate_route_preview,
+        route_preview_loader: Callable[..., Dict[str, Any]] = generate_route_preview,
         patrol_task_builder: Callable[[Any], Dict[str, Dict[str, Any]]] = build_patrol_tasks,
     ) -> None:
         super().__init__()
@@ -73,7 +73,7 @@ class UiBackend(QObject):
         self.safety_timer = QTimer(self)
         self.safety_timer.timeout.connect(self.checkSafetyTimeout)
         self.safety_timer.start(1000)
-        self.refreshRoutePreview()
+        self._start_route_preview_refresh(force=False)
 
     @pyqtProperty('QVariantMap', notify=systemStatusChanged)
     def systemStatus(self) -> Dict[str, Any]:
@@ -131,6 +131,9 @@ class UiBackend(QObject):
             bool(self.state.route_preview.get('ok'))
             and self.state.route_preview.get('preview_type') == 'route_overlay'
             and self.state.route_preview.get('overlay_ok') is True
+            and self.state.route_preview.get('image_exists') is True
+            and self.state.route_preview.get('image_valid') is True
+            and bool(self.state.route_preview.get('image_url'))
         )
 
     def _route_preview_has_overlay_image(self) -> bool:
@@ -139,6 +142,8 @@ class UiBackend(QObject):
             bool(preview.get('ok'))
             and preview.get('preview_type') == 'route_overlay'
             and preview.get('overlay_ok') is True
+            and preview.get('image_exists') is True
+            and preview.get('image_valid') is True
         ):
             return False
         image_url = str(preview.get('image_url') or '')
@@ -152,7 +157,11 @@ class UiBackend(QObject):
 
     @pyqtProperty(str, notify=routePreviewChanged)
     def routePreviewMessage(self) -> str:
-        return str(self.state.route_preview.get('message') or '')
+        return str(
+            self.state.route_preview.get('image_error')
+            or self.state.route_preview.get('message')
+            or '路线预览图未生成'
+        )
 
     @pyqtProperty(bool, notify=routePreviewChanged)
     def routePreviewLoading(self) -> bool:
@@ -325,6 +334,9 @@ class UiBackend(QObject):
 
     @pyqtSlot()
     def refreshRoutePreview(self) -> None:
+        self._start_route_preview_refresh(force=True)
+
+    def _start_route_preview_refresh(self, force: bool) -> None:
         if self._route_preview_thread and self._route_preview_thread.is_alive():
             return
         self.state.route_preview = {
@@ -336,13 +348,14 @@ class UiBackend(QObject):
         self.routePreviewChanged.emit()
         self._route_preview_thread = threading.Thread(
             target=self._refresh_route_preview_worker,
+            args=(force,),
             daemon=True,
         )
         self._route_preview_thread.start()
 
-    def _refresh_route_preview_worker(self) -> None:
+    def _refresh_route_preview_worker(self, force: bool) -> None:
         try:
-            preview = self.route_preview_loader()
+            preview = self.route_preview_loader(force=force)
         except Exception as exc:
             preview = {
                 'ok': False,

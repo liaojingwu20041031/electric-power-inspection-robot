@@ -59,3 +59,31 @@ sudo apt install python3-pyqt5.qtquick qml-module-qtquick2 \
 QML 不包含视频、3D、地图实时预览、粒子、Blur、ShaderEffect 或高频动画。
 ROS spin 使用低频定时器，mobile bridge HTTP 健康检查由 supervisor 的 1 Hz
 status timer 驱动。
+
+## 巡逻页现场调试
+
+路线预览图缓存：
+
+```bash
+file /tmp/ylhb_route_preview_*.png
+ls -lh /tmp/ylhb_route_preview_*.png
+python3 - <<'PY'
+from pathlib import Path
+from PIL import Image
+
+for path in Path('/tmp').glob('ylhb_route_preview_*.png'):
+    with Image.open(path) as image:
+        image.verify()
+    print(f'{path}: ok')
+PY
+rm -f /tmp/ylhb_route_preview_*.png
+```
+
+巡逻状态和命令链路：
+
+```bash
+ros2 topic echo /patrol/status
+ros2 topic echo /patrol/event
+ros2 topic info /patrol/command -v
+ros2 topic echo /inspection_ai/system_status
+```

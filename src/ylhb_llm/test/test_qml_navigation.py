@@ -18,12 +18,17 @@ def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
     assert "source: backend.routePreviewImageSource" in qml
     assert "?v=" not in qml
     assert "routePreviewImage.source =" not in qml
+    assert "asynchronous: true" in qml
+    assert "sourceSize.width: 1600" in qml
+    assert "routePreviewImage.status === Image.Ready" in qml
     assert "text: backend.routePreviewImageUrl" not in qml
     assert "阶段流程" in qml
     assert "backend.patrolProgressLabel" in qml
     assert "诊断信息" in qml
     assert "routePreviewImageSource" in qml
     assert "Image.status" in qml
+    assert "image_valid" in qml
+    assert "image_error" in qml
     assert "Nav2 Action" not in qml
     assert "Nav2 动作服务" not in qml
 
@@ -41,5 +46,8 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.sendPatrolCommand("cancel")' not in qml
     assert 'backend.sendPatrolCommand("reload")' not in qml
     assert "一键启动巡逻模式" in qml
-    assert "!root.patrolStarting && !root.patrolRunning" in qml
+    assert "!root.patrolCommandSent && !root.patrolRunning" in qml
     assert "!root.patrolStarting && !root.patrolRunning && backend.routePreviewOk" not in qml
+    assert 'backend.patrolModeState === "running"' not in qml
+    assert 'backend.patrolModeState === "command_sent"' in qml
+    assert 'root.patrolCommandSent' not in qml.split('text: "取消巡逻"', 1)[1].split('onClicked:', 1)[0]
