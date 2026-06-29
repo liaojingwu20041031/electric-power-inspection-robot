@@ -11,6 +11,7 @@ from .patrol_route_store import (
     load_route_file,
     resolve_route_file_path,
 )
+from .patrol_qos import patrol_status_qos_profile
 
 try:
     import rclpy
@@ -446,8 +447,16 @@ class PatrolExecutorNode(Node):
         self._initial_pose_remaining = 0
         self._auto_start_after_initial_pose = False
 
-        self._status_pub = self.create_publisher(String, self.status_topic, 10)
-        self._event_pub = self.create_publisher(String, self.event_topic, 10)
+        self._status_pub = self.create_publisher(
+            String,
+            self.status_topic,
+            patrol_status_qos_profile(),
+        )
+        self._event_pub = self.create_publisher(
+            String,
+            self.event_topic,
+            patrol_status_qos_profile(),
+        )
         self._text_pub = self.create_publisher(
             String,
             self.text_command_topic,

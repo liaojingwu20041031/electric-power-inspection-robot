@@ -134,16 +134,14 @@ def test_patrol_commands_publish_to_patrol_command_topic_and_are_debounced():
     assert backend.bridge.patrol_commands == ['pause', 'pause']
 
 
-def test_start_patrol_mode_publishes_selected_profile():
+def test_start_patrol_mode_sends_start_to_patrol_executor():
     backend = make_backend(lambda: 100.0)
     backend.setPatrolStartProfile('inspection')
 
     backend.startPatrolMode()
 
-    assert backend.bridge.system_commands[-1] == (
-        'start_patrol_mode',
-        {'profile': 'inspection'},
-    )
+    assert backend.bridge.system_commands == []
+    assert backend.bridge.patrol_commands == ['start']
 
 
 def test_patrol_readiness_properties_follow_system_status():

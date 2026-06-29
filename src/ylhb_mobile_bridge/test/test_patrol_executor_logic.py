@@ -15,6 +15,7 @@ from ylhb_mobile_bridge.patrol_route_store import (
     get_route,
     load_route_file,
 )
+from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
 
 TEST_ROUTE_PATH = (
@@ -348,6 +349,73 @@ def test_initial_pose_publisher_uses_transient_local_reliable_qos():
     assert qos.depth == 10
     assert qos.reliability == ReliabilityPolicy.RELIABLE
     assert qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
+
+
+def test_status_and_event_publishers_use_patrol_status_qos(monkeypatch):
+    defaults = {
+        "route_file_path": "auto",
+        "command_topic": "/patrol/command",
+        "status_topic": "/patrol/status",
+        "event_topic": "/patrol/event",
+        "text_command_topic": "/inspection_ai/text_command",
+        "map_frame": "map",
+        "cmd_vel_topic": "/cmd_vel",
+        "auto_start": False,
+        "schedule_check_period_sec": 1.0,
+        "publish_initial_pose_on_startup": True,
+        "initial_pose_publish_count": 3,
+        "initial_pose_publish_period_sec": 0.5,
+    }
+    publishers = []
+
+    monkeypatch.setattr(patrol_executor_node.Node, "__init__", lambda *_args: None)
+    monkeypatch.setattr(
+        PatrolExecutorNode,
+        "declare_parameter",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        PatrolExecutorNode,
+        "get_parameter",
+        lambda _self, name: type("Parameter", (), {"value": defaults[name]})(),
+    )
+    monkeypatch.setattr(
+        PatrolExecutorNode,
+        "create_publisher",
+        lambda _self, _msg_type, topic, qos: (
+            publishers.append((topic, qos)) or object()
+        ),
+    )
+    monkeypatch.setattr(
+        PatrolExecutorNode,
+        "create_subscription",
+        lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        PatrolExecutorNode,
+        "create_timer",
+        lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        PatrolExecutorNode,
+        "_reload_route_file",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        patrol_executor_node,
+        "ActionClient",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    PatrolExecutorNode()
+
+    publisher_qos = {topic: qos for topic, qos in publishers}
+    expected_qos = patrol_status_qos_profile()
+    for topic in ("/patrol/status", "/patrol/event"):
+        qos = publisher_qos[topic]
+        assert qos.depth == expected_qos.depth
+        assert qos.reliability == ReliabilityPolicy.RELIABLE
+        assert qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
 
 
 class FakeFuture:

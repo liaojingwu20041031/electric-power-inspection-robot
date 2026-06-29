@@ -273,12 +273,7 @@ class UiBackend(QObject):
         ):
             self.addLog(f'巡逻执行器已在工作: {self.localizedStatus(patrol_state)}')
             return
-        command = 'start_patrol_mode'
-        if self._is_debounced(command):
-            self.addLog(f'忽略重复系统命令: {command}')
-            return
-        self.bridge.publish_system_command(command, profile=self._patrol_start_profile)
-        self.addLog(f'系统命令: {command} profile={self._patrol_start_profile}')
+        self.sendPatrolCommand('start')
 
     def _is_debounced(self, command: str) -> bool:
         debounced = {

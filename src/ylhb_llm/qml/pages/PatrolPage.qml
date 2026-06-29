@@ -252,7 +252,7 @@ ScrollView {
             }
             Switch {
                 checked: root.inspectionProfile
-                enabled: !root.patrolStarting
+                enabled: false
                 onToggled: backend.setPatrolStartProfile(checked ? "inspection" : "navigation")
             }
             Item { Layout.fillWidth: true }
@@ -263,7 +263,7 @@ ScrollView {
             WarmButton {
                 text: root.patrolStarting
                     ? ("启动中: " + (backend.systemStatus.startup_step_label || "准备中"))
-                    : (backend.patrolModeState === "failed" ? "重新启动巡逻模式" : "一键启动巡逻模式")
+                    : (backend.patrolModeState === "failed" ? "重新开始巡逻" : "开始巡逻")
                 enabled: !root.patrolStarting && !root.patrolRunning && backend.routePreviewOk
                 Layout.fillWidth: true
                 onClicked: backend.startPatrolMode()
