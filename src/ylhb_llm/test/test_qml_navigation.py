@@ -69,6 +69,10 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.sendSystemCommand("resume_patrol")' in qml
     assert 'backend.sendSystemCommand("cancel_patrol")' in qml
     assert 'backend.sendSystemCommand("reload_patrol_route")' in qml
+    assert 'backend.sendSystemCommand("stop_navigation")' in qml
+    assert 'backend.sendSystemCommand("stop_bringup")' in qml
+    assert 'text: "关闭导航"' in qml
+    assert 'text: "关闭底盘"' in qml
     assert 'backend.sendPatrolCommand("pause")' not in qml
     assert 'backend.sendPatrolCommand("resume")' not in qml
     assert 'backend.sendPatrolCommand("cancel")' not in qml

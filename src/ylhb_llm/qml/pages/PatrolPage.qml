@@ -362,6 +362,20 @@ ScrollView {
                 onClicked: backend.sendSystemCommand("cancel_patrol")
             }
             WarmButton {
+                text: "关闭导航"
+                enabled: backend.systemStatus.navigation === "running"
+                buttonColor: Theme.danger
+                Layout.fillWidth: true
+                onClicked: backend.sendSystemCommand("stop_navigation")
+            }
+            WarmButton {
+                text: "关闭底盘"
+                enabled: backend.systemStatus.bringup === "running"
+                buttonColor: Theme.danger
+                Layout.fillWidth: true
+                onClicked: backend.sendSystemCommand("stop_bringup")
+            }
+            WarmButton {
                 text: "重新加载路线"
                 enabled: backend.patrolControlsEnabled
                 Layout.fillWidth: true
