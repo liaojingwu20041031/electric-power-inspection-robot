@@ -15,7 +15,7 @@ ApplicationWindow {
     title: "电力巡检机器人操控台"
     color: Theme.background
 
-    property int currentPage: 0
+    property int currentPage: 1
     property var pageSources: [
         "pages/BridgePage.qml",
         "pages/PatrolPage.qml",

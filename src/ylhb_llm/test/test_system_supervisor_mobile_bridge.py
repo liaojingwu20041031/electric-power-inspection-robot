@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from unittest.mock import Mock
 
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
@@ -13,6 +15,14 @@ class FakeProcess:
 
     def is_running(self):
         return self._running
+
+
+class FakePublisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, msg):
+        self.messages.append(msg)
 
 
 def test_mobile_bridge_commands_start_stop_and_restart():
@@ -45,6 +55,7 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
     }
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.set_result = Mock()
     sequence = []
     node.wait_for_core_sensors = Mock()
@@ -68,8 +79,9 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
     node.wait_for_initial_pose_published.assert_not_called()
     node.wait_for_nav2_action_ready.assert_not_called()
     node.wait_for_patrol_status.assert_not_called()
-    node.publish_patrol_command.assert_not_called()
-    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻依赖已启动，等待巡逻执行器就绪')
+    node.wait_for_patrol_command_subscriber.assert_called_once_with(3.0)
+    node.publish_patrol_command.assert_called_once_with('start')
+    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻模式已启动')
 
 
 def test_start_patrol_mode_inspection_profile_starts_perception_stack():
@@ -77,6 +89,7 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
     node.processes = {}
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.set_result = Mock()
     node.wait_for_core_sensors = Mock(return_value=True)
     node.wait_for_navigation_ready = Mock(return_value=True)
@@ -94,13 +107,14 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
         'navigation',
         'patrol_executor',
     ]
-    node.publish_patrol_command.assert_not_called()
+    node.publish_patrol_command.assert_called_once_with('start')
 
 
 def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.set_result = Mock()
     node.wait_for_core_sensors = Mock(return_value=True)
     node.wait_for_navigation_ready = Mock(return_value=True)
@@ -117,14 +131,15 @@ def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
     ]
     node.wait_for_initial_pose_published.assert_not_called()
     node.wait_for_nav2_action_ready.assert_not_called()
-    node.publish_patrol_command.assert_not_called()
-    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻依赖已启动，等待巡逻执行器就绪')
+    node.publish_patrol_command.assert_called_once_with('start')
+    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻模式已启动')
 
 
-def test_start_patrol_mode_does_not_wait_for_patrol_status_or_forward_start():
+def test_start_patrol_mode_does_not_wait_for_patrol_status_but_forwards_start():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.set_result = Mock()
     node.wait_for_core_sensors = Mock(return_value=True)
     node.wait_for_navigation_ready = Mock(return_value=True)
@@ -136,11 +151,11 @@ def test_start_patrol_mode_does_not_wait_for_patrol_status_or_forward_start():
     node.handle_command('start_patrol_mode', {})
 
     node.wait_for_patrol_status.assert_not_called()
-    node.publish_patrol_command.assert_not_called()
-    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻依赖已启动，等待巡逻执行器就绪')
+    node.publish_patrol_command.assert_called_once_with('start')
+    node.set_result.assert_called_with('start_patrol_mode', True, '巡逻模式已启动')
 
 
-def test_patrol_control_commands_are_not_handled_by_system_supervisor():
+def test_patrol_control_commands_are_forwarded_by_system_supervisor():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.publish_patrol_command = Mock()
     node.set_result = Mock()
@@ -151,13 +166,76 @@ def test_patrol_control_commands_are_not_handled_by_system_supervisor():
     node.handle_command('cancel_patrol', {})
     node.handle_command('reload_patrol_route', {})
 
-    node.publish_patrol_command.assert_not_called()
-    assert [call.args[2] for call in node.set_result.call_args_list] == [
-        'Unknown system command: pause_patrol',
-        'Unknown system command: resume_patrol',
-        'Unknown system command: cancel_patrol',
-        'Unknown system command: reload_patrol_route',
+    assert [call.args[0] for call in node.publish_patrol_command.call_args_list] == [
+        'pause',
+        'resume',
+        'cancel',
+        'reload',
     ]
+    assert node.set_result.call_count == 4
+
+
+def test_cancel_patrol_only_forwards_cancel_without_stopping_processes():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.publish_patrol_command = Mock()
+    node.stop_process = Mock()
+    node.set_result = Mock()
+
+    node.handle_command('cancel_patrol', {})
+
+    node.publish_patrol_command.assert_called_once_with('cancel')
+    node.stop_process.assert_not_called()
+    node.set_result.assert_called_with('cancel_patrol', True, '已发送巡逻命令: cancel')
+
+
+def test_start_patrol_reuses_running_processes_and_republishes_start():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {
+        'bringup': FakeProcess(running=True),
+        'navigation': FakeProcess(running=True),
+        'patrol_executor': FakeProcess(running=True),
+    }
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.set_result = Mock()
+    node.log_info = Mock()
+
+    node.handle_command('start_patrol_mode', {})
+
+    assert [call.args[0] for call in node.start_process.call_args_list] == [
+        'bringup',
+        'navigation',
+        'patrol_executor',
+    ]
+    node.publish_patrol_command.assert_called_once_with('start')
+
+
+def test_publish_patrol_command_sends_json_to_patrol_command_topic():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_command_pub = FakePublisher()
+
+    node.publish_patrol_command('start')
+
+    payload = json.loads(node.patrol_command_pub.messages[-1].data)
+    assert payload['command'] == 'start'
+
+
+def test_patrol_executor_launch_command_disables_auto_start():
+    source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
+
+    assert 'auto_start:=false publish_initial_pose_on_startup:=true' in source
+    assert 'auto_start:=true publish_initial_pose_on_startup:=true' not in source
+
+
+def test_nav2_action_diagnostic_uses_topics_not_action_introspection():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.topic_has_publishers = Mock(return_value=False)
+    node.topic_has_subscribers = Mock(return_value=False)
+    node.get_action_names_and_types = Mock(side_effect=AssertionError('must not be called'))
+
+    assert node.has_nav2_action() is False
+    node.get_action_names_and_types.assert_not_called()
 
 
 def test_stop_patrol_mode_stops_executor_without_forwarding_cancel():
@@ -234,6 +312,8 @@ def test_status_payload_contains_patrol_orchestration_fields():
     node.patrol_mode_state = 'starting'
     node.patrol_error = ''
     node.startup_step = 'waiting_navigation'
+    node.last_patrol_status = {'state': 'running'}
+    node.last_patrol_event = {'event': 'route_started'}
     node.build_patrol_readiness = Mock(return_value={
         'bringup': True,
         'navigation': False,
@@ -249,6 +329,8 @@ def test_status_payload_contains_patrol_orchestration_fields():
     assert payload['startup_step_label'] == '等待地图'
     assert payload['patrol_readiness']['navigation'] is False
     assert payload['patrol_error'] == ''
+    assert payload['last_patrol_status'] == {'state': 'running'}
+    assert payload['patrol_diagnostics']['last_patrol_event'] == {'event': 'route_started'}
 
 
 def test_status_payload_does_not_duplicate_patrol_progress_labels():

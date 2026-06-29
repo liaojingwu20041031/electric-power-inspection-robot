@@ -134,22 +134,55 @@ class PatrolExecutorLogic:
     def status(self) -> Dict[str, Any]:
         target = self._current_target()
         loop_wait_sec = None
-        if self.route:
-            loop_wait_sec = float(self.route["loop"]["wait_sec"])
+        if self.route and self.route.get("loop"):
+            loop_wait_sec = float(self.route["loop"].get("wait_sec", 0.0))
+        navigation_phase = self._navigation_phase()
+        current_target_label = self._current_target_label(target, navigation_phase)
         return {
             "state": self.state,
             "route_id": self.route["id"] if self.route else None,
             "target_id": target["id"] if target else None,
+            "target_name": target["name"] if target else None,
             "target_index": (
                 self.current_target_index if target is not None else None
             ),
             "target_count": len(self.targets),
+            "navigation_phase": navigation_phase,
+            "current_target_label": current_target_label,
             "cycle_index": self.cycle_index if self.route else None,
             "loop_wait_sec": loop_wait_sec,
             "home_pose_source": "route_file" if self.home_pose else None,
             "last_error": self.last_error,
             "timestamp": self._time_source(),
         }
+
+    def _navigation_phase(self) -> str:
+        if self.state == "running":
+            return "target"
+        if self.state == "returning_home":
+            return "return_home"
+        if self.state == "waiting_loop":
+            return "waiting_next_cycle"
+        return self.state
+
+    def _current_target_label(
+        self,
+        target: Optional[Dict[str, Any]],
+        navigation_phase: str,
+    ) -> str:
+        labels = {
+            "return_home": "返回初始点",
+            "waiting_next_cycle": "等待下一轮",
+            "canceling": "正在取消",
+            "canceled": "已取消",
+            "failed": "巡逻失败",
+            "succeeded": "巡逻完成",
+        }
+        if navigation_phase in labels:
+            return labels[navigation_phase]
+        if target:
+            return str(target.get("name") or target.get("id") or "")
+        return ""
 
     def _set_state(self, state: str, error: Optional[str] = None) -> None:
         self.state = state

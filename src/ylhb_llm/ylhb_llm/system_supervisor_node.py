@@ -40,7 +40,6 @@ STARTUP_STEP_LABELS = {
     'waiting_route_file': '发布初始位姿',
     'waiting_patrol_status': '发布初始位姿',
     'waiting_initial_pose_published': '发布初始位姿',
-    'waiting_nav2_action': '等待 Nav2 动作服务',
     'waiting_patrol_running': '等待巡逻执行器运行',
     'patrol_started': '巡逻运行中',
     'patrol_failed': '巡逻启动失败',
@@ -206,7 +205,7 @@ class SystemSupervisorNode(Node):
             'patrol_executor': ManagedProcess(
                 'patrol_executor',
                 'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
-                'auto_start:=true publish_initial_pose_on_startup:=true',
+                'auto_start:=false publish_initial_pose_on_startup:=true',
             ),
         }
 
@@ -216,6 +215,7 @@ class SystemSupervisorNode(Node):
             String, self.get_parameter('system_mode_topic').value, latched_qos())
         self.cmd_vel_pub = self.create_publisher(
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
+        self.patrol_command_pub = self.create_publisher(String, '/patrol/command', 10)
         self.create_subscription(
             String,
             self.get_parameter('system_command_topic').value,
@@ -276,6 +276,17 @@ class SystemSupervisorNode(Node):
     def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
         if command == 'start_patrol_mode':
             self.start_patrol_mode(str(payload.get('profile') or 'navigation'))
+            return
+        patrol_commands = {
+            'pause_patrol': 'pause',
+            'resume_patrol': 'resume',
+            'cancel_patrol': 'cancel',
+            'reload_patrol_route': 'reload',
+        }
+        if command in patrol_commands:
+            patrol_command = patrol_commands[command]
+            self.publish_patrol_command(patrol_command)
+            self.set_result(command, True, f'已发送巡逻命令: {patrol_command}')
             return
         if command == 'stop_patrol_mode':
             self.stop_process('patrol_executor')
@@ -410,9 +421,17 @@ class SystemSupervisorNode(Node):
 
         self.startup_step = 'starting_executor'
         self.start_process('patrol_executor')
-        self.patrol_mode_state = 'starting'
         self.startup_step = 'waiting_executor'
-        self.set_result('start_patrol_mode', True, '巡逻依赖已启动，等待巡逻执行器就绪')
+        self.wait_for_patrol_command_subscriber(3.0)
+        self.publish_patrol_command('start')
+        self.patrol_mode_state = 'running'
+        self.startup_step = 'patrol_started'
+        self.set_result('start_patrol_mode', True, '巡逻模式已启动')
+
+    def publish_patrol_command(self, command: str) -> None:
+        msg = String()
+        msg.data = json.dumps({'command': command}, ensure_ascii=False)
+        self.patrol_command_pub.publish(msg)
 
     def build_patrol_readiness(self) -> Dict[str, bool]:
         bringup = self.processes.get('bringup')
@@ -609,19 +628,26 @@ class SystemSupervisorNode(Node):
         return event.get('event') == 'initial_pose_published'
 
     def has_nav2_action(self) -> bool:
-        try:
-            action_names = self.get_action_names_and_types()
-        except Exception:
-            return False
-        return any(name == '/navigate_to_pose' for name, _types in action_names)
+        action_topics = (
+            '/navigate_to_pose/_action/status',
+            '/navigate_to_pose/_action/feedback',
+            '/navigate_to_pose/_action/send_goal',
+        )
+        return any(
+            self.topic_has_publishers(topic) or self.topic_has_subscribers(topic)
+            for topic in action_topics
+        )
 
-    def wait_for_patrol_executor(self, timeout_sec: float = 2.0) -> bool:
+    def wait_for_patrol_command_subscriber(self, timeout_sec: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             if self.is_patrol_executor_ready():
                 return True
             time.sleep(0.1)
         return False
+
+    def wait_for_patrol_executor(self, timeout_sec: float = 2.0) -> bool:
+        return self.wait_for_patrol_command_subscriber(timeout_sec)
 
     def save_map(self, map_name: str) -> None:
         safe_name = ''.join(c for c in map_name if c.isalnum() or c in ('_', '-')).strip('_-')
@@ -755,6 +781,11 @@ class SystemSupervisorNode(Node):
                 getattr(self, 'startup_step', ''),
                 getattr(self, 'startup_step', ''),
             ),
+            'last_patrol_status': getattr(self, 'last_patrol_status', {}),
+            'patrol_diagnostics': {
+                'last_patrol_event': getattr(self, 'last_patrol_event', {}),
+                'last_initial_pose_event': getattr(self, 'last_initial_pose_event', {}),
+            },
         })
         return payload
 

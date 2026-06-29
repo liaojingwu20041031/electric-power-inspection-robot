@@ -100,7 +100,7 @@ def test_route_preview_result_is_applied_on_qt_main_thread():
     assert applied_threads[-1] == main_thread
 
 
-def test_reload_patrol_route_command_publishes_directly_and_refreshes_route_preview():
+def test_reload_patrol_route_command_uses_supervisor_and_refreshes_route_preview():
     QCoreApplication.instance() or QCoreApplication([])
     calls = []
 
@@ -116,12 +116,12 @@ def test_reload_patrol_route_command_publishes_directly_and_refreshes_route_prev
     backend._route_preview_thread.join(timeout=2.0)
     assert process_events_until(lambda: len(calls) == 2)
 
-    assert backend.bridge.system_commands == []
-    assert backend.bridge.patrol_commands == ['reload']
+    assert backend.bridge.system_commands == [('reload_patrol_route', {})]
+    assert backend.bridge.patrol_commands == []
     assert calls == ['loaded', 'loaded']
 
 
-def test_patrol_commands_publish_to_patrol_command_topic_and_are_debounced():
+def test_patrol_commands_use_supervisor_and_are_debounced():
     now = [100.0]
     backend = make_backend(lambda: now[0])
 
@@ -130,18 +130,21 @@ def test_patrol_commands_publish_to_patrol_command_topic_and_are_debounced():
     now[0] = 100.81
     backend.sendPatrolCommand('pause')
 
-    assert backend.bridge.system_commands == []
-    assert backend.bridge.patrol_commands == ['pause', 'pause']
+    assert backend.bridge.system_commands == [
+        ('pause_patrol', {}),
+        ('pause_patrol', {}),
+    ]
+    assert backend.bridge.patrol_commands == []
 
 
-def test_start_patrol_mode_sends_start_to_patrol_executor():
+def test_start_patrol_mode_sends_system_command_to_supervisor():
     backend = make_backend(lambda: 100.0)
     backend.setPatrolStartProfile('inspection')
 
     backend.startPatrolMode()
 
-    assert backend.bridge.system_commands == []
-    assert backend.bridge.patrol_commands == ['start']
+    assert backend.bridge.system_commands == [('start_patrol_mode', {'profile': 'inspection'})]
+    assert backend.bridge.patrol_commands == []
 
 
 def test_patrol_readiness_properties_follow_system_status():
@@ -154,7 +157,7 @@ def test_patrol_readiness_properties_follow_system_status():
         'patrol_readiness': {
             'bringup': True,
             'navigation': True,
-            'executor': False,
+            'executor': True,
             'route_file': True,
             'nav2_action': False,
         },
@@ -163,8 +166,27 @@ def test_patrol_readiness_properties_follow_system_status():
     assert backend.patrolModeState == 'starting'
     assert backend.patrolStartupStep == 'waiting_nav2_action'
     assert backend.patrolError == '等待巡逻依赖: nav2_action'
-    assert backend.patrolReady is False
-    assert backend.patrolControlsEnabled is False
+    assert backend.patrolReady is True
+    assert backend.patrolControlsEnabled is True
+
+
+def test_patrol_controls_enabled_when_executor_running_or_status_seen():
+    backend = make_backend(lambda: 100.0)
+
+    backend.update_system_status({
+        'patrol_executor': 'running',
+        'patrol_readiness': {'executor': False},
+    })
+
+    assert backend.patrolControlsEnabled is True
+
+    backend.update_system_status({
+        'patrol_executor': 'stopped',
+        'patrol_readiness': {'executor': False},
+    })
+    backend.update_patrol_status({'state': 'unavailable'})
+
+    assert backend.patrolControlsEnabled is True
 
 
 def test_ui_state_keeps_only_latest_200_events():
@@ -302,6 +324,15 @@ def test_start_patrol_mode_is_blocked_while_executor_waits_or_runs():
     assert any('巡逻执行器已在工作' in event['message'] for event in backend.logs)
 
 
+def test_start_patrol_mode_allows_terminal_and_unavailable_states():
+    for state in ('failed', 'canceled', 'succeeded', 'unavailable'):
+        backend = make_backend(lambda: 100.0)
+        backend.update_patrol_status({'state': state})
+        backend.startPatrolMode()
+
+        assert backend.bridge.system_commands == [('start_patrol_mode', {'profile': 'navigation'})]
+
+
 def test_patrol_status_progress_label_is_exposed_for_qml():
     backend = make_backend(lambda: 100.0)
 
@@ -315,6 +346,15 @@ def test_patrol_status_progress_label_is_exposed_for_qml():
 
     assert backend.patrolProgressLabel == '第 1 / 4 个检查点'
     assert backend.currentTargetLabel == '巡检点1'
+
+    backend.update_patrol_status({
+        'state': 'running',
+        'target_index': 0,
+        'target_count': 4,
+        'target_name': '巡检点1',
+        'current_target_label': '巡检点1: 红外测温',
+    })
+    assert backend.patrolProgressLabel == '巡检点1: 红外测温'
 
 
 def test_patrol_status_special_phases_are_exposed_for_qml():
@@ -347,6 +387,17 @@ def test_missing_patrol_status_explains_executor_unavailable():
 
     assert backend.patrolStatus['state'] == 'unavailable'
     assert '巡逻执行器未运行' in backend.patrolStatus['message']
+
+
+def test_patrol_events_keep_latest_100_entries():
+    backend = make_backend(lambda: 100.0)
+
+    for index in range(105):
+        backend.update_patrol_event({'event': f'e-{index}'})
+
+    assert len(backend.patrolEvents) == 100
+    assert backend.patrolEvents[0]['event'] == 'e-5'
+    assert backend.patrolEvents[-1]['event'] == 'e-104'
 
 
 def test_voice_status_uses_actual_ros_message_fields():

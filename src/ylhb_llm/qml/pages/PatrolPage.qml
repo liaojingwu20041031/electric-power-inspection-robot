@@ -18,22 +18,18 @@ ScrollView {
         || backend.patrolStatus.state === "paused"
         || backend.patrolStatus.state === "returning_home"
     property bool inspectionProfile: backend.patrolStartProfile === "inspection"
-    property string previewImageSource: ""
     property var readinessItems: [
         { "label": "底盘", "key": "bringup" },
         { "label": "导航", "key": "navigation" },
         { "label": "执行器", "key": "executor" },
-        { "label": "路线文件", "key": "route_file" },
-        { "label": "Nav2 Action", "key": "nav2_action" }
+        { "label": "路线文件", "key": "route_file" }
     ]
     property var startupStages: [
         { "label": "底盘传感器", "step": "starting_bringup" },
         { "label": "地图/AMCL", "step": "starting_navigation" },
         { "label": "初始位姿", "step": "waiting_initial_pose_published" },
-        { "label": "Nav2 动作服务", "step": "waiting_nav2_action" },
         { "label": "巡逻运行", "step": "patrol_started" }
     ]
-    Component.onCompleted: previewImageRefreshTimer.restart()
 
     ColumnLayout {
         width: parent.width
@@ -42,13 +38,14 @@ ScrollView {
 
         Label { text: "巡逻模式"; color: Theme.text; font.pixelSize: 26; font.bold: true }
 
-        RowLayout {
+        ColumnLayout {
             Layout.fillWidth: true
             spacing: 16
 
             Rectangle {
+                id: routePreviewPane
                 Layout.fillWidth: true
-                Layout.preferredHeight: 430
+                Layout.preferredHeight: root.availableWidth >= 1200 ? 420 : 380
                 radius: 8
                 color: Theme.surface
                 border.color: Theme.border
@@ -59,7 +56,7 @@ ScrollView {
                     id: routePreviewImage
                     anchors.fill: parent
                     anchors.margins: 12
-                    source: root.previewImageSource
+                    source: backend.routePreviewImageSource
                     fillMode: Image.PreserveAspectFit
                     cache: false
                     visible: backend.routePreviewOk && status !== Image.Error
@@ -69,22 +66,11 @@ ScrollView {
                             : ""
                     }
                 }
-                Connections {
-                    target: backend
-                    function onRoutePreviewChanged() {
-                        root.previewImageSource = ""
-                        previewImageRefreshTimer.restart()
-                    }
-                }
-                Timer {
-                    id: previewImageRefreshTimer
-                    interval: 0
-                    repeat: false
-                    onTriggered: root.previewImageSource = backend.routePreviewImageSource
-                }
                 Label {
                     anchors.centerIn: parent
-                    text: parent.imageLoadError || backend.routePreviewMessage || "路线图未生成"
+                    text: backend.routePreviewLoading
+                        ? "路线预览加载中"
+                        : (parent.imageLoadError || backend.routePreviewMessage || "路线图未生成")
                     color: Theme.muted
                     font.pixelSize: 18
                     visible: !backend.routePreviewOk || parent.imageLoadError.length > 0
@@ -92,7 +78,7 @@ ScrollView {
             }
 
             ColumnLayout {
-                Layout.preferredWidth: 380
+                Layout.fillWidth: true
                 spacing: 12
 
                 StatusCard {
@@ -142,7 +128,7 @@ ScrollView {
                 }
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 150
+                    Layout.preferredHeight: 128
                     radius: 8
                     color: Theme.surface
                     border.color: Theme.border
@@ -263,8 +249,8 @@ ScrollView {
             WarmButton {
                 text: root.patrolStarting
                     ? ("启动中: " + (backend.systemStatus.startup_step_label || "准备中"))
-                    : (backend.patrolModeState === "failed" ? "重新开始巡逻" : "开始巡逻")
-                enabled: !root.patrolStarting && !root.patrolRunning && backend.routePreviewOk
+                    : "一键启动巡逻模式"
+                enabled: !root.patrolStarting && !root.patrolRunning
                 Layout.fillWidth: true
                 onClicked: backend.startPatrolMode()
             }
@@ -273,26 +259,26 @@ ScrollView {
                 enabled: backend.patrolControlsEnabled
                 buttonColor: Theme.warning
                 Layout.fillWidth: true
-                onClicked: backend.sendPatrolCommand("pause")
+                onClicked: backend.sendSystemCommand("pause_patrol")
             }
             WarmButton {
                 text: "继续巡逻"
                 enabled: backend.patrolControlsEnabled
                 Layout.fillWidth: true
-                onClicked: backend.sendPatrolCommand("resume")
+                onClicked: backend.sendSystemCommand("resume_patrol")
             }
             WarmButton {
                 text: "取消巡逻"
                 enabled: backend.patrolControlsEnabled || root.patrolStarting
                 buttonColor: Theme.danger
                 Layout.fillWidth: true
-                onClicked: backend.sendPatrolCommand("cancel")
+                onClicked: backend.sendSystemCommand("cancel_patrol")
             }
             WarmButton {
                 text: "重新加载路线"
                 enabled: backend.patrolControlsEnabled
                 Layout.fillWidth: true
-                onClicked: backend.sendPatrolCommand("reload")
+                onClicked: backend.sendSystemCommand("reload_patrol_route")
             }
             WarmButton { text: "重绘预览"; buttonColor: Theme.accent; textColor: Theme.text; Layout.fillWidth: true; onClicked: backend.refreshRoutePreview() }
         }

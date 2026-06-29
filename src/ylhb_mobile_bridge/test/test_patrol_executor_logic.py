@@ -176,10 +176,65 @@ def test_target_events_text_and_status_use_target_semantics():
         f"已到达{targets[0]['name']}，开始执行任务"
     )
     assert first_status["target_id"] == targets[0]["id"]
+    assert first_status["target_name"] == targets[0]["name"]
     assert first_status["target_index"] == 0
     assert first_status["cycle_index"] == 1
     assert first_status["loop_wait_sec"] == route["loop"]["wait_sec"]
     assert first_status["home_pose_source"] == "route_file"
+    assert first_status["navigation_phase"] == "target"
+    assert first_status["current_target_label"] == targets[0]["name"]
+
+
+def test_status_labels_special_navigation_phases():
+    route, targets, start_pose, _data = first_target_scenario(
+        return_to_start=True,
+        loop={"enabled": True, "wait_sec": 12.0, "max_cycles": 0},
+    )
+    adapter = FakeAdapter([True, True])
+    logic = make_logic(adapter)
+
+    start(logic, route, targets, start_pose)
+    adapter.run_next_scheduled()
+
+    returning_status = next(
+        status for status in adapter.statuses
+        if status["state"] == "returning_home"
+    )
+    assert returning_status["state"] == "returning_home"
+    assert returning_status["navigation_phase"] == "return_home"
+    assert returning_status["current_target_label"] == "返回初始点"
+
+    waiting_status = logic.status()
+    assert waiting_status["state"] == "waiting_loop"
+    assert waiting_status["navigation_phase"] == "waiting_next_cycle"
+    assert waiting_status["current_target_label"] == "等待下一轮"
+
+    assert logic.cancel()
+    canceled_status = logic.status()
+    assert canceled_status["state"] == "canceled"
+    assert canceled_status["navigation_phase"] == "canceled"
+    assert canceled_status["current_target_label"] == "已取消"
+
+
+def test_terminal_status_labels_include_failed_and_succeeded():
+    route, targets, start_pose, _data = first_target_scenario(return_to_start=False)
+    adapter = FakeAdapter([True])
+    logic = make_logic(adapter)
+
+    start(logic, route, targets, start_pose)
+    adapter.run_next_scheduled()
+
+    succeeded_status = logic.status()
+    assert succeeded_status["state"] == "succeeded"
+    assert succeeded_status["navigation_phase"] == "succeeded"
+    assert succeeded_status["current_target_label"] == "巡逻完成"
+
+    failed = make_logic(FakeAdapter())
+    failed.fail_to_start(route["id"], "bad route")
+    failed_status = failed.status()
+    assert failed_status["state"] == "failed"
+    assert failed_status["navigation_phase"] == "failed"
+    assert failed_status["current_target_label"] == "巡逻失败"
 
 
 def test_loop_waits_after_return_then_starts_next_cycle():

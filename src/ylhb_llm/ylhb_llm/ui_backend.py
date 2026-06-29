@@ -20,10 +20,17 @@ STATUS_TEXT = {
     'embedded': '内嵌运行',
     'idle': '空闲',
     'paused': '已暂停',
+    'waiting_initial_pose': '等待初始位姿',
+    'waiting_nav2': '等待导航',
+    'waiting_localization': '等待定位',
+    'returning_home': '返回初始点',
+    'waiting_loop': '等待下一轮',
+    'canceling': '正在取消',
     'succeeded': '已完成',
     'failed': '失败',
     'canceled': '已取消',
     'cancelled': '已取消',
+    'unavailable': '不可用',
     'ready': '准备就绪',
     'fault': '故障',
     'mapping': '建图中',
@@ -61,6 +68,7 @@ class UiBackend(QObject):
         self._last_system_command_at: Dict[str, float] = {}
         self._last_status_log_key = ('', '')
         self._patrol_start_profile = 'navigation'
+        self._has_patrol_status = False
         self.routePreviewLoaded.connect(self._apply_route_preview_result)
         self.safety_timer = QTimer(self)
         self.safety_timer.timeout.connect(self.checkSafetyTimeout)
@@ -173,13 +181,17 @@ class UiBackend(QObject):
     @pyqtProperty(bool, notify=systemStatusChanged)
     def patrolReady(self) -> bool:
         readiness = self.state.system_status.get('patrol_readiness') or {}
-        required = ('bringup', 'navigation', 'executor', 'route_file', 'nav2_action')
+        required = ('bringup', 'navigation', 'executor', 'route_file')
         return all(bool(readiness.get(key)) for key in required)
 
     @pyqtProperty(bool, notify=systemStatusChanged)
     def patrolControlsEnabled(self) -> bool:
         readiness = self.state.system_status.get('patrol_readiness') or {}
-        return bool(readiness.get('executor'))
+        return (
+            bool(readiness.get('executor'))
+            or self.state.system_status.get('patrol_executor') == 'running'
+            or self._has_patrol_status
+        )
 
     @pyqtProperty(str, notify=patrolStatusChanged)
     def patrolProgressLabel(self) -> str:
@@ -202,7 +214,7 @@ class UiBackend(QObject):
     @staticmethod
     def _patrol_progress_label(status: Dict[str, Any]) -> str:
         special_label = str(status.get('current_target_label') or '')
-        if status.get('navigation_phase') in ('return_home', 'waiting_next_cycle'):
+        if special_label:
             return special_label
         try:
             target_index = status.get('target_index')
@@ -245,11 +257,21 @@ class UiBackend(QObject):
         if value not in ('start', 'pause', 'resume', 'cancel', 'reload', 'initialize'):
             self.addLog(f'忽略未知巡逻命令: {value}')
             return
+        if value == 'start':
+            self.addLog('请使用一键启动巡逻模式')
+            return
         debounce_key = f'patrol:{value}'
         if self._is_debounced(debounce_key):
             self.addLog(f'忽略重复巡逻命令: {value}')
             return
-        self.bridge.publish_patrol_command(value)
+        system_command = {
+            'pause': 'pause_patrol',
+            'resume': 'resume_patrol',
+            'cancel': 'cancel_patrol',
+            'reload': 'reload_patrol_route',
+            'initialize': 'reload_patrol_route',
+        }[value]
+        self.bridge.publish_system_command(system_command)
         self.addLog(f'巡逻命令: {value}')
         if value == 'reload':
             self.refreshRoutePreview()
@@ -273,7 +295,14 @@ class UiBackend(QObject):
         ):
             self.addLog(f'巡逻执行器已在工作: {self.localizedStatus(patrol_state)}')
             return
-        self.sendPatrolCommand('start')
+        if self._is_debounced('start_patrol_mode'):
+            self.addLog('忽略重复系统命令: start_patrol_mode')
+            return
+        self.bridge.publish_system_command(
+            'start_patrol_mode',
+            profile=self._patrol_start_profile,
+        )
+        self.addLog('系统命令: start_patrol_mode')
 
     def _is_debounced(self, command: str) -> bool:
         debounced = {
@@ -423,15 +452,18 @@ class UiBackend(QObject):
                 'executor_running': False,
                 'message': '巡逻执行器未运行，启动巡逻模式后再操作。',
             }
+        else:
+            self._has_patrol_status = True
         self.state.patrol_status = payload
         self.patrolStatusChanged.emit()
+        self.systemStatusChanged.emit()
 
     def update_patrol_event(self, payload: Dict[str, Any]) -> None:
         payload = dict(payload)
         payload.setdefault('timestamp', time.strftime('%H:%M:%S'))
         self.state.patrol_events.append(payload)
-        if len(self.state.patrol_events) > 50:
-            del self.state.patrol_events[:-50]
+        if len(self.state.patrol_events) > 100:
+            del self.state.patrol_events[:-100]
         self.patrolEventsChanged.emit()
 
     def update_task_context(self, payload: Dict[str, Any]) -> None:

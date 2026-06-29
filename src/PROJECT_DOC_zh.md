@@ -212,7 +212,10 @@ maps/my_map.yaml + /scan + /odom + TF
 ### 4.4 本地巡逻链路
 
 ```text
-maps/route_patrol_*.json
+UI /inspection_ai/system_command start_patrol_mode
+  -> system_supervisor_node 启动/复用 bringup + navigation + patrol_executor
+  -> /patrol/command start
+  -> maps/route_patrol_*.json
   -> patrol_executor_node
   -> Nav2 NavigateToPose action
   -> /patrol/status + /patrol/event
@@ -222,6 +225,9 @@ maps/route_patrol_*.json
 本地巡逻执行器属于 `ylhb_mobile_bridge` 包，但它不是 Web bridge。
 它读取地图坐标路线文件，按目标点顺序调用 Nav2，处理暂停、恢复、取消、返航、
 循环和失败策略。它不修改 Nav2 参数、不清 costmap、不接管底盘驱动。
+正式本体 UI 的“一键启动巡逻模式”不直接向 `/patrol/command` 发 `start`，
+而是发布 `/inspection_ai/system_command`，由 `system_supervisor_node`
+统一启动或复用依赖进程，再向巡逻执行器发送 `start`。
 
 ### 4.5 视觉感知链路
 
@@ -258,7 +264,8 @@ ZED 2i RGB 图像
 | Nav2 行为和 footprint | `src/ylhb_base/config/nav2_params.yaml` | 改 footprint、速度或恢复行为后运行导航配置测试 |
 | RTK 数据接入 | `src/ylhb_base/src/wtrtk980_nmea_node.cpp`、`src/ylhb_base/include/ylhb_base/wtrtk980_nmea.hpp`、`src/bind_usb.sh` | 当前只发布 `/gps/*`，不改 AMCL/Nav2 融合 |
 | 本地巡逻路线 | `maps/route_patrol_*.json` | 坐标必须是 `map` frame，`start_pose` 应是机器人真实起点 |
-| 本地巡逻状态机 | `src/ylhb_mobile_bridge/ylhb_mobile_bridge/patrol_executor_node.py`、`patrol_route_store.py` | 改后运行两个 patrol pytest |
+| 本地巡逻状态机 | `src/ylhb_mobile_bridge/ylhb_mobile_bridge/patrol_executor_node.py`、`patrol_route_store.py` | 改后运行 patrol executor 逻辑测试 |
+| 巡逻启动编排 | `src/ylhb_llm/ylhb_llm/system_supervisor_node.py`、`src/ylhb_llm/ylhb_llm/ui_backend.py`、`src/ylhb_llm/qml/pages/PatrolPage.qml` | UI start 必须走 `/inspection_ai/system_command`，不要绕过 supervisor |
 | 语音、UI、任务话题 | `src/ylhb_llm/config/llm.yaml` | `/inspection_ai/*` 是任务层主命名空间 |
 | 感知模型和检测阈值 | `src/ylhb_perception/config/detector.yaml` | TensorRT engine 输入尺寸需与 `imgsz` 一致 |
 | 手机/Web 调试入口 | `src/ylhb_mobile_bridge/config/mobile_bridge.yaml` | bridge 只做外部协议到 ROS 的转换 |
@@ -835,9 +842,42 @@ print(route["active_route_id"], len(route["targets"]), len(route["routes"]))
 PY
 ```
 
-### 12.2 实机启动顺序
+### 12.2 推荐启动顺序
 
-终端 1 启动底层：
+正式本体 UI 推荐直接启动 `inspection` 模式：
+
+```bash
+cd ~/ros2_DL
+./scripts/run_on_jetson.sh inspection
+```
+
+UI 默认进入“巡逻模式”页。点击“一键启动巡逻模式”后，链路为：
+
+```text
+PatrolPage.qml
+  -> UiBackend.startPatrolMode()
+  -> /inspection_ai/system_command {"command":"start_patrol_mode","profile":"navigation"}
+  -> system_supervisor_node
+  -> start/reuse bringup + navigation + patrol_executor
+  -> /patrol/command {"command":"start"}
+  -> patrol_executor_node
+```
+
+`system_supervisor_node` 启动巡逻执行器时固定使用：
+
+```text
+auto_start:=false publish_initial_pose_on_startup:=true
+```
+
+也就是说，`patrol_executor` 本身不会因为进程启动而自动开车；只有 supervisor
+发出 `/patrol/command start` 后才进入巡逻。UI 的暂停、继续、取消和重载路线
+按钮也都先发布 `/inspection_ai/system_command`，由 supervisor 转发到
+`/patrol/command`。`cancel_patrol` 只取消当前巡逻，不停止 Nav2，也不杀
+`patrol_executor`；需要停止执行器进程时使用 `stop_patrol_mode`。
+
+### 12.3 手动调试启动顺序
+
+如果不启动 UI，可按终端手动拆分调试。终端 1 启动底层：
 
 ```bash
 cd ~/ros2_DL
@@ -900,7 +940,7 @@ ros2 topic pub --once /patrol/command std_msgs/msg/String "{data: start}"
 巡逻执行器发布完初始位姿后直接开始巡逻，可以把启动参数改为
 `auto_start:=true`；实机首次调试仍建议使用 `false`，确认定位后再手动启动。
 
-### 12.3 状态观察
+### 12.4 状态观察
 
 开一个观察终端：
 
@@ -938,6 +978,15 @@ succeeded           巡逻成功
 failed              巡逻失败
 ```
 
+`/patrol/status` 还包含用于 UI 展示的字段：
+
+```text
+target_name             当前真实路线目标名称
+navigation_phase        target / return_home / waiting_next_cycle / canceled / failed / succeeded
+current_target_label    优先展示的中文进度文案
+target_count            来自路线文件展开后的真实目标数量
+```
+
 `/patrol/event` 常见事件：
 
 ```text
@@ -950,9 +999,29 @@ route_finished
 route_failed
 ```
 
-### 12.4 开始、暂停、恢复和取消
+### 12.5 开始、暂停、恢复和取消
 
-命令既可使用纯文本，也可使用 JSON。启动当前 `active_route_id`：
+正式 UI/系统命令入口：
+
+```bash
+ros2 topic pub --once /inspection_ai/system_command std_msgs/msg/String \
+  "{data: '{\"command\":\"start_patrol_mode\",\"profile\":\"navigation\"}'}"
+
+ros2 topic pub --once /inspection_ai/system_command std_msgs/msg/String \
+  "{data: '{\"command\":\"pause_patrol\"}'}"
+
+ros2 topic pub --once /inspection_ai/system_command std_msgs/msg/String \
+  "{data: '{\"command\":\"resume_patrol\"}'}"
+
+ros2 topic pub --once /inspection_ai/system_command std_msgs/msg/String \
+  "{data: '{\"command\":\"cancel_patrol\"}'}"
+
+ros2 topic pub --once /inspection_ai/system_command std_msgs/msg/String \
+  "{data: '{\"command\":\"reload_patrol_route\"}'}"
+```
+
+手动调试时也可以直接向 `/patrol/command` 发命令。命令既可使用纯文本，
+也可使用 JSON。启动当前 `active_route_id`：
 
 ```bash
 ros2 topic pub --once /patrol/command std_msgs/msg/String "{data: start}"
@@ -996,7 +1065,7 @@ ros2 topic pub --once /patrol/command std_msgs/msg/String \
 `failed`、`succeeded`、`canceled` 状态执行；巡逻运行、暂停、返航或取消中会
 被拒绝，避免重置定位导致 Nav2 跳变。
 
-### 12.5 验收
+### 12.6 验收
 
 按顺序验收：
 
@@ -1004,18 +1073,19 @@ ros2 topic pub --once /patrol/command std_msgs/msg/String \
 1. route 文件校验通过。
 2. patrol_executor 启动后发布 initial_pose_published。
 3. /scan、/odom、map -> odom -> base_footprint TF 稳定。
-4. 发送 start 后，/patrol/status 进入 running。
-5. Nav2 action /navigate_to_pose 有目标执行。
-6. 到达每个 target 后发布 target_reached。
-7. /inspection_ai/text_command 收到“已到达xxx，开始执行任务”。
-8. 等待 task_duration_sec 后发布 target_task_finished。
-9. return_to_start=true 时最后进入 returning_home 并返回 start_pose.pose。
-10. 全部完成后发布 route_finished，状态进入 succeeded。
-11. pause 会取消当前 Nav2 goal 并发布零速度。
-12. resume 会从当前 target 或循环等待阶段恢复。
-13. cancel 会取消当前 goal、发布零速度，不返航。
-14. 单点失败会按 max_retries_per_checkpoint 重试。
-15. abort_and_return_home 失败策略会尝试返回 start_pose.pose，最终状态为 failed。
+4. UI 或 system command 发出 start_patrol_mode 后，supervisor 启动/复用 bringup、navigation 和 patrol_executor。
+5. supervisor 发布 /patrol/command start 后，/patrol/status 进入 running。
+6. Nav2 action /navigate_to_pose 有目标执行。
+7. 到达每个 target 后发布 target_reached。
+8. /inspection_ai/text_command 收到“已到达xxx，开始执行任务”。
+9. 等待 task_duration_sec 后发布 target_task_finished。
+10. return_to_start=true 时最后进入 returning_home 并返回 start_pose.pose。
+11. 全部完成后发布 route_finished，状态进入 succeeded。
+12. pause 会取消当前 Nav2 goal 并发布零速度。
+13. resume 会从当前 target 或循环等待阶段恢复。
+14. cancel 会取消当前 goal、发布零速度，不返航，且不停止 navigation/patrol_executor 进程。
+15. 单点失败会按 max_retries_per_checkpoint 重试。
+16. abort_and_return_home 失败策略会尝试返回 start_pose.pose，最终状态为 failed。
 ```
 
 发布前的软件回归命令：
@@ -1194,6 +1264,12 @@ mobile bridge 进程控制命令为 `start_mobile_bridge`、`stop_mobile_bridge`
 | `mobile_bridge_http` | 本机 `/api/status` 健康检查，`http_ok`、`http_error` 或 `stopped` |
 | `mobile_bridge_url` | 手机 APP 使用的 `http://<Jetson_IP>:8000` |
 | `jetson_ip` | supervisor 自动探测的 Jetson 局域网 IP |
+| `patrol_mode_state` | supervisor 侧巡逻模式状态，常见为 `idle`、`starting`、`running` |
+| `startup_step` / `startup_step_label` | UI 显示的巡逻启动阶段和中文标签 |
+| `patrol_error` | 巡逻启动或诊断错误文本 |
+| `patrol_readiness` | bringup、navigation、executor、route_file、odom、scan、tf、map、initialpose、Nav2 action 等诊断状态；其中 Nav2 action 只作诊断，不阻塞 UI 发起启动 |
+| `last_patrol_status` | 最近一次 `/patrol/status` 原始 JSON |
+| `patrol_diagnostics` | 最近巡逻事件和初始位姿事件等诊断信息 |
 
 正式 `/inspection/*` 任务、告警和巡检记录协议尚未实现。当前不要把
 `/inspection_ai/*` 占位接口描述为已经完成的正式业务协议。
@@ -1203,8 +1279,11 @@ mobile bridge 进程控制命令为 `start_mobile_bridge`、`stop_mobile_bridge`
 本体 UI 保留 `inspection_display_ui_node` 入口和 `enable_display_ui`、
 `enable_system_supervisor`、`fullscreen`、`display`、`force_local_display`
 launch 参数。`enable_display_ui:=false` 表示不启动本体 QML UI，只适合
-`llm` 开发/离线调试入口，不是正式机器人控制台启动方式。页面包括总览、APP
-桥接、系统状态、运动控制、建图和日志。运动控制默认锁定，10 秒无操作自动重新锁定；急停始终发布零速度和 `emergency_stop`。
+`llm` 开发/离线调试入口，不是正式机器人控制台启动方式。UI 默认进入
+“巡逻模式”页，页面包括 APP 桥接、巡逻模式、本机状态、语音与 AI 和日志。
+巡逻页顶部显示全宽路线预览图，启动按钮不依赖路线预览图是否生成，也不把
+Nav2 action 就绪作为硬阻塞条件。运动控制默认锁定，10 秒无操作自动重新锁定；
+急停始终发布零速度和 `emergency_stop`。
 
 QtQuick/QML 依赖：
 
