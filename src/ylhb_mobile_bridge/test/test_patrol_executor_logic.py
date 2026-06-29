@@ -426,6 +426,12 @@ def test_status_and_event_publishers_use_patrol_status_qos(monkeypatch):
         "publish_initial_pose_on_startup": True,
         "initial_pose_publish_count": 3,
         "initial_pose_publish_period_sec": 0.5,
+        "initial_pose_startup_delay_sec": 2.0,
+        "initial_pose_stamp_zero": True,
+        "nav2_action_wait_timeout_sec": 30.0,
+        "nav2_action_wait_retry_period_sec": 1.0,
+        "nav2_goal_reject_retry_delay_sec": 2.0,
+        "nav2_goal_reject_max_retries": 3,
     }
     publishers = []
 
@@ -486,15 +492,131 @@ class FakeFuture:
     def result(self):
         return self._result
 
+    def add_done_callback(self, callback):
+        callback(self)
+
 
 class FakeGoalHandle:
-    accepted = True
-
-    def __init__(self):
+    def __init__(self, accepted=True):
+        self.accepted = accepted
         self.cancel_count = 0
 
     def cancel_goal_async(self):
         self.cancel_count += 1
+
+    def get_result_async(self):
+        return FakePendingFuture()
+
+
+class FakePendingFuture:
+    def __init__(self):
+        self.callbacks = []
+
+    def add_done_callback(self, callback):
+        self.callbacks.append(callback)
+
+
+class FakeActionClient:
+    def __init__(self, ready=False, goal_handles=None):
+        self.ready = ready
+        self.goal_handles = list(goal_handles or [])
+        self.sent_goals = []
+        self.wait_calls = []
+
+    def server_is_ready(self):
+        return self.ready
+
+    def wait_for_server(self, timeout_sec=0.0):
+        self.wait_calls.append(timeout_sec)
+        return self.ready
+
+    def send_goal_async(self, goal):
+        self.sent_goals.append(goal)
+        return FakeFuture(self.goal_handles.pop(0))
+
+
+class FakeTimerNode:
+    def __init__(self):
+        self._fake_timers = []
+        self.destroyed_timers = []
+        self.statuses = []
+        self.finished = []
+        self.stopped = 0
+        self.now_sec = 100.0
+
+    def create_timer(self, period, callback):
+        timer = {"period": period, "callback": callback}
+        self._fake_timers.append(timer)
+        return timer
+
+    def destroy_timer(self, timer):
+        self.destroyed_timers.append(timer)
+
+    def get_parameter(self, name):
+        values = {
+            "nav2_action_wait_timeout_sec": 30.0,
+            "nav2_action_wait_retry_period_sec": 1.0,
+            "nav2_goal_reject_retry_delay_sec": 2.0,
+            "nav2_goal_reject_max_retries": 3,
+        }
+        return type("Parameter", (), {"value": values[name]})()
+
+    def get_clock(self):
+        from builtin_interfaces.msg import Time
+
+        return type(
+            "Clock",
+            (),
+            {
+                "now": lambda _self: type(
+                    "Now",
+                    (),
+                    {"to_msg": lambda _self: Time(sec=1, nanosec=0)},
+                )()
+            },
+        )()
+
+    def get_logger(self):
+        return type(
+            "Logger",
+            (),
+            {"warning": lambda *_args: None, "error": lambda *_args: None},
+        )()
+
+    def _publish_current_status(self):
+        self.statuses.append(
+            {**self.logic.status(), **self._navigation_status_fields()}
+        )
+
+    def _finish_navigation(self, context, success, notify=True):
+        PatrolExecutorNode._finish_navigation(self, context, success, notify)
+        self.finished.append((success, notify))
+
+    def _stop_motion(self):
+        self.stopped += 1
+
+
+def make_timer_node(nav_client):
+    node = FakeTimerNode()
+    node.__class__ = type(
+        "TestPatrolExecutorNode",
+        (FakeTimerNode, PatrolExecutorNode),
+        {},
+    )
+    node._nav_client = nav_client
+    node._navigation_request_id = 0
+    node._active_navigation = None
+    node._active_goal_handle = None
+    node.map_frame = "map"
+    node.logic = type(
+        "Logic",
+        (),
+        {
+            "last_error": None,
+            "status": lambda _self: {"state": "running"},
+        },
+    )()
+    return node
 
 
 def test_late_goal_acceptance_is_canceled_after_pending_request_cancel():
@@ -505,6 +627,68 @@ def test_late_goal_acceptance_is_canceled_after_pending_request_cancel():
     node._on_goal_response(context, FakeFuture(goal_handle))
 
     assert goal_handle.cancel_count == 1
+
+
+def test_navigation_waits_for_nav2_without_immediate_failure():
+    node = make_timer_node(FakeActionClient(ready=False))
+    callbacks = []
+
+    node._request_navigation({"x": 1.0, "y": 2.0, "yaw": 0.0}, 9.0, callbacks.append)
+
+    context = node._active_navigation
+    assert context["navigation_phase"] == "waiting_nav2"
+    assert context["nav2_action_ready"] is False
+    assert node.finished == []
+    assert callbacks == []
+    assert node.statuses[-1]["navigation_phase"] == "waiting_nav2"
+
+
+def test_navigation_wait_timeout_reports_nav2_unavailable():
+    node = make_timer_node(FakeActionClient(ready=False))
+    callbacks = []
+
+    node._request_navigation({"x": 1.0, "y": 2.0, "yaw": 0.0}, 9.0, callbacks.append)
+    node._on_nav2_wait_timeout(node._active_navigation)
+
+    assert callbacks == [False]
+    assert node._active_navigation is None
+    assert node.finished == [(False, True)]
+    assert node.logic.last_error == "navigate_to_pose action server unavailable after 30s"
+
+
+def test_navigation_goal_rejection_retries_before_failing():
+    node = make_timer_node(
+        FakeActionClient(
+            ready=True,
+            goal_handles=[
+                FakeGoalHandle(accepted=False),
+                FakeGoalHandle(accepted=False),
+                FakeGoalHandle(accepted=False),
+                FakeGoalHandle(accepted=False),
+            ],
+        )
+    )
+    callbacks = []
+
+    node._request_navigation({"x": 1.0, "y": 2.0, "yaw": 0.0}, 9.0, callbacks.append)
+    context = node._active_navigation
+    for _attempt in range(3):
+        assert context["navigation_phase"] == "retrying_goal"
+        context["retry_timer"]["callback"]()
+
+    assert len(node._nav_client.sent_goals) == 4
+    assert callbacks == [False]
+    assert node.finished[-1] == (False, True)
+
+
+def test_cancel_during_nav2_wait_or_retry_does_not_notify_failure():
+    node = make_timer_node(FakeActionClient(ready=False))
+
+    node._request_navigation({"x": 1.0, "y": 2.0, "yaw": 0.0}, 9.0, lambda _ok: None)
+    node._cancel_navigation()
+
+    assert node.finished == [(False, False)]
+    assert node._active_navigation is None
 
 
 def test_start_route_uses_start_pose_from_reloaded_route_file():
@@ -553,6 +737,36 @@ def test_restarting_initial_pose_sequence_destroys_previous_timer():
     assert node._publish_initial_pose_from_route()
     assert destroyed == ["old_timer"]
     assert node._initial_pose_timer == "new_timer"
+
+
+def test_initial_pose_stamp_zero_event_marks_stamp_policy():
+    data = route_file_data()
+    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
+    node._route_data = data
+    node._initial_pose_remaining = 1
+    node._initial_pose_timer = None
+    node.map_frame = "map"
+    published = []
+    events = []
+    node._initial_pose_pub = type(
+        "Publisher",
+        (),
+        {"publish": lambda _self, message: published.append(message)},
+    )()
+    node.get_parameter = lambda name: type(
+        "Parameter",
+        (),
+        {"value": True if name == "initial_pose_stamp_zero" else None},
+    )()
+    node._publish_event = events.append
+    node._finish_initial_pose_sequence = lambda: None
+
+    node._publish_one_initial_pose()
+
+    assert published[0].header.stamp.sec == 0
+    assert published[0].header.stamp.nanosec == 0
+    assert events[0]["event"] == "initial_pose_published"
+    assert events[0]["stamp_zero"] is True
 
 
 def test_auto_start_waits_for_initial_pose_sequence_completion():

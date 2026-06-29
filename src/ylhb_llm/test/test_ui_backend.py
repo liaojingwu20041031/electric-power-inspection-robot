@@ -251,6 +251,11 @@ def test_status_values_are_localized_for_qml():
     assert backend.localizedStatus('running') == '运行中'
     assert backend.localizedStatus('http_ok') == '连接正常'
     assert backend.localizedStatus('embedded') == '内嵌运行'
+    assert backend.localizedStatus('waiting_nav2') == '等待导航服务'
+    assert backend.localizedStatus('sending_goal') == '发送导航目标'
+    assert backend.localizedStatus('retrying_goal') == '导航目标重试'
+    assert backend.localizedStatus('target') == '前往检查点'
+    assert backend.localizedStatus('return_home') == '返回初始点'
 
 
 def test_patrol_status_and_event_update_ui_state():
@@ -337,7 +342,7 @@ def test_route_preview_ok_requires_route_overlay():
 
 def test_start_patrol_mode_is_blocked_while_executor_waits_or_runs():
     backend = make_backend(lambda: 100.0)
-    backend.update_patrol_status({'state': 'waiting_nav2'})
+    backend.update_patrol_status({'state': 'running', 'navigation_phase': 'waiting_nav2'})
     backend.startPatrolMode()
 
     assert backend.bridge.system_commands == []

@@ -120,7 +120,7 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
         'navigation',
         'patrol_executor',
     ]
-    assert node.publish_patrol_command.call_count == 2
+    assert node.publish_patrol_command.call_count == 1
 
 
 def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
@@ -240,7 +240,7 @@ def test_start_patrol_reuses_running_processes_and_republishes_start():
         'navigation',
         'patrol_executor',
     ]
-    assert node.publish_patrol_command.call_count == 2
+    assert node.publish_patrol_command.call_count == 1
 
 
 def test_start_patrol_mode_warns_without_subscriber_or_heartbeat_and_never_sets_running():
@@ -257,7 +257,7 @@ def test_start_patrol_mode_warns_without_subscriber_or_heartbeat_and_never_sets_
 
     assert node.patrol_mode_state == 'command_sent'
     assert 'warning' in node.patrol_error
-    assert node.publish_patrol_command.call_count == 2
+    assert node.publish_patrol_command.call_count == 1
     node.set_result.assert_called_once()
     assert node.set_result.call_args.args[1] is True
 
@@ -273,15 +273,58 @@ def test_patrol_status_callback_is_business_state_source():
     assert node.patrol_mode_state == 'command_sent'
     assert node.startup_step == 'waiting_executor_response'
 
-    msg.data = json.dumps({'state': 'running'})
+    msg.data = json.dumps({'state': 'running', 'navigation_phase': 'waiting_nav2'})
+    node.patrol_status_callback(msg)
+    assert node.patrol_mode_state == 'running'
+    assert node.startup_step == 'waiting_nav2'
+    assert node.patrol_error == ''
+
+    msg.data = json.dumps({'state': 'running', 'navigation_phase': 'sending_goal'})
+    node.patrol_status_callback(msg)
+    assert node.startup_step == 'sending_goal'
+
+    msg.data = json.dumps({'state': 'running', 'navigation_phase': 'retrying_goal'})
+    node.patrol_status_callback(msg)
+    assert node.startup_step == 'retrying_goal'
+
+    msg.data = json.dumps({'state': 'running', 'navigation_phase': 'target'})
     node.patrol_status_callback(msg)
     assert node.patrol_mode_state == 'running'
     assert node.startup_step == 'patrol_started'
     assert node.patrol_error == ''
 
+    msg.data = json.dumps({'state': 'running', 'navigation_phase': 'return_home'})
+    node.patrol_status_callback(msg)
+    assert node.startup_step == 'returning_home'
+
     msg.data = json.dumps({'state': 'failed'})
     node.patrol_status_callback(msg)
     assert node.patrol_mode_state == 'failed'
+
+
+def test_start_patrol_republishes_only_after_idle_heartbeat(monkeypatch):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.last_patrol_status = {'state': 'idle'}
+    node.last_patrol_status_received_at = 100.0
+    node.set_result = Mock()
+    node.log_info = Mock()
+    monkeypatch.setattr(system_supervisor_node.time, 'time', lambda: 100.0)
+    monkeypatch.setattr(system_supervisor_node.time, 'sleep', lambda _sec: None)
+
+    node.handle_command('start_patrol_mode', {})
+
+    assert node.publish_patrol_command.call_count == 2
+
+    node.publish_patrol_command.reset_mock()
+    node.last_patrol_status = {'state': 'running', 'navigation_phase': 'waiting_nav2'}
+    node.handle_command('start_patrol_mode', {})
+    assert node.publish_patrol_command.call_count == 1
+    assert node.patrol_mode_state == 'running'
+    assert node.startup_step == 'waiting_nav2'
 
 
 def test_publish_patrol_command_sends_json_to_patrol_command_topic():

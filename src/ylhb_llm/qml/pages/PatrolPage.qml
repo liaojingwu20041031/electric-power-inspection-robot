@@ -18,6 +18,11 @@ ScrollView {
         || backend.patrolStatus.state === "returning_home"
         || backend.patrolStatus.state === "waiting_loop"
         || backend.patrolStatus.state === "canceling"
+    property bool navigationActive: backend.patrolStatus.navigation_phase === "waiting_nav2"
+        || backend.patrolStatus.navigation_phase === "sending_goal"
+        || backend.patrolStatus.navigation_phase === "retrying_goal"
+        || backend.patrolStatus.navigation_phase === "target"
+        || backend.patrolStatus.navigation_phase === "return_home"
     property bool inspectionProfile: backend.patrolStartProfile === "inspection"
     property var readinessItems: [
         { "label": "底盘", "key": "bringup" },
@@ -26,9 +31,11 @@ ScrollView {
         { "label": "路线文件", "key": "route_file" }
     ]
     property var startupStages: [
-        { "label": "底盘传感器", "step": "starting_bringup" },
-        { "label": "地图/AMCL", "step": "starting_navigation" },
-        { "label": "初始位姿", "step": "waiting_initial_pose_published" },
+        { "label": "启动底盘", "step": "starting_bringup" },
+        { "label": "启动导航", "step": "starting_navigation" },
+        { "label": "启动执行器", "step": "starting_executor" },
+        { "label": "等待导航服务", "step": "waiting_nav2" },
+        { "label": "发送目标", "step": "sending_goal" },
         { "label": "巡逻运行", "step": "patrol_started" }
     ]
 
@@ -43,49 +50,18 @@ ScrollView {
             Layout.fillWidth: true
             spacing: 16
 
-            Rectangle {
+            RoutePreviewViewer {
                 id: routePreviewPane
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.availableWidth >= 1200 ? 420 : 380
-                radius: 8
-                color: Theme.surface
-                border.color: Theme.border
-                clip: true
-                property string imageLoadError: ""
-
-                Image {
-                    id: routePreviewImage
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    source: backend.routePreviewImageSource
-                    fillMode: Image.PreserveAspectFit
-                    asynchronous: true
-                    cache: false
-                    sourceSize.width: 1600
-                    visible: backend.routePreviewOk && routePreviewImage.status === Image.Ready
-                    onStatusChanged: {
-                        parent.imageLoadError = status === Image.Error
-                            ? "路线预览图解码失败，请点击重绘预览"
-                            : ""
-                    }
-                }
-                Label {
-                    anchors.centerIn: parent
-                    text: backend.routePreviewLoading
-                        ? "路线预览加载中"
-                        : (parent.imageLoadError
-                            || (!backend.routePreviewOk
-                                ? backend.routePreviewMessage
-                                : (backend.routePreview.image_exists !== true
-                                    ? "路线预览图文件不存在"
-                                    : "路线预览图未生成")))
-                    color: Theme.muted
-                    font.pixelSize: 18
-                    visible: backend.routePreviewLoading
-                        || parent.imageLoadError.length > 0
-                        || !backend.routePreviewOk
-                        || routePreviewImage.status !== Image.Ready
-                }
+                source: backend.routePreviewImageSource
+                previewOk: backend.routePreviewOk
+                loading: backend.routePreviewLoading
+                message: !backend.routePreviewOk
+                    ? backend.routePreviewMessage
+                    : (backend.routePreview.image_exists !== true
+                        ? "路线预览图文件不存在"
+                        : "路线预览图未生成")
             }
 
             ColumnLayout {
@@ -134,6 +110,17 @@ ScrollView {
                                     }
                                 }
                             }
+                        }
+                        Label {
+                            text: backend.patrolStartupStep === "waiting_nav2"
+                                ? "等待 Nav2 导航服务启动完成。"
+                                : (backend.patrolStartupStep === "retrying_goal"
+                                    ? "导航目标被拒绝，正在重试。"
+                                    : "")
+                            color: Theme.warning
+                            visible: text.length > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
                         }
                     }
                 }
@@ -236,7 +223,7 @@ ScrollView {
                             Layout.fillWidth: true
                         }
                         Label {
-                            text: "Image.status: " + String(routePreviewImage.status)
+                            text: "Image.status: " + String(routePreviewPane.imageStatus)
                                 + " / " + (backend.routePreview.source || backend.routePreview.message || "-")
                             color: Theme.text
                             wrapMode: Text.Wrap
@@ -295,6 +282,7 @@ ScrollView {
                     || backend.patrolStatus.state === "returning_home"
                     || backend.patrolStatus.state === "waiting_loop"
                     || backend.patrolStatus.state === "canceling"
+                    || root.navigationActive
                 buttonColor: Theme.danger
                 Layout.fillWidth: true
                 onClicked: backend.sendSystemCommand("cancel_patrol")

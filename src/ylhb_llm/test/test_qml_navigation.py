@@ -15,12 +15,11 @@ def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
     qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
 
     assert "id: routePreviewPane" in qml
+    assert "RoutePreviewViewer" in qml
     assert "source: backend.routePreviewImageSource" in qml
     assert "?v=" not in qml
     assert "routePreviewImage.source =" not in qml
-    assert "asynchronous: true" in qml
-    assert "sourceSize.width: 1600" in qml
-    assert "routePreviewImage.status === Image.Ready" in qml
+    assert "Image {" not in qml.split("id: routePreviewPane", 1)[1].split("ColumnLayout {", 1)[0]
     assert "text: backend.routePreviewImageUrl" not in qml
     assert "阶段流程" in qml
     assert "backend.patrolProgressLabel" in qml
@@ -30,7 +29,22 @@ def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
     assert "image_valid" in qml
     assert "image_error" in qml
     assert "Nav2 Action" not in qml
-    assert "Nav2 动作服务" not in qml
+    assert "等待 Nav2 导航服务启动完成。" in qml
+    assert "导航目标被拒绝，正在重试。" in qml
+
+
+def test_route_preview_viewer_has_zoom_pan_and_error_controls():
+    qml = Path("src/ylhb_llm/qml/components/RoutePreviewViewer.qml").read_text(encoding="utf-8")
+
+    assert "function zoomIn()" in qml
+    assert "function zoomOut()" in qml
+    assert "function reset()" in qml
+    assert "function fit()" in qml
+    assert "MouseArea" in qml
+    assert "onWheel" in qml
+    assert "onPositionChanged" in qml
+    assert "PinchArea" in qml
+    assert "路线预览图解码失败" in qml
 
 
 def test_patrol_page_sends_controls_to_supervisor():
@@ -51,3 +65,4 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.patrolModeState === "running"' not in qml
     assert 'backend.patrolModeState === "command_sent"' in qml
     assert 'root.patrolCommandSent' not in qml.split('text: "取消巡逻"', 1)[1].split('onClicked:', 1)[0]
+    assert 'root.navigationActive' in qml.split('text: "取消巡逻"', 1)[1].split('onClicked:', 1)[0]

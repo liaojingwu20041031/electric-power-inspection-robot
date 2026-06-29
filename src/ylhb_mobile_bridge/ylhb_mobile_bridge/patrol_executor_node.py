@@ -16,6 +16,7 @@ from .patrol_qos import patrol_status_qos_profile
 try:
     import rclpy
     from action_msgs.msg import GoalStatus
+    from builtin_interfaces.msg import Time
     from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
     from nav2_msgs.action import NavigateToPose
     from rclpy.action import ActionClient
@@ -539,7 +540,7 @@ class PatrolExecutorNode(Node):
         self.create_timer(schedule_period, self._check_schedules)
         self.create_timer(1.0, self._publish_current_status)
         self._startup_timer = self.create_timer(
-            1.0,
+            float(self.get_parameter("initial_pose_startup_delay_sec").value),
             self._on_startup_timer,
         )
 
@@ -557,6 +558,12 @@ class PatrolExecutorNode(Node):
             "publish_initial_pose_on_startup": True,
             "initial_pose_publish_count": 3,
             "initial_pose_publish_period_sec": 0.5,
+            "initial_pose_startup_delay_sec": 2.0,
+            "initial_pose_stamp_zero": True,
+            "nav2_action_wait_timeout_sec": 30.0,
+            "nav2_action_wait_retry_period_sec": 1.0,
+            "nav2_goal_reject_retry_delay_sec": 2.0,
+            "nav2_goal_reject_max_retries": 3,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -567,6 +574,7 @@ class PatrolExecutorNode(Node):
         publisher.publish(message)
 
     def _publish_status(self, status: Dict[str, Any]) -> None:
+        status = {**status, **self._navigation_status_fields()}
         self._publish_json(self._status_pub, status)
         if (
             status["state"] in TERMINAL_STATES
@@ -579,6 +587,33 @@ class PatrolExecutorNode(Node):
 
     def _publish_current_status(self) -> None:
         self._publish_status(self.logic.status())
+
+    def _navigation_status_fields(self) -> Dict[str, Any]:
+        context = self._active_navigation
+        if not context or context.get("completed"):
+            return {}
+        phase = str(context.get("navigation_phase") or "")
+        fields: Dict[str, Any] = {
+            "navigation_phase": phase,
+            "nav2_action_ready": bool(context.get("nav2_action_ready")),
+            "nav2_wait_elapsed_sec": max(
+                0.0,
+                time.time()
+                - float(context.get("nav2_wait_started_at") or time.time()),
+            ),
+            "goal_reject_count": int(context.get("goal_reject_count") or 0),
+            "active_navigation_id": context.get("id"),
+        }
+        labels = {
+            "waiting_nav2": "等待导航服务",
+            "sending_goal": "发送导航目标",
+            "retrying_goal": "导航目标重试",
+        }
+        if phase in labels:
+            fields["current_target_label"] = labels[phase]
+        if context.get("last_error"):
+            fields["last_error"] = context["last_error"]
+        return fields
 
     def _publish_event(self, event: Dict[str, Any]) -> None:
         self._publish_json(self._event_pub, event)
@@ -729,28 +764,84 @@ class PatrolExecutorNode(Node):
             "callback": on_result,
             "completed": False,
             "canceled": False,
+            "pose": dict(pose),
+            "timeout_sec": timeout_sec,
+            "nav2_wait_started_at": time.time(),
+            "nav2_wait_deadline": time.time()
+            + float(self.get_parameter("nav2_action_wait_timeout_sec").value),
+            "goal_reject_count": 0,
+            "wait_timer": None,
+            "retry_timer": None,
             "timeout_timer": None,
+            "navigation_phase": "waiting_nav2",
+            "nav2_action_ready": False,
+            "last_error": None,
         }
         self._active_navigation = context
         self._active_goal_handle = None
+        self._publish_current_status()
+        context["wait_timer"] = self.create_timer(
+            float(
+                self.get_parameter(
+                    "nav2_action_wait_retry_period_sec"
+                ).value
+            ),
+            lambda: self._check_nav2_ready(context),
+        )
+        context["timeout_timer"] = self.create_timer(
+            float(self.get_parameter("nav2_action_wait_timeout_sec").value),
+            lambda: self._on_nav2_wait_timeout(context),
+        )
+        self._check_nav2_ready(context)
 
-        if not self._nav_client.wait_for_server(timeout_sec=2.0):
-            self.get_logger().error(
-                "navigate_to_pose action server unavailable"
-            )
-            self._finish_navigation(context, False)
+    def _nav2_server_ready(self) -> bool:
+        server_is_ready = getattr(self._nav_client, "server_is_ready", None)
+        if callable(server_is_ready) and server_is_ready():
+            return True
+        return bool(self._nav_client.wait_for_server(timeout_sec=0.1))
+
+    def _check_nav2_ready(self, context: Dict[str, Any]) -> None:
+        if context["completed"] or context["canceled"]:
             return
+        if not self._nav2_server_ready():
+            self._publish_current_status()
+            return
+        context["nav2_action_ready"] = True
+        self._send_navigation_goal(context)
 
+    def _send_navigation_goal(self, context: Dict[str, Any]) -> None:
+        if context["completed"] or context["canceled"]:
+            return
+        for name in ("wait_timer", "retry_timer", "timeout_timer"):
+            timer = context.get(name)
+            if timer is not None:
+                self.destroy_timer(timer)
+                context[name] = None
+        context["timeout_timer"] = self.create_timer(
+            float(context["timeout_sec"]),
+            lambda: self._on_navigation_timeout(context),
+        )
+        context["navigation_phase"] = "sending_goal"
+        self._publish_current_status()
         goal = NavigateToPose.Goal()
-        goal.pose = self._pose_stamped(pose)
+        goal.pose = self._pose_stamped(context["pose"])
         send_future = self._nav_client.send_goal_async(goal)
         send_future.add_done_callback(
             lambda future: self._on_goal_response(context, future)
         )
-        context["timeout_timer"] = self.create_timer(
-            timeout_sec,
-            lambda: self._on_navigation_timeout(context),
+
+    def _on_nav2_wait_timeout(self, context: Dict[str, Any]) -> None:
+        if context["completed"]:
+            return
+        wait_timeout = float(
+            self.get_parameter("nav2_action_wait_timeout_sec").value
         )
+        message = f"navigate_to_pose action server unavailable after {wait_timeout:g}s"
+        context["last_error"] = message
+        if hasattr(self.logic, "last_error"):
+            self.logic.last_error = message
+        self.get_logger().error(message)
+        self._finish_navigation(context, False)
 
     def _pose_stamped(self, pose: Dict[str, float]) -> PoseStamped:
         message = PoseStamped()
@@ -780,7 +871,7 @@ class PatrolExecutorNode(Node):
             return
         if goal_handle is None or not goal_handle.accepted:
             self.get_logger().warning("navigation goal rejected")
-            self._finish_navigation(context, False)
+            self._retry_rejected_goal(context)
             return
         if context["canceled"]:
             goal_handle.cancel_goal_async()
@@ -790,6 +881,23 @@ class PatrolExecutorNode(Node):
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(
             lambda result: self._on_navigation_result(context, result)
+        )
+
+    def _retry_rejected_goal(self, context: Dict[str, Any]) -> None:
+        max_retries = int(
+            self.get_parameter("nav2_goal_reject_max_retries").value
+        )
+        if int(context["goal_reject_count"]) >= max_retries:
+            self._finish_navigation(context, False)
+            return
+        context["goal_reject_count"] = int(context["goal_reject_count"]) + 1
+        context["navigation_phase"] = "retrying_goal"
+        self._publish_current_status()
+        context["retry_timer"] = self.create_timer(
+            float(
+                self.get_parameter("nav2_goal_reject_retry_delay_sec").value
+            ),
+            lambda: self._send_navigation_goal(context),
         )
 
     def _on_navigation_result(self, context: Dict[str, Any], future) -> None:
@@ -822,9 +930,11 @@ class PatrolExecutorNode(Node):
         if context["completed"]:
             return
         context["completed"] = True
-        timer = context.get("timeout_timer")
-        if timer is not None:
-            self.destroy_timer(timer)
+        for name in ("wait_timer", "retry_timer", "timeout_timer"):
+            timer = context.get(name)
+            if timer is not None:
+                self.destroy_timer(timer)
+                context[name] = None
         if self._active_navigation is context:
             self._active_navigation = None
             self._active_goal_handle = None
@@ -877,7 +987,12 @@ class PatrolExecutorNode(Node):
         covariance = start_pose["covariance"]
         message = PoseWithCovarianceStamped()
         message.header.frame_id = self.map_frame
-        message.header.stamp = self.get_clock().now().to_msg()
+        stamp_zero = bool(self.get_parameter("initial_pose_stamp_zero").value)
+        message.header.stamp = (
+            Time(sec=0, nanosec=0)
+            if stamp_zero
+            else self.get_clock().now().to_msg()
+        )
         message.pose.pose.position.x = pose["x"]
         message.pose.pose.position.y = pose["y"]
         message.pose.pose.orientation.z = math.sin(pose["yaw"] / 2.0)
@@ -891,6 +1006,7 @@ class PatrolExecutorNode(Node):
             {
                 "event": "initial_pose_published",
                 "remaining": self._initial_pose_remaining,
+                "stamp_zero": stamp_zero,
                 "timestamp": time.time(),
             }
         )
