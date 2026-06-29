@@ -24,6 +24,7 @@ ScrollView {
         || backend.patrolStatus.navigation_phase === "target"
         || backend.patrolStatus.navigation_phase === "return_home"
     property bool inspectionProfile: backend.patrolStartProfile === "inspection"
+    property int startupStageIndex: stageIndex(backend.systemStatus.startup_step || "")
     property var readinessItems: [
         { "label": "底盘", "key": "bringup" },
         { "label": "导航", "key": "navigation" },
@@ -32,12 +33,69 @@ ScrollView {
     ]
     property var startupStages: [
         { "label": "启动底盘", "step": "starting_bringup" },
+        { "label": "等待底盘稳定", "step": "waiting_after_bringup" },
         { "label": "启动导航", "step": "starting_navigation" },
-        { "label": "启动执行器", "step": "starting_executor" },
-        { "label": "等待导航服务", "step": "waiting_nav2" },
-        { "label": "发送目标", "step": "sending_goal" },
+        { "label": "等待导航稳定", "step": "waiting_after_navigation" },
+        { "label": "启动巡逻执行器", "step": "starting_executor" },
+        { "label": "等待执行器发布初始位姿", "step": "waiting_after_executor" },
+        { "label": "发送巡逻 start", "step": "patrol_start_sent" },
         { "label": "巡逻运行", "step": "patrol_started" }
     ]
+
+    function stageIndex(step) {
+        for (var i = 0; i < startupStages.length; i++) {
+            if (startupStages[i].step === step) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    function stageMark(index) {
+        if (root.patrolRunning && root.startupStages[index].step === "patrol_started") {
+            return "当前"
+        }
+        if (root.startupStageIndex < 0) {
+            return "等待"
+        }
+        if (index < root.startupStageIndex) {
+            return "完成"
+        }
+        return index === root.startupStageIndex ? "当前" : "等待"
+    }
+
+    function patrolStateLabel() {
+        var state = backend.patrolStatus.state || ""
+        if (backend.patrolError.length > 0) {
+            return "异常: " + backend.patrolError
+        }
+        if (root.patrolCommandSent) {
+            return "启动中: " + (backend.systemStatus.startup_step_label || "准备依赖")
+        }
+        if (root.patrolRunning) {
+            return "运行中: " + (backend.patrolProgressLabel || backend.patrolStatusText)
+        }
+        if (state === "succeeded") {
+            return "已完成"
+        }
+        if (state === "failed") {
+            return "失败"
+        }
+        if (state === "canceled" || state === "cancelled") {
+            return "已取消"
+        }
+        return backend.patrolReady ? "就绪: 可启动巡逻" : "待命: 等待巡逻依赖"
+    }
+
+    function patrolStateColor() {
+        if (backend.patrolError.length > 0 || backend.patrolStatus.state === "failed") {
+            return Theme.danger
+        }
+        if (root.patrolRunning || backend.patrolStatus.state === "succeeded") {
+            return Theme.success
+        }
+        return root.patrolCommandSent ? Theme.primary : Theme.warning
+    }
 
     ColumnLayout {
         width: parent.width
@@ -71,14 +129,12 @@ ScrollView {
                 StatusCard {
                     Layout.fillWidth: true
                     title: "巡逻状态"
-                    value: root.patrolCommandSent
-                        ? ("启动中: " + (backend.systemStatus.startup_step_label || "准备依赖"))
-                        : (backend.patrolProgressLabel || backend.patrolStatusText)
-                    statusColor: backend.patrolStatus.state === "running" || backend.patrolReady ? Theme.success : Theme.warning
+                    value: root.patrolStateLabel()
+                    statusColor: root.patrolStateColor()
                 }
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 102
+                    Layout.preferredHeight: root.availableWidth >= 900 ? 148 : 224
                     radius: 8
                     color: Theme.surface
                     border.color: Theme.border
@@ -87,36 +143,54 @@ ScrollView {
                         anchors.margins: 14
                         spacing: 8
                         Label { text: "阶段流程"; color: Theme.muted }
-                        RowLayout {
+                        GridLayout {
                             Layout.fillWidth: true
-                            spacing: 8
+                            columns: root.availableWidth >= 900 ? 4 : 2
+                            columnSpacing: 8
+                            rowSpacing: 8
                             Repeater {
                                 model: root.startupStages
                                 delegate: Rectangle {
                                     required property var modelData
+                                    required property int index
                                     Layout.fillWidth: true
-                                    height: 34
+                                    Layout.preferredHeight: 44
                                     radius: 6
                                     color: backend.systemStatus.startup_step === modelData.step
                                         ? Theme.primary
-                                        : (root.patrolRunning && modelData.step === "patrol_started" ? Theme.success : Theme.background)
+                                        : (root.stageMark(index) === "完成" ? Theme.surface : Theme.background)
                                     border.color: Theme.border
-                                    Label {
+                                    Column {
                                         anchors.centerIn: parent
-                                        text: modelData.label
-                                        color: Theme.text
-                                        font.pixelSize: 11
-                                        elide: Text.ElideRight
+                                        spacing: 1
+                                        width: parent.width - 10
+                                        Label {
+                                            width: parent.width
+                                            text: modelData.label
+                                            color: Theme.text
+                                            font.pixelSize: 11
+                                            horizontalAlignment: Text.AlignHCenter
+                                            elide: Text.ElideRight
+                                        }
+                                        Label {
+                                            width: parent.width
+                                            text: root.stageMark(index)
+                                            color: root.stageMark(index) === "当前" ? Theme.text : Theme.muted
+                                            font.pixelSize: 10
+                                            horizontalAlignment: Text.AlignHCenter
+                                        }
                                     }
                                 }
                             }
                         }
                         Label {
-                            text: backend.patrolStartupStep === "waiting_nav2"
+                            text: root.patrolCommandSent
+                                ? "当前按手动启动流程执行，导航启动后会等待约 20 秒，请不要重复点击。"
+                                : (backend.patrolStartupStep === "waiting_nav2"
                                 ? "等待 Nav2 导航服务启动完成。"
                                 : (backend.patrolStartupStep === "retrying_goal"
                                     ? "导航目标被拒绝，正在重试。"
-                                    : "")
+                                    : ""))
                             color: Theme.warning
                             visible: text.length > 0
                             Layout.fillWidth: true

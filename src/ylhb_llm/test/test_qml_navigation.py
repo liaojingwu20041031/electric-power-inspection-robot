@@ -31,6 +31,17 @@ def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
     assert "Nav2 Action" not in qml
     assert "等待 Nav2 导航服务启动完成。" in qml
     assert "导航目标被拒绝，正在重试。" in qml
+    assert "等待底盘稳定" in qml
+    assert "等待导航稳定" in qml
+    assert "等待执行器发布初始位姿" in qml
+    assert "发送巡逻 start" in qml
+    assert "当前按手动启动流程执行，导航启动后会等待约 20 秒，请不要重复点击。" in qml
+    assert "function patrolStateLabel()" in qml
+    assert "就绪: 可启动巡逻" in qml
+    assert "待命: 等待巡逻依赖" in qml
+    assert "GridLayout" in qml
+    assert "完成" in qml
+    assert "当前" in qml
 
 
 def test_route_preview_viewer_has_zoom_pan_and_error_controls():
@@ -44,6 +55,9 @@ def test_route_preview_viewer_has_zoom_pan_and_error_controls():
     assert "onWheel" in qml
     assert "onPositionChanged" in qml
     assert "PinchArea" in qml
+    assert "scale: root.zoom" in qml
+    assert "smooth: !root.dragging" in qml
+    assert "cache: true" in qml
     assert "路线预览图解码失败" in qml
 
 

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
@@ -25,6 +26,11 @@ class FakePublisher:
         self.messages.append(msg)
 
 
+@pytest.fixture(autouse=True)
+def skip_supervisor_sleeps(monkeypatch):
+    monkeypatch.setattr(system_supervisor_node.time, 'sleep', lambda _sec: None)
+
+
 def test_mobile_bridge_commands_start_stop_and_restart():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.processes = {'mobile_bridge': FakeProcess()}
@@ -43,7 +49,7 @@ def test_mobile_bridge_commands_start_stop_and_restart():
     assert node.start_process.call_args_list[-1].args == ('mobile_bridge',)
 
 
-def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order():
+def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order(monkeypatch):
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.processes = {
         'bringup': FakeProcess(),
@@ -69,13 +75,25 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
     node.wait_for_nav2_action_ready = Mock()
     node.wait_for_patrol_status = Mock()
     node.start_process.side_effect = lambda name: sequence.append(f'start_{name}')
+    sleeps = []
+
+    def fake_sleep(sec):
+        sleeps.append(sec)
+        sequence.append(f'sleep_{sec:g}')
+
+    monkeypatch.setattr(system_supervisor_node.time, 'time', lambda: 100.0)
+    monkeypatch.setattr(system_supervisor_node.time, 'sleep', fake_sleep)
 
     node.handle_command('start_patrol_mode', {'profile': 'navigation'})
 
     assert sequence == [
         'start_bringup',
+        'sleep_3',
         'start_navigation',
+        'sleep_20',
         'start_patrol_executor',
+        'sleep_6',
+        'sleep_5',
     ]
     node.wait_for_core_sensors.assert_not_called()
     node.wait_for_navigation_ready.assert_not_called()
@@ -83,13 +101,14 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
     node.wait_for_initial_pose_published.assert_not_called()
     node.wait_for_nav2_action_ready.assert_not_called()
     node.wait_for_patrol_status.assert_not_called()
-    node.wait_for_patrol_command_subscriber.assert_called_once_with(3.0)
+    node.wait_for_patrol_status_heartbeat.assert_called_once_with(100.0, 8.0)
+    node.wait_for_patrol_command_subscriber.assert_called_once_with(5.0)
     assert node.publish_patrol_command.call_args_list[-1].args[0] == 'start'
     assert node.patrol_mode_state == 'command_sent'
     node.set_result.assert_called_with(
         'start_patrol_mode',
         True,
-        '巡逻启动命令已发送，等待执行器进入运行状态',
+        '已按手动流程发送巡逻启动命令',
     )
 
 
@@ -120,7 +139,7 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
         'navigation',
         'patrol_executor',
     ]
-    assert node.publish_patrol_command.call_count == 1
+    assert node.publish_patrol_command.call_count == 2
 
 
 def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
@@ -152,7 +171,7 @@ def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
     node.set_result.assert_called_with(
         'start_patrol_mode',
         True,
-        '巡逻启动命令已发送，等待执行器进入运行状态',
+        '已按手动流程发送巡逻启动命令',
     )
 
 
@@ -180,7 +199,7 @@ def test_start_patrol_mode_does_not_wait_for_patrol_status_but_forwards_start():
     node.set_result.assert_called_with(
         'start_patrol_mode',
         True,
-        '巡逻启动命令已发送，等待执行器进入运行状态',
+        '已按手动流程发送巡逻启动命令',
     )
 
 
@@ -240,7 +259,7 @@ def test_start_patrol_reuses_running_processes_and_republishes_start():
         'navigation',
         'patrol_executor',
     ]
-    assert node.publish_patrol_command.call_count == 1
+    assert node.publish_patrol_command.call_count == 2
 
 
 def test_start_patrol_mode_warns_without_subscriber_or_heartbeat_and_never_sets_running():
@@ -302,7 +321,7 @@ def test_patrol_status_callback_is_business_state_source():
     assert node.patrol_mode_state == 'failed'
 
 
-def test_start_patrol_republishes_only_after_idle_heartbeat(monkeypatch):
+def test_start_patrol_republishes_once_when_executor_still_idle_or_unavailable(monkeypatch):
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
@@ -320,11 +339,42 @@ def test_start_patrol_republishes_only_after_idle_heartbeat(monkeypatch):
     assert node.publish_patrol_command.call_count == 2
 
     node.publish_patrol_command.reset_mock()
-    node.last_patrol_status = {'state': 'running', 'navigation_phase': 'waiting_nav2'}
+    node.last_patrol_status = {'state': 'unavailable'}
     node.handle_command('start_patrol_mode', {})
-    assert node.publish_patrol_command.call_count == 1
-    assert node.patrol_mode_state == 'running'
-    assert node.startup_step == 'waiting_nav2'
+    assert node.publish_patrol_command.call_count == 2
+
+
+def test_start_patrol_does_not_republish_for_terminal_or_active_states(monkeypatch):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.set_result = Mock()
+    node.log_info = Mock()
+    monkeypatch.setattr(system_supervisor_node.time, 'time', lambda: 100.0)
+    monkeypatch.setattr(system_supervisor_node.time, 'sleep', lambda _sec: None)
+
+    no_retry_states = (
+        'running',
+        'waiting_nav2',
+        'waiting_localization',
+        'returning_home',
+        'paused',
+        'waiting_loop',
+        'canceling',
+        'failed',
+        'succeeded',
+        'canceled',
+        'cancelled',
+    )
+    for state in no_retry_states:
+        node.publish_patrol_command.reset_mock()
+        node.patrol_mode_state = 'idle'
+        node.last_patrol_status = {'state': state, 'navigation_phase': 'waiting_nav2'}
+        node.handle_command('start_patrol_mode', {})
+        assert node.publish_patrol_command.call_count == 1
+        assert node.patrol_mode_state != 'running'
 
 
 def test_publish_patrol_command_sends_json_to_patrol_command_topic():

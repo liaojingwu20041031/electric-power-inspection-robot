@@ -256,6 +256,11 @@ def test_status_values_are_localized_for_qml():
     assert backend.localizedStatus('retrying_goal') == '导航目标重试'
     assert backend.localizedStatus('target') == '前往检查点'
     assert backend.localizedStatus('return_home') == '返回初始点'
+    assert backend.localizedStatus('command_sent') == '等待巡逻执行器进入运行状态'
+    assert backend.localizedStatus('waiting_after_bringup') == '底盘启动后等待'
+    assert backend.localizedStatus('waiting_after_navigation') == '导航启动后等待'
+    assert backend.localizedStatus('waiting_after_executor') == '巡逻执行器启动后等待'
+    assert backend.localizedStatus('patrol_start_sent') == '巡逻启动命令已发送'
 
 
 def test_patrol_status_and_event_update_ui_state():

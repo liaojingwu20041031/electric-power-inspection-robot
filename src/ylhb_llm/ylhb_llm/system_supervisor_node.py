@@ -25,23 +25,30 @@ START_PROCESS_MESSAGES = {
     'mapping': '建图已启动',
 }
 
+PATROL_BRINGUP_TO_NAVIGATION_DELAY_SEC = 3.0
+PATROL_NAVIGATION_TO_EXECUTOR_DELAY_SEC = 20.0
+PATROL_EXECUTOR_TO_START_DELAY_SEC = 6.0
+
 STARTUP_STEP_LABELS = {
     'starting_bringup': '等待底盘传感器',
     'waiting_bringup': '等待底盘传感器',
     'waiting_odom': '等待底盘传感器',
     'waiting_scan': '等待底盘传感器',
     'waiting_tf': '等待底盘传感器',
+    'waiting_after_bringup': '底盘启动后等待',
     'starting_navigation': '等待地图',
     'waiting_navigation': '等待地图',
     'waiting_map': '等待地图',
     'waiting_initialpose_subscribers': '等待地图',
+    'waiting_after_navigation': '导航启动后等待',
     'starting_executor': '发布初始位姿',
     'waiting_executor': '发布初始位姿',
     'waiting_route_file': '发布初始位姿',
     'waiting_patrol_status': '发布初始位姿',
     'waiting_initial_pose_published': '发布初始位姿',
+    'waiting_after_executor': '巡逻执行器启动后等待',
     'waiting_patrol_running': '等待巡逻执行器运行',
-    'patrol_start_sent': '等待巡逻执行器响应',
+    'patrol_start_sent': '巡逻启动命令已发送',
     'waiting_executor_response': '等待巡逻执行器响应',
     'waiting_nav2': '等待导航服务',
     'sending_goal': '发送导航目标',
@@ -436,10 +443,12 @@ class SystemSupervisorNode(Node):
         profile = profile if profile in ('navigation', 'inspection') else 'navigation'
         self.patrol_mode_state = 'starting'
         self.patrol_error = ''
-        self.log_info('start_patrol_mode: 启动巡逻依赖')
+        self.log_info('start_patrol_mode: 按手动流程启动巡逻')
 
         self.startup_step = 'starting_bringup'
         self.start_process('bringup')
+        self.startup_step = 'waiting_after_bringup'
+        time.sleep(PATROL_BRINGUP_TO_NAVIGATION_DELAY_SEC)
 
         if profile == 'inspection':
             self.startup_step = 'starting_inspection'
@@ -448,37 +457,24 @@ class SystemSupervisorNode(Node):
 
         self.startup_step = 'starting_navigation'
         self.start_process('navigation')
+        self.startup_step = 'waiting_after_navigation'
+        time.sleep(PATROL_NAVIGATION_TO_EXECUTOR_DELAY_SEC)
 
         self.startup_step = 'starting_executor'
-        self.start_process('patrol_executor')
-        self.startup_step = 'waiting_executor'
         started_at = time.time()
-        heartbeat_ok = self.wait_for_patrol_status_heartbeat(started_at, 5.0)
-        subscriber_ok = self.wait_for_patrol_command_subscriber(3.0)
+        self.start_process('patrol_executor')
+        self.startup_step = 'waiting_after_executor'
+        time.sleep(PATROL_EXECUTOR_TO_START_DELAY_SEC)
+        heartbeat_ok = self.wait_for_patrol_status_heartbeat(started_at, 8.0)
+        subscriber_ok = self.wait_for_patrol_command_subscriber(5.0)
         request_id = f"patrol_start_{int(time.time() * 1000)}"
         self.publish_patrol_command('start', request_id=request_id)
-        command_sent_at = time.time()
-        time.sleep(1.5)
+        self.startup_step = 'patrol_start_sent'
+        time.sleep(5.0)
         status_state = str((self.last_patrol_status or {}).get('state') or '')
-        navigation_phase = str(
-            (self.last_patrol_status or {}).get('navigation_phase') or ''
-        )
-        got_new_heartbeat = (
-            heartbeat_ok
-            and self.last_patrol_status_received_at >= command_sent_at
-        )
-        if status_state == 'idle' and got_new_heartbeat:
+        if status_state in ('idle', 'unavailable'):
             self.publish_patrol_command('start', request_id=request_id)
-        if status_state == 'running':
-            self.patrol_mode_state = 'running'
-            self.startup_step = {
-                'waiting_nav2': 'waiting_nav2',
-                'sending_goal': 'sending_goal',
-                'retrying_goal': 'retrying_goal',
-                'target': 'patrol_started',
-                'return_home': 'returning_home',
-            }.get(navigation_phase, 'patrol_started')
-        else:
+        if self.patrol_mode_state == 'starting':
             self.patrol_mode_state = 'command_sent'
             self.startup_step = 'patrol_start_sent'
         warnings = []
@@ -488,7 +484,7 @@ class SystemSupervisorNode(Node):
             warnings.append('未确认 /patrol/command 订阅者')
         if warnings:
             self.patrol_error = 'warning: ' + '；'.join(warnings)
-        message = '巡逻启动命令已发送，等待执行器进入运行状态'
+        message = '已按手动流程发送巡逻启动命令'
         if warnings:
             message = f"{message}（{self.patrol_error}）"
         self.set_result('start_patrol_mode', True, message)

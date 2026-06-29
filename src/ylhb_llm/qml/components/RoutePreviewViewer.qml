@@ -20,6 +20,8 @@ Rectangle {
     property real zoom: 1.0
     property real panX: 0
     property real panY: 0
+    property real pinchStartZoom: 1.0
+    property bool dragging: false
     property string imageLoadError: ""
 
     function clamp(value, low, high) {
@@ -66,13 +68,16 @@ Rectangle {
 
         Image {
             id: routePreviewImage
-            width: implicitWidth * root.zoom
-            height: implicitHeight * root.zoom
-            x: (imageViewport.width - width) / 2 + root.panX
-            y: (imageViewport.height - height) / 2 + root.panY
+            width: implicitWidth
+            height: implicitHeight
+            x: (imageViewport.width - width * root.zoom) / 2 + root.panX
+            y: (imageViewport.height - height * root.zoom) / 2 + root.panY
+            scale: root.zoom
+            transformOrigin: Item.TopLeft
             fillMode: Image.PreserveAspectFit
             asynchronous: true
-            cache: false
+            cache: true
+            smooth: !root.dragging
             sourceSize.width: 1600
             visible: root.previewOk && status === Image.Ready
             onStatusChanged: {
@@ -87,7 +92,8 @@ Rectangle {
 
         PinchArea {
             anchors.fill: parent
-            onPinchUpdated: root.setZoom(root.zoom * pinch.scale)
+            onPinchStarted: root.pinchStartZoom = root.zoom
+            onPinchUpdated: root.setZoom(root.pinchStartZoom * pinch.scale)
 
             MouseArea {
                 anchors.fill: parent
@@ -96,9 +102,12 @@ Rectangle {
                 property real lastY: 0
 
                 onPressed: {
+                    root.dragging = true
                     lastX = mouse.x
                     lastY = mouse.y
                 }
+                onReleased: root.dragging = false
+                onCanceled: root.dragging = false
                 onPositionChanged: {
                     if (!pressed) {
                         return
