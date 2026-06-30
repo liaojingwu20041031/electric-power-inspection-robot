@@ -615,15 +615,21 @@ def test_patrol_events_keep_latest_100_entries():
 
 def test_voice_status_uses_actual_ros_message_fields():
     backend = make_backend(lambda: 100.0)
+    signals = []
+    backend.voiceStatusChanged.connect(lambda: signals.append('voice'))
 
     backend.on_voice_status(SimpleNamespace(speaking=True, current_task_id='voice_session'))
 
     assert backend.state.voice_status == '播报中 voice_session'
     assert backend.systemStatus['voice_status'] == '播报中 voice_session'
+    assert signals == ['voice']
 
 
 def test_voice_session_status_updates_derived_properties():
     backend = make_backend(lambda: 100.0)
+    signals = []
+    backend.systemStatusChanged.connect(lambda: signals.append('system'))
+    backend.voiceStatusChanged.connect(lambda: signals.append('voice'))
 
     backend.update_voice_session_status({
         'enabled': True,
@@ -643,6 +649,7 @@ def test_voice_session_status_updates_derived_properties():
     assert '待唤醒' in backend.voiceStatusSummary
     assert backend.voiceActivityTone == 'wake'
     assert '等待唤醒词' in backend.voiceActivityText
+    assert signals == ['voice']
 
     backend.update_voice_session_status({'enabled': True, 'state': 'RECORDING'})
     assert backend.voiceActivityTone == 'active'
@@ -651,6 +658,18 @@ def test_voice_session_status_updates_derived_properties():
     backend.update_voice_session_status({'enabled': True, 'state': 'ASR_PROCESSING'})
     assert backend.voiceActivityTone == 'busy'
     assert backend.voiceActivityText == '正在识别'
+
+
+def test_system_status_update_still_uses_system_signal():
+    backend = make_backend(lambda: 100.0)
+    signals = []
+    backend.systemStatusChanged.connect(lambda: signals.append('system'))
+    backend.voiceStatusChanged.connect(lambda: signals.append('voice'))
+
+    backend.update_system_status({'mobile_bridge_http': 'http_ok'})
+
+    assert backend.systemStatus['mobile_bridge_http'] == 'http_ok'
+    assert signals == ['system']
 
 
 def test_send_agent_text_publishes_agent_request():

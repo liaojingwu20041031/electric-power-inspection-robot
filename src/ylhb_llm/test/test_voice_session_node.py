@@ -1,5 +1,6 @@
 import threading
 import time
+import json
 from types import SimpleNamespace
 
 from ylhb_llm.voice_session_node import VoiceSessionNode
@@ -11,6 +12,14 @@ class FakeQwen:
 
     def available(self):
         return self._available
+
+
+class FakePublisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, msg):
+        self.messages.append(msg.data)
 
 
 def response():
@@ -42,13 +51,24 @@ def make_node(api_key=True):
     node.command_vad_silence_sec = 1.25
     node.tts_tail_pause_sec = 0.9
     node.is_tts_playing = False
+    node.is_recording = False
     node.last_tts_speaking = False
     node.last_start_prompt_at = 0.0
     node.say_messages = []
     node.say = lambda task_id, text, priority=5, interrupt=False: node.say_messages.append((task_id, text, priority, interrupt))
     node.publish_count = 0
-    node.publish_status = lambda: setattr(node, 'publish_count', node.publish_count + 1)
+    node.publish_status = lambda force=False: setattr(node, 'publish_count', node.publish_count + 1)
     node.set_state = lambda state: setattr(node, 'state', state)
+    return node
+
+
+def make_status_node():
+    node = make_node()
+    node.state = 'WAIT_WAKE'
+    node.last_asr_text = ''
+    node.last_published_text = ''
+    node.last_status_payload_json = ''
+    node.status_pub = FakePublisher()
     return node
 
 
@@ -131,3 +151,32 @@ def test_debug_audio_prune_keeps_latest_files(tmp_path):
     VoiceSessionNode.prune_debug_audio(node)
 
     assert len(list(tmp_path.glob('*.wav'))) == 2
+
+
+def test_publish_status_skips_identical_payload():
+    node = make_status_node()
+
+    VoiceSessionNode.publish_status(node)
+    VoiceSessionNode.publish_status(node)
+
+    assert len(node.status_pub.messages) == 1
+
+
+def test_publish_status_sends_changed_payload():
+    node = make_status_node()
+
+    VoiceSessionNode.publish_status(node)
+    node.state = 'RECORDING'
+    VoiceSessionNode.publish_status(node)
+
+    assert len(node.status_pub.messages) == 2
+    assert json.loads(node.status_pub.messages[-1])['state'] == 'RECORDING'
+
+
+def test_publish_status_force_sends_even_when_unchanged():
+    node = make_status_node()
+
+    VoiceSessionNode.publish_status(node)
+    VoiceSessionNode.publish_status(node, force=True)
+
+    assert len(node.status_pub.messages) == 2

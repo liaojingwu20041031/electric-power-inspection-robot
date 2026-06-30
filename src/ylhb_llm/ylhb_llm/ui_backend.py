@@ -87,6 +87,7 @@ class UiBackend(QObject):
     patrolTasksChanged = pyqtSignal()
     routePreviewLoaded = pyqtSignal(dict, dict)
     agentStatusChanged = pyqtSignal()
+    voiceStatusChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -159,19 +160,19 @@ class UiBackend(QObject):
     def agentEvents(self):
         return self.state.agent_events
 
-    @pyqtProperty('QVariantMap', notify=systemStatusChanged)
+    @pyqtProperty('QVariantMap', notify=voiceStatusChanged)
     def voiceSessionStatus(self) -> Dict[str, Any]:
         return self.state.voice_session_status
 
-    @pyqtProperty(bool, notify=systemStatusChanged)
+    @pyqtProperty(bool, notify=voiceStatusChanged)
     def voiceSessionEnabled(self) -> bool:
         return bool(self.state.voice_session_status.get('enabled'))
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceSessionState(self) -> str:
         return str(self.state.voice_session_status.get('state') or 'OFF')
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceSessionStateText(self) -> str:
         labels = {
             'OFF': '关闭',
@@ -186,11 +187,11 @@ class UiBackend(QObject):
         }
         return labels.get(self.voiceSessionState, self.voiceSessionState)
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceStatusSummary(self) -> str:
         return f'{self.voiceSessionStateText} {self.voiceWaitingFor}'.strip()
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceActivityText(self) -> str:
         state = self.voiceSessionState
         if state == 'OFF':
@@ -209,7 +210,7 @@ class UiBackend(QObject):
             return '等待响应'
         return state
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceActivityTone(self) -> str:
         state = self.voiceSessionState
         if state in ('LISTENING', 'AWAKENED_IDLE', 'CONTEXT_FOLLOWUP', 'RECORDING'):
@@ -222,39 +223,39 @@ class UiBackend(QObject):
             return 'wake'
         return 'off'
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceWakePhrase(self) -> str:
         return str(self.state.voice_session_status.get('wake_phrase') or '')
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceLastAsrText(self) -> str:
         return str(self.state.voice_session_status.get('last_asr_text') or '')
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceLastPublishedText(self) -> str:
         return str(self.state.voice_session_status.get('last_published_text') or '')
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceLastError(self) -> str:
         return str(self.state.voice_session_status.get('last_error') or '')
 
-    @pyqtProperty(bool, notify=systemStatusChanged)
+    @pyqtProperty(bool, notify=voiceStatusChanged)
     def voiceRecording(self) -> bool:
         return bool(self.state.voice_session_status.get('is_recording'))
 
-    @pyqtProperty(bool, notify=systemStatusChanged)
+    @pyqtProperty(bool, notify=voiceStatusChanged)
     def voiceSpeaking(self) -> bool:
         return bool(self.state.voice_session_status.get('is_tts_playing'))
 
-    @pyqtProperty(int, notify=systemStatusChanged)
+    @pyqtProperty(int, notify=voiceStatusChanged)
     def voiceAsrFailCount(self) -> int:
         return int(self.state.voice_session_status.get('asr_fail_count') or 0)
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceWaitingFor(self) -> str:
         return str(self.state.voice_session_status.get('waiting_for') or '')
 
-    @pyqtProperty(str, notify=systemStatusChanged)
+    @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceServiceStatus(self) -> str:
         return self.state.voice_service_status
 
@@ -816,12 +817,12 @@ class UiBackend(QObject):
         self.state.voice_session_status = payload
         self.state.system_status = dict(self.state.system_status)
         self.state.system_status['voice_status'] = self.voiceStatusSummary
-        self.systemStatusChanged.emit()
+        self.voiceStatusChanged.emit()
 
     def update_voice_service_result(self, name: str, success: bool, message: str) -> None:
         self.state.voice_service_status = f'{name}: {"ok" if success else "failed"} {message}'.strip()
         self.addLog(f'语音服务: {self.state.voice_service_status}')
-        self.systemStatusChanged.emit()
+        self.voiceStatusChanged.emit()
 
     def on_task_event(self, msg: Any) -> None:
         self.addLog(f'任务事件: {msg.intent} task={msg.task_id}')
@@ -842,7 +843,7 @@ class UiBackend(QObject):
         self.state.voice_status = status
         self.state.system_status = dict(self.state.system_status)
         self.state.system_status['voice_status'] = status
-        self.systemStatusChanged.emit()
+        self.voiceStatusChanged.emit()
 
     def on_localized_objects(self, text: str) -> None:
         self.state.localized_objects = text[:4000]

@@ -190,6 +190,7 @@ class VoiceSessionNode(Node):
         self.last_say_text = ''
         self.last_say_at = 0.0
         self.last_recording_stats = {}
+        self.last_status_payload_json = ''
 
         self.worker = threading.Thread(target=self.session_loop, daemon=True)
         self.worker.start()
@@ -231,7 +232,7 @@ class VoiceSessionNode(Node):
             self.set_state('WAIT_WAKE')
         self.say('voice_session', f'语音模式已开启，请先说{self.wake_phrase}。', priority=6)
         self.last_start_prompt_at = time.monotonic()
-        self.publish_status()
+        self.publish_status(force=True)
         response.success = True
         response.message = '语音模式已开启。'
         return response
@@ -285,6 +286,7 @@ class VoiceSessionNode(Node):
         if self.last_logged_state != state:
             self.get_logger().info(f'连续语音状态切换：{state}')
             self.last_logged_state = state
+        self.publish_status(force=True)
 
     def session_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -565,7 +567,7 @@ class VoiceSessionNode(Node):
             if not command:
                 self.set_state('AWAKENED_IDLE')
                 self.say('voice_session', '我在，请说。', priority=6)
-                self.publish_status()
+                self.publish_status(force=True)
                 return
         else:
             self.last_active_at = time.monotonic()
@@ -623,7 +625,7 @@ class VoiceSessionNode(Node):
             self.in_context_followup = False
         if say:
             self.say('voice_session', text, priority=6, interrupt=True)
-        self.publish_status()
+        self.publish_status(force=True)
 
     def has_wake_phrase(self, text: str) -> bool:
         return any(alias and alias in text for alias in self.wake_aliases)
@@ -665,7 +667,7 @@ class VoiceSessionNode(Node):
         msg.text = text
         self.say_pub.publish(msg)
 
-    def publish_status(self) -> None:
+    def publish_status(self, force: bool = False) -> None:
         payload = {
             'enabled': bool(self.session_enabled),
             'state': self.state,
@@ -690,8 +692,12 @@ class VoiceSessionNode(Node):
             'last_target': '',
             'last_confidence': 0.0,
             'last_error': self.last_error,
-            'last_update_time': time.time(),
         }
+        payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if not force and payload_json == self.last_status_payload_json:
+            return
+        self.last_status_payload_json = payload_json
+        payload['last_update_time'] = time.time()
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.status_pub.publish(msg)
