@@ -15,13 +15,19 @@ class RunOnJetsonTest(unittest.TestCase):
             fake_ros2 = Path(tmp) / 'ros2'
             fake_ros2.write_text(
                 '#!/usr/bin/env bash\n'
+                'printf "XAUTHORITY=%s\\n" "${XAUTHORITY:-}"\n'
                 'printf "%s\\n" "$@"\n',
                 encoding='utf-8',
             )
             fake_ros2.chmod(0o755)
+            fake_home = Path(tmp) / 'home'
+            fake_home.mkdir()
+            fake_xauthority = fake_home / '.Xauthority'
+            fake_xauthority.write_text('cookie', encoding='utf-8')
             env = os.environ.copy()
             env['PATH'] = f'{tmp}:{env["PATH"]}'
             env['WS_DIR'] = str(REPO_ROOT)
+            env['HOME'] = str(fake_home)
             env['DISPLAY'] = 'localhost:10.0'
             env['ENABLE_CHINESE_IME'] = 'false'
             return subprocess.run(
@@ -44,7 +50,9 @@ class RunOnJetsonTest(unittest.TestCase):
         self.assertIn('enable_voice_session:=true', result.stdout)
         self.assertIn('enable_tts:=true', result.stdout)
         self.assertIn('enable_capture_voice:=false', result.stdout)
-        self.assertIn('display:=:0', result.stdout)
+        self.assertIn('display:=:', result.stdout)
+        self.assertIn('xauthority:=', result.stdout)
+        self.assertIn('XAUTHORITY=', result.stdout)
 
     def test_inspection_rejects_disabling_voice_session_or_tts(self):
         for disabled_arg in ('enable_voice:=false', 'enable_voice_session:=false', 'enable_tts:=false'):

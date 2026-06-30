@@ -11,18 +11,16 @@
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
-          <Sequence name="ClearLocalCostmapAndSmallBackup">
+          <Sequence name="ClearLocalCostmapAndWait">
             <ClearEntireCostmap name="ClearLocalCostmap" service_name="local_costmap/clear_entirely_local_costmap"/>
-            <BackUp backup_dist="0.08" backup_speed="0.03"/>
-            <Wait wait_duration="0.2"/>
+            <Wait wait_duration="0.5"/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="SmallBackupRecovery">
         <GoalUpdated/>
-        <Sequence name="SmallBackupAndWait">
-          <BackUp backup_dist="0.08" backup_speed="0.03"/>
-          <Wait wait_duration="0.2"/>
+        <Sequence name="WaitOnly">
+          <Wait wait_duration="0.5"/>
         </Sequence>
       </ReactiveFallback>
     </RecoveryNode>

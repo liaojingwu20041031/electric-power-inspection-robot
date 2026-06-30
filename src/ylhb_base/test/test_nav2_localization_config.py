@@ -175,10 +175,12 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     assert controller["min_theta_velocity_threshold"] == 0.001
 
     assert follow_path["max_vel_x"] == 0.12
+    assert follow_path["min_vel_x"] == 0.0
     assert follow_path["max_speed_xy"] == 0.12
-    assert follow_path["max_vel_theta"] == 0.30
-    assert follow_path["vx_samples"] == 20
-    assert follow_path["vtheta_samples"] == 20
+    assert follow_path["max_vel_theta"] == 0.40
+    assert follow_path["min_speed_theta"] == 0.18
+    assert follow_path["vx_samples"] == 4
+    assert follow_path["vtheta_samples"] == 5
     assert follow_path["sim_time"] == 1.7
     assert follow_path["linear_granularity"] == 0.05
     assert follow_path["angular_granularity"] == 0.025
@@ -201,9 +203,10 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     assert follow_path["GoalAlign.scale"] == 8.0
     assert follow_path["GoalAlign.forward_point_distance"] == 0.1
     assert follow_path["GoalDist.scale"] == 8.0
+    assert follow_path["RotateToGoal.lookahead_time"] == 0.4
 
-    assert smoother["max_velocity"] == [0.12, 0.0, 0.30]
-    assert smoother["min_velocity"] == [-0.05, 0.0, -0.30]
+    assert smoother["max_velocity"] == [0.12, 0.0, 0.40]
+    assert smoother["min_velocity"] == [-0.05, 0.0, -0.40]
     assert smoother["max_accel"] == [
         follow_path["acc_lim_x"],
         follow_path["acc_lim_y"],
@@ -225,8 +228,9 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
 
     assert progress["plugin"] == "nav2_controller::PoseProgressChecker"
     assert progress["required_movement_radius"] == 0.05
-    assert progress["required_movement_angle"] == 0.25
+    assert progress["required_movement_angle"] == 0.12
     assert progress["movement_time_allowance"] == 12.0
+    assert behavior_tree.find(".//BackUp") is None
 
     assert follow_path_recovery is not None
     assert follow_path_recovery.attrib["number_of_retries"] == "1"
@@ -234,19 +238,13 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
     assert [child.tag for child in follow_path_children] == ["FollowPath", "Sequence"]
 
     local_recovery = follow_path_children[1]
-    assert local_recovery.attrib["name"] == "ClearLocalCostmapAndSmallBackup"
+    assert local_recovery.attrib["name"] == "ClearLocalCostmapAndWait"
     local_recovery_children = list(local_recovery)
     assert [child.tag for child in local_recovery_children] == [
         "ClearEntireCostmap",
-        "BackUp",
         "Wait",
     ]
-
-    local_backup = local_recovery_children[1]
-    assert local_backup.attrib["backup_dist"] == "0.08"
-    assert local_backup.attrib["backup_speed"] == "0.03"
-    assert "time_allowance" not in local_backup.attrib
-    assert local_recovery_children[2].attrib["wait_duration"] == "0.2"
+    assert local_recovery_children[1].attrib["wait_duration"] == "0.5"
 
     assert outer_recovery is not None
     outer_recovery_children = list(outer_recovery)
@@ -255,15 +253,10 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
         "Sequence",
     ]
     outer_sequence = outer_recovery_children[1]
-    assert outer_sequence.attrib["name"] == "SmallBackupAndWait"
+    assert outer_sequence.attrib["name"] == "WaitOnly"
     outer_sequence_children = list(outer_sequence)
-    assert [child.tag for child in outer_sequence_children] == ["BackUp", "Wait"]
-
-    outer_backup = outer_sequence_children[0]
-    assert outer_backup.attrib["backup_dist"] == "0.08"
-    assert outer_backup.attrib["backup_speed"] == "0.03"
-    assert "time_allowance" not in outer_backup.attrib
-    assert outer_sequence_children[1].attrib["wait_duration"] == "0.2"
+    assert [child.tag for child in outer_sequence_children] == ["Wait"]
+    assert outer_sequence_children[0].attrib["wait_duration"] == "0.5"
 
 
 def test_smac_planner_avoids_unknown_and_prefers_centered_costs():

@@ -11,6 +11,7 @@ log/
 *.swp
 *.swo
 *~
+*.bak
 
 # Python cache and test artifacts
 __pycache__/

@@ -26,6 +26,12 @@ class FakePublisher:
         self.messages.append(msg)
 
 
+def allow_patrol_start_gates(node):
+    node.wait_for_map_to_odom = Mock(return_value=True)
+    node.wait_for_nav2_active_ready = Mock(return_value=True)
+    node.log_patrol_start_readiness = Mock()
+
+
 @pytest.fixture(autouse=True)
 def skip_supervisor_sleeps(monkeypatch):
     monkeypatch.setattr(system_supervisor_node.time, 'sleep', lambda _sec: None)
@@ -69,12 +75,41 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
     node.log_info = Mock()
     sequence = []
     node.wait_for_core_sensors = Mock()
-    node.wait_for_navigation_ready = Mock()
+    node.wait_for_navigation_ready = Mock(return_value=True)
     node.wait_for_patrol_executor_ready = Mock()
-    node.wait_for_initial_pose_published = Mock()
+    node.wait_for_initial_pose_published = Mock(return_value=True)
     node.wait_for_nav2_action_ready = Mock()
     node.wait_for_patrol_status = Mock()
-    node.start_process.side_effect = lambda name: sequence.append(f'start_{name}')
+    allow_patrol_start_gates(node)
+
+    def fake_start_process(name):
+        sequence.append(f'start_{name}')
+
+    def fake_wait_navigation_ready(_timeout):
+        sequence.append('wait_navigation_ready')
+        return True
+
+    def fake_wait_initial_pose(_timeout):
+        sequence.append('wait_initial_pose')
+        return True
+
+    def fake_wait_map_to_odom(_timeout):
+        sequence.append('wait_map_to_odom')
+        return True
+
+    def fake_wait_nav2_active(_timeout):
+        sequence.append('wait_nav2_active')
+        return True
+
+    node.start_process.side_effect = fake_start_process
+    node.wait_for_navigation_ready.side_effect = fake_wait_navigation_ready
+    node.wait_for_initial_pose_published.side_effect = fake_wait_initial_pose
+    node.wait_for_map_to_odom.side_effect = fake_wait_map_to_odom
+    node.wait_for_nav2_active_ready.side_effect = fake_wait_nav2_active
+    node.log_patrol_start_readiness.side_effect = lambda: sequence.append('log_start_readiness')
+    node.publish_patrol_command.side_effect = lambda command, request_id='': sequence.append(
+        f'publish_{command}'
+    )
     sleeps = []
 
     def fake_sleep(sec):
@@ -91,14 +126,23 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
         'sleep_3',
         'start_navigation',
         'sleep_20',
+        'wait_navigation_ready',
         'start_patrol_executor',
         'sleep_6',
+        'wait_initial_pose',
+        'wait_map_to_odom',
+        'wait_nav2_active',
+        'log_start_readiness',
+        'publish_start',
         'sleep_5',
+        'publish_start',
     ]
     node.wait_for_core_sensors.assert_not_called()
-    node.wait_for_navigation_ready.assert_not_called()
+    node.wait_for_navigation_ready.assert_called_once_with(35.0)
     node.wait_for_patrol_executor_ready.assert_not_called()
-    node.wait_for_initial_pose_published.assert_not_called()
+    node.wait_for_initial_pose_published.assert_called_once_with(8.0)
+    node.wait_for_map_to_odom.assert_called_once_with(10.0)
+    node.wait_for_nav2_active_ready.assert_called_once_with(25.0)
     node.wait_for_nav2_action_ready.assert_not_called()
     node.wait_for_patrol_status.assert_not_called()
     node.wait_for_patrol_status_heartbeat.assert_called_once_with(100.0, 8.0)
@@ -119,6 +163,8 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
     node.last_patrol_status = {'state': 'idle'}
     node.last_patrol_status_received_at = 100.0
     node.set_result = Mock()
@@ -129,6 +175,7 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
     node.wait_for_initial_pose_published = Mock(return_value=True)
     node.wait_for_nav2_action_ready = Mock(return_value=True)
     node.wait_for_patrol_status = Mock(return_value='running')
+    allow_patrol_start_gates(node)
 
     node.handle_command('start_patrol_mode', {'profile': 'inspection'})
 
@@ -142,7 +189,7 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
     assert node.publish_patrol_command.call_count == 2
 
 
-def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
+def test_start_patrol_mode_gates_start_on_nav2_lifecycle_not_action_server():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
@@ -157,6 +204,7 @@ def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
     node.wait_for_patrol_executor_ready = Mock(return_value=True)
     node.wait_for_initial_pose_published = Mock(return_value=True)
     node.wait_for_nav2_action_ready = Mock(return_value=False)
+    allow_patrol_start_gates(node)
 
     node.handle_command('start_patrol_mode', {})
 
@@ -165,13 +213,45 @@ def test_start_patrol_mode_does_not_gate_executor_on_nav2_action():
         'navigation',
         'patrol_executor',
     ]
-    node.wait_for_initial_pose_published.assert_not_called()
+    node.wait_for_initial_pose_published.assert_called_once_with(8.0)
+    node.wait_for_map_to_odom.assert_called_once_with(10.0)
+    node.wait_for_nav2_active_ready.assert_called_once_with(25.0)
     node.wait_for_nav2_action_ready.assert_not_called()
     assert node.publish_patrol_command.call_args_list[-1].args[0] == 'start'
     node.set_result.assert_called_with(
         'start_patrol_mode',
         True,
         '已按手动流程发送巡逻启动命令',
+    )
+
+
+def test_start_patrol_mode_does_not_publish_start_before_nav2_active():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.last_patrol_status = {'state': 'idle'}
+    node.last_patrol_status_received_at = 100.0
+    node.set_result = Mock()
+    node.log_info = Mock()
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_patrol_executor_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
+    node.wait_for_map_to_odom = Mock(return_value=True)
+    node.wait_for_nav2_active_ready = Mock(return_value=False)
+    node.log_patrol_start_readiness = Mock()
+    node.wait_for_nav2_action_ready = Mock(return_value=True)
+
+    node.handle_command('start_patrol_mode', {})
+
+    node.wait_for_nav2_action_ready.assert_not_called()
+    node.publish_patrol_command.assert_not_called()
+    node.set_result.assert_called_with(
+        'start_patrol_mode',
+        False,
+        '巡逻启动门控失败: 未确认 Nav2 lifecycle active',
     )
 
 
@@ -191,6 +271,7 @@ def test_start_patrol_mode_does_not_wait_for_patrol_status_but_forwards_start():
     node.wait_for_initial_pose_published = Mock(return_value=True)
     node.wait_for_nav2_action_ready = Mock(return_value=True)
     node.wait_for_patrol_status = Mock(return_value='failed')
+    allow_patrol_start_gates(node)
 
     node.handle_command('start_patrol_mode', {})
 
@@ -247,10 +328,13 @@ def test_start_patrol_reuses_running_processes_and_republishes_start():
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
     node.last_patrol_status = {'state': 'idle'}
     node.last_patrol_status_received_at = 100.0
     node.set_result = Mock()
     node.log_info = Mock()
+    allow_patrol_start_gates(node)
 
     node.handle_command('start_patrol_mode', {})
 
@@ -268,9 +352,12 @@ def test_start_patrol_mode_warns_without_subscriber_or_heartbeat_and_never_sets_
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=False)
     node.wait_for_patrol_status_heartbeat = Mock(return_value=False)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
     node.last_patrol_status = {}
     node.set_result = Mock()
     node.log_info = Mock()
+    allow_patrol_start_gates(node)
 
     node.handle_command('start_patrol_mode', {})
 
@@ -327,10 +414,13 @@ def test_start_patrol_republishes_once_when_executor_still_idle_or_unavailable(m
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
     node.last_patrol_status = {'state': 'idle'}
     node.last_patrol_status_received_at = 100.0
     node.set_result = Mock()
     node.log_info = Mock()
+    allow_patrol_start_gates(node)
     monkeypatch.setattr(system_supervisor_node.time, 'time', lambda: 100.0)
     monkeypatch.setattr(system_supervisor_node.time, 'sleep', lambda _sec: None)
 
@@ -350,8 +440,11 @@ def test_start_patrol_does_not_republish_for_terminal_or_active_states(monkeypat
     node.publish_patrol_command = Mock()
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
     node.set_result = Mock()
     node.log_info = Mock()
+    allow_patrol_start_gates(node)
     monkeypatch.setattr(system_supervisor_node.time, 'time', lambda: 100.0)
     monkeypatch.setattr(system_supervisor_node.time, 'sleep', lambda _sec: None)
 

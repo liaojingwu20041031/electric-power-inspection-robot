@@ -153,12 +153,12 @@ controller_server:
       # Nav2 输出线速度上限，保持低速导航。
       max_vel_x: 0.12
       max_vel_y: 0.0
-      # Nav2 输出角速度上限，抑制失败时大角速度原地旋转。
-      max_vel_theta: 0.30
+      # Nav2 输出角速度上限，给大角度掉头留出有效角速度。
+      max_vel_theta: 0.40
       min_speed_xy: 0.0
       # 平面合速度上限，与 max_vel_x 保持一致。
       max_speed_xy: 0.12
-      min_speed_theta: 0.0
+      min_speed_theta: 0.18
       # 加速度/减速度限制，避免 /cmd_vel 突变。
       acc_lim_x: 0.30
       acc_lim_y: 0.0
@@ -166,10 +166,10 @@ controller_server:
       decel_lim_x: -0.30
       decel_lim_y: 0.0
       decel_lim_theta: -0.50
-      # 速度采样数量；越高越细，但计算更重。
-      vx_samples: 20
+      # 速度采样数量；4 个点保留零速，并避开过多低于底盘死区的小速度。
+      vx_samples: 4
       vy_samples: 5
-      vtheta_samples: 20
+      vtheta_samples: 5
       # DWB 前向仿真时间和采样分辨率。
       sim_time: 1.7
       linear_granularity: 0.05
@@ -193,14 +193,14 @@ controller_server:
       GoalDist.scale: 8.0
       RotateToGoal.scale: 20.0
       RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0
+      RotateToGoal.lookahead_time: 0.4
 
     progress_checker:
       # 进度检查器：平移或转向任一满足阈值都算进展，避免原地起步转向被误判卡住。
-      # 12 秒保留真实卡住时的快速恢复，不把等待窗口放宽到 30 秒。
+      # 12 秒保留真实卡住时的恢复，同时给低速起步留出位移时间。
       plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.05
-      required_movement_angle: 0.25
+      required_movement_angle: 0.12
       movement_time_allowance: 12.0
 
     goal_checker:
@@ -369,9 +369,9 @@ velocity_smoother:
     # 开环平滑，不等待里程计反馈闭环修正。
     feedback: "OPEN_LOOP"
     # 平滑后的最大速度：[x, y, theta]，差速底盘 y 保持 0。
-    max_velocity: [0.12, 0.0, 0.30]
+    max_velocity: [0.12, 0.0, 0.40]
     # 允许很小倒车速度，角速度正负对称限幅。
-    min_velocity: [-0.05, 0.0, -0.30]
+    min_velocity: [-0.05, 0.0, -0.40]
     # 平滑器加速度/减速度限制，与 DWB 限制保持一致。
     max_accel: [0.30, 0.0, 0.50]
     max_decel: [-0.30, 0.0, -0.50]

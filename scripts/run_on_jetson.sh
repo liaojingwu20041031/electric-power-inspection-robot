@@ -22,9 +22,6 @@ disable_display_sleep() {
     echo "WARN: xset not found; cannot disable display sleep automatically." >&2
     return 0
   fi
-  if [ -z "${XAUTHORITY:-}" ] && [ -f "${HOME}/.Xauthority" ]; then
-    export XAUTHORITY="${HOME}/.Xauthority"
-  fi
   if ! xset q >/dev/null 2>&1; then
     echo "WARN: cannot access DISPLAY=${DISPLAY}; skip display sleep disable." >&2
     return 0
@@ -32,6 +29,46 @@ disable_display_sleep() {
   xset s off >/dev/null 2>&1 || true
   xset s noblank >/dev/null 2>&1 || true
   xset -dpms >/dev/null 2>&1 || true
+}
+
+set_local_xauthority() {
+  if [ -n "${XAUTHORITY:-}" ]; then
+    return 0
+  fi
+  local uid
+  uid="$(id -u)"
+  local candidate
+  for candidate in "/run/user/${uid}/gdm/Xauthority" "${HOME}/.Xauthority"; do
+    if [ -r "${candidate}" ]; then
+      export XAUTHORITY="${candidate}"
+      return 0
+    fi
+  done
+}
+
+find_local_display() {
+  local socket
+  for socket in /tmp/.X11-unix/X*; do
+    if [ -S "${socket}" ]; then
+      printf ':%s\n' "${socket##*X}"
+      return 0
+    fi
+  done
+  printf ':0\n'
+}
+
+normalize_local_display() {
+  if [ "${DISPLAY}" = "localhost:10.0" ] || [[ "${DISPLAY}" == localhost:* ]]; then
+    export DISPLAY="$(find_local_display)"
+    return 0
+  fi
+  if [[ "${DISPLAY}" == :* ]]; then
+    local display_number="${DISPLAY#:}"
+    display_number="${display_number%%.*}"
+    if [ ! -S "/tmp/.X11-unix/X${display_number}" ]; then
+      export DISPLAY="$(find_local_display)"
+    fi
+  fi
 }
 
 start_chinese_ime() {
@@ -104,9 +141,8 @@ case "${MODE}" in
       esac
     done
     export DISPLAY="${DISPLAY:-:0}"
-    if [ "${DISPLAY}" = "localhost:10.0" ] || [[ "${DISPLAY}" == localhost:* ]]; then
-      export DISPLAY=":0"
-    fi
+    normalize_local_display
+    set_local_xauthority
     disable_display_sleep
     start_chinese_ime
     exec ros2 launch ylhb_llm llm.launch.py \
@@ -121,6 +157,7 @@ case "${MODE}" in
       audio_output_device:=default \
       tts_voice:=Serena \
       display:="${DISPLAY}" \
+      xauthority:="${XAUTHORITY:-}" \
       "$@"
     ;;
   teleop)

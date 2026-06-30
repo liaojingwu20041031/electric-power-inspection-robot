@@ -27,6 +27,9 @@ STATUS_TEXT = {
     'waiting_after_navigation': '导航启动后等待',
     'waiting_after_executor': '巡逻执行器启动后等待',
     'patrol_start_sent': '巡逻启动命令已发送',
+    'waiting_executor_response': '等待巡逻执行器响应',
+    'waiting_map_to_odom': '等待 map->odom TF',
+    'waiting_nav2_active': '等待 Nav2 lifecycle active',
     'sending_goal': '发送导航目标',
     'retrying_goal': '导航目标重试',
     'target': '前往检查点',
@@ -43,6 +46,33 @@ STATUS_TEXT = {
     'ready': '准备就绪',
     'fault': '故障',
     'mapping': '建图中',
+    'patrol_failed': '巡逻启动失败',
+}
+
+PATROL_ACTIVE_STATES = {
+    'waiting_initial_pose',
+    'waiting_nav2',
+    'waiting_localization',
+    'running',
+    'paused',
+    'returning_home',
+    'waiting_loop',
+    'canceling',
+}
+
+PATROL_NAVIGATION_ACTIVE_PHASES = {
+    'waiting_nav2',
+    'sending_goal',
+    'retrying_goal',
+    'target',
+    'return_home',
+}
+
+PATROL_TERMINAL_LABELS = {
+    'succeeded': '已完成',
+    'failed': '失败',
+    'canceled': '已取消',
+    'cancelled': '已取消',
 }
 
 
@@ -210,6 +240,65 @@ class UiBackend(QObject):
             or self.state.system_status.get('patrol_executor') == 'running'
             or self._has_patrol_status
         )
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def patrolStarting(self) -> bool:
+        return self.patrolModeState in ('starting', 'command_sent')
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def patrolActive(self) -> bool:
+        return (
+            str(self.state.patrol_status.get('state') or '') in PATROL_ACTIVE_STATES
+            or self.patrolModeState == 'running'
+        )
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def patrolCanStart(self) -> bool:
+        return not self.patrolStarting and not self.patrolActive
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def patrolCanPause(self) -> bool:
+        return str(self.state.patrol_status.get('state') or '') in (
+            'running',
+            'returning_home',
+            'waiting_loop',
+        )
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def patrolCanResume(self) -> bool:
+        return str(self.state.patrol_status.get('state') or '') == 'paused'
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def patrolCanCancel(self) -> bool:
+        status = self.state.patrol_status
+        return (
+            str(status.get('state') or '') in (
+                'running',
+                'paused',
+                'returning_home',
+                'waiting_loop',
+                'canceling',
+            )
+            or str(status.get('navigation_phase') or '') in PATROL_NAVIGATION_ACTIVE_PHASES
+        )
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def patrolStateLabel(self) -> str:
+        error = self.patrolError
+        if error:
+            return f'异常: {error}'
+        if self.patrolStarting:
+            return '启动中: ' + str(
+                self.state.system_status.get('startup_step_label')
+                or self.localizedStatus(self.patrolStartupStep)
+                or '准备依赖'
+            )
+        if self.patrolActive:
+            return '运行中: ' + (self.patrolProgressLabel or self.patrolStatusText)
+        state = str(self.state.patrol_status.get('state') or self.patrolModeState)
+        if state in PATROL_TERMINAL_LABELS:
+            return PATROL_TERMINAL_LABELS[state]
+        return '就绪: 可启动巡逻' if self.patrolReady else '待命: 等待巡逻依赖'
 
     @pyqtProperty(str, notify=patrolStatusChanged)
     def patrolProgressLabel(self) -> str:

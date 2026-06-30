@@ -172,6 +172,68 @@ def test_patrol_readiness_properties_follow_system_status():
     assert backend.patrolControlsEnabled is True
 
 
+def test_patrol_display_properties_follow_starting_active_and_terminal_states():
+    backend = make_backend(lambda: 100.0)
+
+    backend.update_system_status({
+        'patrol_mode_state': 'starting',
+        'startup_step': 'waiting_executor_response',
+        'startup_step_label': '等待巡逻执行器响应',
+        'patrol_readiness': {},
+    })
+    assert backend.patrolStarting is True
+    assert backend.patrolActive is False
+    assert backend.patrolCanStart is False
+    assert backend.patrolStateLabel == '启动中: 等待巡逻执行器响应'
+
+    backend.update_system_status({'patrol_mode_state': 'running', 'patrol_readiness': {}})
+    backend.update_patrol_status({'state': 'running', 'target_index': 0, 'target_count': 2})
+    assert backend.patrolStarting is False
+    assert backend.patrolActive is True
+    assert backend.patrolCanStart is False
+    assert backend.patrolCanPause is True
+    assert backend.patrolCanResume is False
+    assert backend.patrolCanCancel is True
+    assert backend.patrolStateLabel == '运行中: 第 1 / 2 个检查点'
+
+    backend.update_system_status({'patrol_mode_state': 'failed', 'patrol_readiness': {}})
+    backend.update_patrol_status({'state': 'failed'})
+    assert backend.patrolActive is False
+    assert backend.patrolCanStart is True
+    assert backend.patrolStateLabel == '失败'
+
+    backend.update_system_status({'patrol_mode_state': 'succeeded', 'patrol_readiness': {}})
+    backend.update_patrol_status({'state': 'succeeded'})
+    assert backend.patrolStateLabel == '已完成'
+
+    backend.update_system_status({'patrol_mode_state': 'canceled', 'patrol_readiness': {}})
+    backend.update_patrol_status({'state': 'canceled'})
+    assert backend.patrolStateLabel == '已取消'
+
+
+def test_patrol_display_properties_do_not_publish_commands():
+    backend = make_backend(lambda: 100.0)
+    backend.update_system_status({
+        'patrol_mode_state': 'command_sent',
+        'startup_step': 'patrol_start_sent',
+        'startup_step_label': '巡逻启动命令已发送',
+    })
+    backend.update_patrol_status({'state': 'paused'})
+
+    _ = (
+        backend.patrolStarting,
+        backend.patrolActive,
+        backend.patrolCanStart,
+        backend.patrolCanPause,
+        backend.patrolCanResume,
+        backend.patrolCanCancel,
+        backend.patrolStateLabel,
+    )
+
+    assert backend.bridge.system_commands == []
+    assert backend.bridge.patrol_commands == []
+
+
 def test_patrol_controls_enabled_when_executor_running_or_status_seen():
     backend = make_backend(lambda: 100.0)
 

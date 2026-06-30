@@ -9,20 +9,7 @@ ScrollView {
     clip: true
     contentWidth: availableWidth
     property var readiness: backend.systemStatus.patrol_readiness || ({})
-    property bool patrolCommandSent: backend.patrolModeState === "command_sent" || backend.patrolModeState === "starting"
-    property bool patrolRunning: backend.patrolStatus.state === "waiting_initial_pose"
-        || backend.patrolStatus.state === "waiting_nav2"
-        || backend.patrolStatus.state === "waiting_localization"
-        || backend.patrolStatus.state === "running"
-        || backend.patrolStatus.state === "paused"
-        || backend.patrolStatus.state === "returning_home"
-        || backend.patrolStatus.state === "waiting_loop"
-        || backend.patrolStatus.state === "canceling"
-    property bool navigationActive: backend.patrolStatus.navigation_phase === "waiting_nav2"
-        || backend.patrolStatus.navigation_phase === "sending_goal"
-        || backend.patrolStatus.navigation_phase === "retrying_goal"
-        || backend.patrolStatus.navigation_phase === "target"
-        || backend.patrolStatus.navigation_phase === "return_home"
+    property bool diagnosticsVisible: false
     property bool inspectionProfile: backend.patrolStartProfile === "inspection"
     property int startupStageIndex: stageIndex(backend.systemStatus.startup_step || "")
     property var readinessItems: [
@@ -38,7 +25,11 @@ ScrollView {
         { "label": "等待导航稳定", "step": "waiting_after_navigation" },
         { "label": "启动巡逻执行器", "step": "starting_executor" },
         { "label": "等待执行器发布初始位姿", "step": "waiting_after_executor" },
+        { "label": "等待 map->odom", "step": "waiting_map_to_odom" },
+        { "label": "等待 Nav2 active", "step": "waiting_nav2_active" },
         { "label": "发送巡逻 start", "step": "patrol_start_sent" },
+        { "label": "等待执行器响应", "step": "waiting_executor_response" },
+        { "label": "巡逻启动失败", "step": "patrol_failed" },
         { "label": "巡逻运行", "step": "patrol_started" }
     ]
 
@@ -52,7 +43,7 @@ ScrollView {
     }
 
     function stageMark(index) {
-        if (root.patrolRunning && root.startupStages[index].step === "patrol_started") {
+        if (backend.patrolActive && root.startupStages[index].step === "patrol_started") {
             return "当前"
         }
         if (root.startupStageIndex < 0) {
@@ -64,37 +55,14 @@ ScrollView {
         return index === root.startupStageIndex ? "当前" : "等待"
     }
 
-    function patrolStateLabel() {
-        var state = backend.patrolStatus.state || ""
-        if (backend.patrolError.length > 0) {
-            return "异常: " + backend.patrolError
-        }
-        if (root.patrolCommandSent) {
-            return "启动中: " + (backend.systemStatus.startup_step_label || "准备依赖")
-        }
-        if (root.patrolRunning) {
-            return "运行中: " + (backend.patrolProgressLabel || backend.patrolStatusText)
-        }
-        if (state === "succeeded") {
-            return "已完成"
-        }
-        if (state === "failed") {
-            return "失败"
-        }
-        if (state === "canceled" || state === "cancelled") {
-            return "已取消"
-        }
-        return backend.patrolReady ? "就绪: 可启动巡逻" : "待命: 等待巡逻依赖"
-    }
-
     function patrolStateColor() {
         if (backend.patrolError.length > 0 || backend.patrolStatus.state === "failed") {
             return Theme.danger
         }
-        if (root.patrolRunning || backend.patrolStatus.state === "succeeded") {
+        if (backend.patrolActive || backend.patrolStatus.state === "succeeded") {
             return Theme.success
         }
-        return root.patrolCommandSent ? Theme.primary : Theme.warning
+        return backend.patrolStarting ? Theme.primary : Theme.warning
     }
 
     ColumnLayout {
@@ -129,12 +97,12 @@ ScrollView {
                 StatusCard {
                     Layout.fillWidth: true
                     title: "巡逻状态"
-                    value: root.patrolStateLabel()
+                    value: backend.patrolStateLabel
                     statusColor: root.patrolStateColor()
                 }
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: root.availableWidth >= 900 ? 148 : 224
+                    Layout.preferredHeight: root.availableWidth >= 900 ? 188 : 284
                     radius: 8
                     color: Theme.surface
                     border.color: Theme.border
@@ -184,13 +152,15 @@ ScrollView {
                             }
                         }
                         Label {
-                            text: root.patrolCommandSent
+                            text: backend.patrolStarting
                                 ? "当前按手动启动流程执行，导航启动后会等待约 20 秒，请不要重复点击。"
                                 : (backend.patrolStartupStep === "waiting_nav2"
                                 ? "等待 Nav2 导航服务启动完成。"
                                 : (backend.patrolStartupStep === "retrying_goal"
                                     ? "导航目标被拒绝，正在重试。"
-                                    : ""))
+                                    : (root.startupStageIndex < 0 && backend.patrolStartupStep.length > 0
+                                        ? (backend.systemStatus.startup_step_label || backend.patrolStartupStep)
+                                        : "")))
                             color: Theme.warning
                             visible: text.length > 0
                             Layout.fillWidth: true
@@ -250,11 +220,24 @@ ScrollView {
                     Layout.fillWidth: true
                     title: "当前检查点"
                     value: backend.patrolProgressLabel || "未开始"
-                    statusColor: root.patrolRunning ? Theme.success : Theme.muted
+                    statusColor: backend.patrolActive ? Theme.success : Theme.muted
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        text: "诊断信息"
+                        color: Theme.muted
+                        Layout.fillWidth: true
+                    }
+                    Switch {
+                        checked: root.diagnosticsVisible
+                        onToggled: root.diagnosticsVisible = checked
+                    }
                 }
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 184
+                    Layout.preferredHeight: root.diagnosticsVisible ? 184 : 0
+                    visible: root.diagnosticsVisible
                     radius: 8
                     color: Theme.surface
                     border.color: Theme.border
@@ -324,41 +307,41 @@ ScrollView {
             Item { Layout.fillWidth: true }
         }
 
-        RowLayout {
+        GridLayout {
             Layout.fillWidth: true
+            columns: root.availableWidth >= 1100 ? 4 : (root.availableWidth >= 700 ? 3 : 2)
+            columnSpacing: 12
+            rowSpacing: 10
             WarmButton {
-                text: root.patrolCommandSent
+                text: backend.patrolStarting
                     ? ("启动中: " + (backend.systemStatus.startup_step_label || "准备中"))
                     : "一键启动巡逻模式"
-                enabled: !root.patrolCommandSent && !root.patrolRunning
+                enabled: backend.patrolCanStart
                 Layout.fillWidth: true
+                Layout.preferredHeight: 44
                 onClicked: backend.startPatrolMode()
             }
             WarmButton {
                 text: "暂停巡逻"
-                enabled: backend.patrolStatus.state === "running"
-                    || backend.patrolStatus.state === "returning_home"
-                    || backend.patrolStatus.state === "waiting_loop"
+                enabled: backend.patrolCanPause
                 buttonColor: Theme.warning
                 Layout.fillWidth: true
+                Layout.preferredHeight: 44
                 onClicked: backend.sendSystemCommand("pause_patrol")
             }
             WarmButton {
                 text: "继续巡逻"
-                enabled: backend.patrolStatus.state === "paused"
+                enabled: backend.patrolCanResume
                 Layout.fillWidth: true
+                Layout.preferredHeight: 44
                 onClicked: backend.sendSystemCommand("resume_patrol")
             }
             WarmButton {
                 text: "取消巡逻"
-                enabled: backend.patrolStatus.state === "running"
-                    || backend.patrolStatus.state === "paused"
-                    || backend.patrolStatus.state === "returning_home"
-                    || backend.patrolStatus.state === "waiting_loop"
-                    || backend.patrolStatus.state === "canceling"
-                    || root.navigationActive
+                enabled: backend.patrolCanCancel
                 buttonColor: Theme.danger
                 Layout.fillWidth: true
+                Layout.preferredHeight: 44
                 onClicked: backend.sendSystemCommand("cancel_patrol")
             }
             WarmButton {
@@ -366,6 +349,7 @@ ScrollView {
                 enabled: backend.systemStatus.navigation === "running"
                 buttonColor: Theme.danger
                 Layout.fillWidth: true
+                Layout.preferredHeight: 44
                 onClicked: backend.sendSystemCommand("stop_navigation")
             }
             WarmButton {
@@ -373,15 +357,24 @@ ScrollView {
                 enabled: backend.systemStatus.bringup === "running"
                 buttonColor: Theme.danger
                 Layout.fillWidth: true
+                Layout.preferredHeight: 44
                 onClicked: backend.sendSystemCommand("stop_bringup")
             }
             WarmButton {
                 text: "重新加载路线"
                 enabled: backend.patrolControlsEnabled
                 Layout.fillWidth: true
+                Layout.preferredHeight: 44
                 onClicked: backend.sendSystemCommand("reload_patrol_route")
             }
-            WarmButton { text: "重绘预览"; buttonColor: Theme.accent; textColor: Theme.text; Layout.fillWidth: true; onClicked: backend.refreshRoutePreview() }
+            WarmButton {
+                text: "重绘预览"
+                buttonColor: Theme.accent
+                textColor: Theme.text
+                Layout.fillWidth: true
+                Layout.preferredHeight: 44
+                onClicked: backend.refreshRoutePreview()
+            }
         }
 
         Label { text: "巡逻点任务接口"; color: Theme.text; font.pixelSize: 20; font.bold: true }

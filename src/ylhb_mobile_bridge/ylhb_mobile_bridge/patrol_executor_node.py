@@ -870,7 +870,9 @@ class PatrolExecutorNode(Node):
             self._finish_navigation(context, False)
             return
         if goal_handle is None or not goal_handle.accepted:
-            self.get_logger().warning("navigation goal rejected")
+            self.get_logger().warning(
+                f"navigation goal rejected phase={context.get('navigation_phase')}"
+            )
             self._retry_rejected_goal(context)
             return
         if context["canceled"]:

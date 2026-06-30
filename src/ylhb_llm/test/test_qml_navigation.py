@@ -36,9 +36,7 @@ def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
     assert "等待执行器发布初始位姿" in qml
     assert "发送巡逻 start" in qml
     assert "当前按手动启动流程执行，导航启动后会等待约 20 秒，请不要重复点击。" in qml
-    assert "function patrolStateLabel()" in qml
-    assert "就绪: 可启动巡逻" in qml
-    assert "待命: 等待巡逻依赖" in qml
+    assert "backend.patrolStateLabel" in qml
     assert "GridLayout" in qml
     assert "完成" in qml
     assert "当前" in qml
@@ -78,9 +76,32 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.sendPatrolCommand("cancel")' not in qml
     assert 'backend.sendPatrolCommand("reload")' not in qml
     assert "一键启动巡逻模式" in qml
-    assert "!root.patrolCommandSent && !root.patrolRunning" in qml
+    assert "enabled: backend.patrolCanStart" in qml
     assert "!root.patrolStarting && !root.patrolRunning && backend.routePreviewOk" not in qml
     assert 'backend.patrolModeState === "running"' not in qml
-    assert 'backend.patrolModeState === "command_sent"' in qml
+    assert 'backend.patrolModeState === "command_sent"' not in qml
+    assert 'property bool patrolRunning' not in qml
+    assert 'property bool patrolCommandSent' not in qml
+    assert 'value: backend.patrolStateLabel' in qml
+    assert 'backend.patrolCanPause' in qml
+    assert 'backend.patrolCanResume' in qml
+    assert 'backend.patrolCanCancel' in qml
+    controls = qml.split('text: "启用感知巡检"', 1)[1].split('Label { text: "巡逻点任务接口"', 1)[0]
+    assert 'GridLayout' in controls
+    assert 'columns: root.availableWidth >= 1100 ? 4 : (root.availableWidth >= 700 ? 3 : 2)' in controls
+    assert 'Layout.preferredHeight: 44' in controls
     assert 'root.patrolCommandSent' not in qml.split('text: "取消巡逻"', 1)[1].split('onClicked:', 1)[0]
-    assert 'root.navigationActive' in qml.split('text: "取消巡逻"', 1)[1].split('onClicked:', 1)[0]
+    assert 'root.navigationActive' not in qml.split('text: "取消巡逻"', 1)[1].split('onClicked:', 1)[0]
+
+
+def test_patrol_page_shows_known_and_unknown_startup_steps_and_collapses_diagnostics():
+    qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
+
+    assert '"waiting_map_to_odom"' in qml
+    assert '"waiting_nav2_active"' in qml
+    assert '"waiting_executor_response"' in qml
+    assert '"patrol_failed"' in qml
+    assert 'backend.systemStatus.startup_step_label' in qml
+    assert 'property bool diagnosticsVisible: false' in qml
+    assert 'checked: root.diagnosticsVisible' in qml
+    assert 'visible: root.diagnosticsVisible' in qml

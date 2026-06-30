@@ -9,8 +9,10 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import rclpy
 from geometry_msgs.msg import Twist
+from lifecycle_msgs.srv import GetState
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 from std_msgs.msg import String
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
@@ -63,8 +65,10 @@ READINESS_ERROR_MESSAGES = {
     'scan': '等待 /scan 发布者超时',
     'tf': '等待 /tf 发布者超时',
     'map': '等待 /map 发布者超时',
+    'map_to_odom': '等待 map->odom TF 超时',
     'initialpose_subscribers': '等待 /initialpose 订阅者超时',
     'nav2_action': 'Nav2 动作服务未就绪',
+    'nav2_active': 'Nav2 lifecycle 未激活',
     'executor': '巡逻执行器未就绪',
     'route_file': '未找到正式巡逻路线文件',
     'patrol_status': '等待 /patrol/status 发布者超时',
@@ -195,6 +199,16 @@ class SystemSupervisorNode(Node):
         self.last_patrol_start_request_id = ''
         self.last_patrol_event: Dict[str, Any] = {}
         self.last_initial_pose_event: Dict[str, Any] = {}
+        self.lifecycle_clients: Dict[str, Any] = {}
+        self.tf_buffer = None
+        self.tf_listener = None
+        try:
+            from tf2_ros import Buffer, TransformListener
+
+            self.tf_buffer = Buffer()
+            self.tf_listener = TransformListener(self.tf_buffer, self)
+        except Exception as exc:
+            self.log_info(f'tf listener unavailable for startup readiness: {exc}')
 
         self.processes: Dict[str, ManagedProcess] = {
             'bringup': ManagedProcess('bringup', 'ros2 launch ylhb_base bringup.launch.py'),
@@ -459,6 +473,8 @@ class SystemSupervisorNode(Node):
         self.start_process('navigation')
         self.startup_step = 'waiting_after_navigation'
         time.sleep(PATROL_NAVIGATION_TO_EXECUTOR_DELAY_SEC)
+        navigation_ok = self.wait_for_navigation_ready(35.0)
+        navigation_error = self.patrol_error
 
         self.startup_step = 'starting_executor'
         started_at = time.time()
@@ -467,6 +483,23 @@ class SystemSupervisorNode(Node):
         time.sleep(PATROL_EXECUTOR_TO_START_DELAY_SEC)
         heartbeat_ok = self.wait_for_patrol_status_heartbeat(started_at, 8.0)
         subscriber_ok = self.wait_for_patrol_command_subscriber(5.0)
+        initial_pose_ok = self.wait_for_initial_pose_published(8.0)
+        map_to_odom_ok = self.wait_for_map_to_odom(10.0)
+        nav2_active_ok = self.wait_for_nav2_active_ready(25.0)
+        self.log_patrol_start_readiness()
+        gate_warnings = []
+        if not initial_pose_ok:
+            gate_warnings.append('未确认初始位姿已发布')
+        if not map_to_odom_ok:
+            gate_warnings.append('未确认 map->odom TF')
+        if not nav2_active_ok:
+            gate_warnings.append('未确认 Nav2 lifecycle active')
+        if gate_warnings:
+            self.patrol_mode_state = 'failed'
+            self.startup_step = 'patrol_failed'
+            self.patrol_error = '；'.join(gate_warnings)
+            self.set_result('start_patrol_mode', False, '巡逻启动门控失败: ' + self.patrol_error)
+            return
         request_id = f"patrol_start_{int(time.time() * 1000)}"
         self.publish_patrol_command('start', request_id=request_id)
         self.startup_step = 'patrol_start_sent'
@@ -478,6 +511,8 @@ class SystemSupervisorNode(Node):
             self.patrol_mode_state = 'command_sent'
             self.startup_step = 'patrol_start_sent'
         warnings = []
+        if not navigation_ok:
+            warnings.append(navigation_error or '导航依赖未完全就绪')
         if not heartbeat_ok:
             warnings.append('未确认 /patrol/status heartbeat')
         if not subscriber_ok:
@@ -524,8 +559,10 @@ class SystemSupervisorNode(Node):
             'scan': self.topic_has_publishers('/scan'),
             'tf': self.topic_has_publishers('/tf'),
             'map': self.topic_has_publishers('/map'),
+            'map_to_odom': self.has_map_to_odom(),
             'initialpose_subscribers': self.topic_has_subscribers('/initialpose'),
             'nav2_action': self.has_nav2_action(),
+            'nav2_active': self.is_nav2_active(),
             'patrol_status': self.topic_has_publishers('/patrol/status'),
             'initial_pose_published': self.has_initial_pose_published(),
         }
@@ -544,8 +581,10 @@ class SystemSupervisorNode(Node):
             'scan': False,
             'tf': False,
             'map': False,
+            'map_to_odom': False,
             'initialpose_subscribers': False,
             'nav2_action': False,
+            'nav2_active': False,
             'patrol_status': False,
             'initial_pose_published': False,
         }
@@ -595,6 +634,20 @@ class SystemSupervisorNode(Node):
             ('nav2_action',),
             timeout_sec,
             error_prefix='Nav2 动作服务未就绪',
+        )
+
+    def wait_for_map_to_odom(self, timeout_sec: float = 10.0) -> bool:
+        return self.wait_for_readiness_keys(
+            ('map_to_odom',),
+            timeout_sec,
+            error_prefix='等待 map->odom TF 超时',
+        )
+
+    def wait_for_nav2_active_ready(self, timeout_sec: float = 25.0) -> bool:
+        return self.wait_for_readiness_keys(
+            ('nav2_active',),
+            timeout_sec,
+            error_prefix='Nav2 lifecycle 未激活',
         )
 
     def wait_for_patrol_executor_ready(self, timeout_sec: float = 15.0) -> bool:
@@ -705,6 +758,37 @@ class SystemSupervisorNode(Node):
         event = getattr(self, 'last_initial_pose_event', {}) or {}
         return event.get('event') == 'initial_pose_published'
 
+    def has_map_to_odom(self) -> bool:
+        tf_buffer = getattr(self, 'tf_buffer', None)
+        if tf_buffer is None:
+            return False
+        try:
+            return bool(tf_buffer.can_transform('map', 'odom', Time()))
+        except Exception:
+            return False
+
+    def is_nav2_active(self) -> bool:
+        required_nodes = ('/bt_navigator', '/planner_server', '/controller_server')
+        return all(self.lifecycle_node_is_active(name) for name in required_nodes)
+
+    def lifecycle_node_is_active(self, node_name: str) -> bool:
+        try:
+            client = self.lifecycle_clients.get(node_name)
+            if client is None:
+                client = self.create_client(GetState, f'{node_name}/get_state')
+                self.lifecycle_clients[node_name] = client
+            if not client.wait_for_service(timeout_sec=0.1):
+                return False
+            future = client.call_async(GetState.Request())
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                if future.done():
+                    return future.result().current_state.label == 'active'
+                time.sleep(0.02)
+        except Exception:
+            return False
+        return False
+
     def has_nav2_action(self) -> bool:
         action_topics = (
             '/navigate_to_pose/_action/status',
@@ -715,6 +799,15 @@ class SystemSupervisorNode(Node):
             self.topic_has_publishers(topic) or self.topic_has_subscribers(topic)
             for topic in action_topics
         )
+
+    def log_patrol_start_readiness(self) -> None:
+        try:
+            readiness = self.build_patrol_readiness()
+            fields = ('map', 'initial_pose_published', 'map_to_odom', 'nav2_active')
+            summary = ', '.join(f'{key}={bool(readiness.get(key))}' for key in fields)
+            self.log_info(f'patrol start readiness: {summary}')
+        except Exception as exc:
+            self.log_info(f'patrol start readiness unavailable: {exc}')
 
     def wait_for_patrol_command_subscriber(self, timeout_sec: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout_sec

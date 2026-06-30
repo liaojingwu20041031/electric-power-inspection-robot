@@ -37,6 +37,7 @@ def generate_launch_description():
     initial_system_mode = LaunchConfiguration('initial_system_mode')
     fullscreen = LaunchConfiguration('fullscreen')
     display = LaunchConfiguration('display')
+    xauthority = LaunchConfiguration('xauthority')
     force_local_display = LaunchConfiguration('force_local_display')
     workspace_dir_arg = LaunchConfiguration('workspace_dir')
     map_output_dir = LaunchConfiguration('map_output_dir')
@@ -68,6 +69,7 @@ def generate_launch_description():
         DeclareLaunchArgument('initial_system_mode', default_value='ready'),
         DeclareLaunchArgument('fullscreen', default_value='true'),
         DeclareLaunchArgument('display', default_value=':0'),
+        DeclareLaunchArgument('xauthority', default_value=''),
         DeclareLaunchArgument('force_local_display', default_value='true'),
         DeclareLaunchArgument('enable_llm_parse', default_value='false'),
 
@@ -140,7 +142,7 @@ def generate_launch_description():
             name='inspection_display_ui_node',
             output='screen',
             condition=IfCondition(enable_display_ui),
-            additional_env={'DISPLAY': display},
+            additional_env={'DISPLAY': display, 'XAUTHORITY': xauthority},
             parameters=[params_file, {'initial_system_mode': initial_system_mode, 'fullscreen': ParameterValue(fullscreen, value_type=bool), 'display': display, 'force_local_display': ParameterValue(force_local_display, value_type=bool)}],
         ),
     ])
