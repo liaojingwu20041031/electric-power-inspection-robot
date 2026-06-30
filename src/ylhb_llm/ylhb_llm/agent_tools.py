@@ -12,17 +12,15 @@ SYSTEM_TOOLS = {
     'resume_patrol',
     'cancel_patrol',
     'emergency_stop',
-    'reload_patrol_route',
-    'return_ready',
 }
 
 
 class AgentTools:
-    def __init__(self, node, state, system_pub, text_pub, say_pub, event_pub) -> None:
+    def __init__(self, node, state, system_pub, motion_pub, say_pub, event_pub) -> None:
         self.node = node
         self.state = state
         self.system_pub = system_pub
-        self.text_pub = text_pub
+        self.motion_pub = motion_pub
         self.say_pub = say_pub
         self.event_pub = event_pub
 
@@ -41,14 +39,16 @@ class AgentTools:
             payload['command'] = name
             self.publish_json(self.system_pub, payload)
             result = tool_result(name, True, 'sent', f'已发送系统命令: {name}', {'command': name})
-        elif name == 'send_text_motion':
-            self.publish_json(self.text_pub, {
+        elif name == 'send_motion_command':
+            command = str(args.get('command') or '')
+            self.publish_json(self.motion_pub, {
                 'schema_version': '1.0',
                 'source': 'inspection_agent',
-                'route': 'motion',
-                'text': str(args.get('command') or ''),
+                'command': command,
+                'request_id': str(decision.get('decision_id') or ''),
+                'timestamp': self.node.get_clock().now().nanoseconds / 1e9,
             })
-            result = tool_result(name, True, 'sent', '已发送运动文本命令', {'command': str(args.get('command') or '')})
+            result = tool_result(name, True, 'sent', '已发送运动命令', {'command': command})
         elif name == 'get_system_status':
             result = tool_result(name, True, 'ok', 'system status', self.state.system_status)
         elif name == 'get_patrol_status':

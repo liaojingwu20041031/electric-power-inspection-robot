@@ -40,7 +40,7 @@ def test_validate_decision_rejects_unknown_tool():
 def test_validate_decision_rejects_bad_motion_command():
     data = valid_decision(
         intent='motion',
-        tool_call={'name': 'send_text_motion', 'arguments': {'command': '旋转'}},
+        tool_call={'name': 'send_motion_command', 'arguments': {'command': '旋转'}},
     )
 
     with pytest.raises(SchemaError):

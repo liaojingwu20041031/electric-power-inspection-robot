@@ -38,7 +38,7 @@ def test_cancel_patrol_allowed_when_paused():
 
 
 def test_motion_stop_is_not_patrol_cancel():
-    result = authorize(decision('send_text_motion', command='停止'), {'patrol_state': 'running'})
+    result = authorize(decision('send_motion_command', command='停止'), {'patrol_state': 'running'})
 
     assert result.allowed is True
     assert result.system_command == ''

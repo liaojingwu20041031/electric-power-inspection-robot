@@ -18,11 +18,7 @@ tools:
     route: /inspection_ai/system_command
   - name: emergency_stop
     route: /inspection_ai/system_command
-  - name: reload_patrol_route
-    route: /inspection_ai/system_command
-  - name: return_ready
-    route: /inspection_ai/system_command
-  - name: send_text_motion
-    route: /inspection_ai/text_command
+  - name: send_motion_command
+    route: /inspection_ai/motion_command
   - name: generate_local_status_reply
     route: local

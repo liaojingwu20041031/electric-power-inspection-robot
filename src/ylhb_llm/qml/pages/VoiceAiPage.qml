@@ -74,6 +74,7 @@ ColumnLayout {
             Label { text: "语音诊断"; color: Theme.muted }
             Label { text: "最后识别: " + (backend.voiceLastAsrText || "-"); color: Theme.text; elide: Text.ElideRight; Layout.fillWidth: true }
             Label { text: "最后发布: " + (backend.voiceLastPublishedText || "-"); color: Theme.text; elide: Text.ElideRight; Layout.fillWidth: true }
+            Label { text: "TTS: " + (backend.voiceTtsStatus || "-"); color: Theme.text; elide: Text.ElideRight; Layout.fillWidth: true }
             Label { text: "失败次数: " + backend.voiceAsrFailCount + "  录音: " + backend.voiceRecording + "  播报: " + backend.voiceSpeaking; color: Theme.text; Layout.fillWidth: true }
             Label { text: "最后错误: " + (backend.voiceLastError || "-"); color: Theme.muted; elide: Text.ElideRight; Layout.fillWidth: true }
             Label { text: "服务: " + (backend.voiceServiceStatus || "-"); color: Theme.muted; elide: Text.ElideRight; Layout.fillWidth: true }
@@ -125,7 +126,7 @@ ColumnLayout {
                 placeholderText: "输入巡检、运动或状态问题"
             }
             WarmButton {
-                text: "发送到语言 Agent"
+                text: "发送给语言智能体"
                 Layout.alignment: Qt.AlignRight
                 Layout.preferredWidth: 180
                 onClicked: {

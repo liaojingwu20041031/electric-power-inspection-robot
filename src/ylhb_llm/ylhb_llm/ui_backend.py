@@ -174,6 +174,9 @@ class UiBackend(QObject):
 
     @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceSessionStateText(self) -> str:
+        label = str(self.state.voice_session_status.get('agent_voice_state_label') or '')
+        if label:
+            return label
         labels = {
             'OFF': '关闭',
             'WAIT_WAKE': '待唤醒',
@@ -193,34 +196,40 @@ class UiBackend(QObject):
 
     @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceActivityText(self) -> str:
-        state = self.voiceSessionState
-        if state == 'OFF':
+        state = str(self.state.voice_session_status.get('agent_voice_state') or '')
+        if not state:
+            state = self.voiceSessionState
+        if state in ('off', 'OFF'):
             return '语音关闭'
-        if state == 'WAIT_WAKE':
+        if state in ('waiting_wake', 'WAIT_WAKE'):
             return f'等待唤醒词：{self.voiceWakePhrase or "小零小零"}'
-        if state in ('LISTENING', 'AWAKENED_IDLE', 'CONTEXT_FOLLOWUP'):
+        if state in ('listening', 'LISTENING', 'AWAKENED_IDLE', 'CONTEXT_FOLLOWUP'):
             return '正在接收语音'
-        if state == 'RECORDING':
+        if state in ('recording', 'RECORDING'):
             return '正在录音'
-        if state == 'ASR_PROCESSING':
+        if state in ('recognizing', 'ASR_PROCESSING'):
             return '正在识别'
-        if state == 'TTS_PAUSED':
-            return '正在播报，稍后再说'
-        if state == 'WAITING_RESPONSE':
+        if state in ('responding', 'WAITING_RESPONSE', 'TTS_PAUSED'):
             return '等待响应'
+        if state == 'error':
+            return self.voiceLastError or '语音异常'
         return state
 
     @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceActivityTone(self) -> str:
-        state = self.voiceSessionState
-        if state in ('LISTENING', 'AWAKENED_IDLE', 'CONTEXT_FOLLOWUP', 'RECORDING'):
+        state = str(self.state.voice_session_status.get('agent_voice_state') or '')
+        if not state:
+            state = self.voiceSessionState
+        if state in ('listening', 'recording', 'LISTENING', 'AWAKENED_IDLE', 'CONTEXT_FOLLOWUP', 'RECORDING'):
             return 'active'
-        if state in ('ASR_PROCESSING', 'WAITING_RESPONSE'):
+        if state in ('recognizing', 'responding', 'ASR_PROCESSING', 'WAITING_RESPONSE'):
             return 'busy'
         if state == 'TTS_PAUSED':
             return 'speaking'
-        if state == 'WAIT_WAKE':
+        if state in ('waiting_wake', 'WAIT_WAKE'):
             return 'wake'
+        if state == 'error':
+            return 'busy'
         return 'off'
 
     @pyqtProperty(str, notify=voiceStatusChanged)
@@ -258,6 +267,10 @@ class UiBackend(QObject):
     @pyqtProperty(str, notify=voiceStatusChanged)
     def voiceServiceStatus(self) -> str:
         return self.state.voice_service_status
+
+    @pyqtProperty(str, notify=voiceStatusChanged)
+    def voiceTtsStatus(self) -> str:
+        return self.state.voice_status
 
     @pyqtProperty(str, notify=agentStatusChanged)
     def agentStatusText(self) -> str:
@@ -841,8 +854,6 @@ class UiBackend(QObject):
             task_id = str(getattr(msg, 'current_task_id', '') or '').strip()
             status = f'{state} {task_id}'.strip()
         self.state.voice_status = status
-        self.state.system_status = dict(self.state.system_status)
-        self.state.system_status['voice_status'] = status
         self.voiceStatusChanged.emit()
 
     def on_localized_objects(self, text: str) -> None:

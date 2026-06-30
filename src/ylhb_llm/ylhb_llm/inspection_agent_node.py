@@ -12,6 +12,7 @@ from .agent_schema import SchemaError, tool_result, validate_decision
 from .agent_state import AgentState
 from .agent_tools import AgentTools
 from .qwen_client import QwenClient, QwenClientError, parse_json_object
+from .robot_reply_style import speak as styled_speak
 
 
 def latched_qos() -> QoSProfile:
@@ -40,7 +41,7 @@ def make_decision(
         'intent': intent,
         'safety_level': safety_level,
         'tool_call': {'name': tool, 'arguments': arguments or {}},
-        'speak': {'reply_key': f'command.{intent}', 'text': speak, 'priority': 5, 'interrupt': safety_level == 'emergency'},
+        'speak': styled_speak(intent, speak),
         'final_answer': final_answer,
         'need_confirm': False,
         'reason_cn': text,
@@ -53,27 +54,7 @@ def decide_local(request: Dict[str, Any], state: Dict[str, Any]) -> Optional[Dic
     if not normalized:
         return make_decision('empty', 'generate_local_status_reply', text, response_type='ignore')
     if any(word in normalized for word in ('急停', '紧急停止', '别动', '刹车')):
-        return make_decision('emergency_stop', 'emergency_stop', text, '已发送急停。', safety_level='emergency')
-    if normalized in {'停止', '停下', '停下来', '停'}:
-        return make_decision('motion_stop', 'send_text_motion', text, '已停止运动。', arguments={'command': '停止'})
-    if any(word in normalized for word in ('开始巡逻', '开始巡检', '启动巡逻', '启动巡检', '执行巡逻', '执行巡检')):
-        return make_decision('patrol_start', 'start_patrol_mode', text, '已发送开始巡逻命令。', arguments={'profile': 'navigation'})
-    if '暂停' in normalized and ('巡逻' in normalized or '巡检' in normalized):
-        return make_decision('patrol_pause', 'pause_patrol', text, '已发送暂停巡逻命令。')
-    if any(word in normalized for word in ('继续巡逻', '继续巡检', '恢复巡逻', '恢复巡检')):
-        return make_decision('patrol_resume', 'resume_patrol', text, '已发送继续巡逻命令。')
-    if any(word in normalized for word in ('取消巡逻', '取消巡检', '终止巡逻', '终止巡检', '停止巡逻', '停止巡检', '结束巡逻', '结束巡检')):
-        return make_decision('patrol_cancel', 'cancel_patrol', text, '已发送取消巡逻命令。')
-    for command in ('前进', '后退', '左转', '右转'):
-        if command in normalized:
-            return make_decision(f'motion_{command}', 'send_text_motion', text, f'执行{command}。', arguments={'command': command})
-    if any(word in normalized for word in ('状态', '怎么样', '情况', '进度')):
-        patrol_state = str(state.get('patrol_state') or 'unknown')
-        answer = f'当前巡逻状态是 {patrol_state}。'
-        return make_decision('status_query', 'generate_local_status_reply', text, answer, answer, 'status_reply')
-    if any(word in normalized for word in ('你能做什么', '有什么功能', '功能', '怎么用')):
-        answer = '我可以协助开始、暂停、继续、取消巡逻，执行短时运动，查询当前状态。'
-        return make_decision('capability_query', 'generate_local_status_reply', text, answer, answer, 'final_answer')
+        return make_decision('emergency_stop', 'emergency_stop', text, safety_level='emergency')
     return None
 
 
@@ -83,7 +64,7 @@ class InspectionAgentNode(Node):
         self.declare_parameter('agent_request_topic', '/inspection_ai/agent_request')
         self.declare_parameter('agent_status_topic', '/inspection_ai/agent_status')
         self.declare_parameter('agent_event_topic', '/inspection_ai/agent_event')
-        self.declare_parameter('text_command_topic', '/inspection_ai/text_command')
+        self.declare_parameter('motion_command_topic', '/inspection_ai/motion_command')
         self.declare_parameter('system_command_topic', '/inspection_ai/system_command')
         self.declare_parameter('system_status_topic', '/inspection_ai/system_status')
         self.declare_parameter('patrol_status_topic', '/patrol/status')
@@ -105,9 +86,9 @@ class InspectionAgentNode(Node):
         self.status_pub = self.create_publisher(String, self.get_parameter('agent_status_topic').value, latched_qos())
         self.event_pub = self.create_publisher(String, self.get_parameter('agent_event_topic').value, 10)
         self.system_pub = self.create_publisher(String, self.get_parameter('system_command_topic').value, 10)
-        self.text_pub = self.create_publisher(String, self.get_parameter('text_command_topic').value, 10)
+        self.motion_pub = self.create_publisher(String, self.get_parameter('motion_command_topic').value, 10)
         self.say_pub = self.create_publisher(__import__('ylhb_interfaces.msg').msg.SayText, self.get_parameter('say_text_topic').value, 10)
-        self.tools = AgentTools(self, self.state, self.system_pub, self.text_pub, self.say_pub, self.event_pub)
+        self.tools = AgentTools(self, self.state, self.system_pub, self.motion_pub, self.say_pub, self.event_pub)
 
         self.create_subscription(String, self.get_parameter('agent_request_topic').value, self.request_callback, 10)
         self.create_subscription(String, self.get_parameter('system_status_topic').value, self.system_status_callback, latched_qos())
@@ -140,20 +121,40 @@ class InspectionAgentNode(Node):
             self.tools.say(decision, priority=policy.priority, interrupt=policy.interrupt)
         except (SchemaError, QwenClientError, ValueError) as exc:
             self.state.last_error = str(exc)
-            self.tools.publish_event(tool_result('inspection_agent', False, 'rejected', str(exc), error_code='agent_error'))
+            result = tool_result('inspection_agent', False, 'failed', str(exc), error_code='agent_error')
+            self.state.latest_result = result
+            self.tools.publish_event(result)
+            self.tools.say(self.error_decision(str(exc)), priority=7, interrupt=False)
+        finally:
+            decision = self.state.latest_decision or {}
+            result = self.state.latest_result or {}
+            self.get_logger().info(
+                'agent turn: text="%s", response_type=%s, tool=%s, result=%s'
+                % (
+                    str(request.get('text') or ''),
+                    str(decision.get('response_type') or ''),
+                    str((decision.get('tool_call') or {}).get('name') or ''),
+                    str(result.get('status') or ''),
+                )
+            )
         self.publish_status()
 
     def decide_llm(self, request: Dict[str, Any]) -> Dict[str, Any]:
         text = str(request.get('text') or '')
         if not self.enable_llm_fallback or not self.qwen.available():
-            answer = '这个问题需要联网大模型回答，当前已关闭 LLM fallback。'
-            return make_decision('complex_qa', 'generate_local_status_reply', text, answer, answer, 'final_answer')
+            raise QwenClientError('LLM unavailable')
         prompt = (
-            '只输出 schema_version=1.0 的新版 AgentDecision JSON。不要 Markdown。'
-            'response_type 只能用 tool_call/final_answer/status_reply/need_confirm/reject/ignore。'
+            '你是电力巡检机器人语言智能体。只输出 schema_version=1.0 的 AgentDecision JSON，不要 Markdown。'
+            'response_type 只能用 tool_call/final_answer/status_reply/reject/ignore。'
             'safety_level 只能用 emergency/normal/requires_confirm/blocked。'
-            'speak 必须是对象，包含 reply_key/text/priority/interrupt。'
-            '只能 final_answer 回答复杂巡检知识问题，不要调用 ROS topic、cmd_vel 或 Nav2 goal。'
+            'tool_call.name 只能是 get_system_status/get_patrol_status/get_voice_status/'
+            'start_patrol_mode/pause_patrol/resume_patrol/cancel_patrol/emergency_stop/'
+            'send_motion_command/generate_local_status_reply。'
+            '短时运动 command 只能是 前进/后退/左转/右转/停止。'
+            '支持巡逻开始/暂停/继续/取消、急停、短时运动、系统/巡逻/语音状态查询、最终回答。'
+            '不支持旋转角度、任意导航点、地图或路线修改、直接 /cmd_vel。'
+            '遇到“转个一百八十度”“后退旋转”等枚举外运动，输出 reject 或 final_answer 澄清，不能改写成后退。'
+            'final_answer/status_reply/reject 使用 generate_local_status_reply 工具。'
             f'用户问题：{text}'
         )
         last_error = ''
@@ -171,6 +172,22 @@ class InspectionAgentNode(Node):
                 last_error = str(exc)
                 prompt = '上次输出不是合法 AgentDecision JSON，请只输出合法 JSON。'
         raise SchemaError(last_error or 'LLM JSON invalid')
+
+    @staticmethod
+    def error_decision(reason: str) -> Dict[str, Any]:
+        text = '语言模型暂不可用，未执行动作。'
+        return {
+            'schema_version': '1.0',
+            'decision_id': f'agent_error_{int(time.time() * 1000)}',
+            'response_type': 'reject',
+            'intent': 'agent_error',
+            'safety_level': 'blocked',
+            'tool_call': {'name': 'generate_local_status_reply', 'arguments': {}},
+            'speak': {'reply_key': 'agent.error', 'text': text, 'priority': 7, 'interrupt': False},
+            'final_answer': text,
+            'need_confirm': False,
+            'reason_cn': reason,
+        }
 
     @staticmethod
     def parse_payload(raw: str) -> Dict[str, Any]:

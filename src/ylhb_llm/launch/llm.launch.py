@@ -32,6 +32,7 @@ def generate_launch_description():
     enable_capture_voice = LaunchConfiguration('enable_capture_voice')
     enable_tts = LaunchConfiguration('enable_tts')
     enable_task_layer = LaunchConfiguration('enable_task_layer')
+    enable_inspection_task = LaunchConfiguration('enable_inspection_task')
     enable_inspection_agent = LaunchConfiguration('enable_inspection_agent')
     enable_display_ui = LaunchConfiguration('enable_display_ui')
     enable_system_supervisor = LaunchConfiguration('enable_system_supervisor')
@@ -68,6 +69,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_capture_voice', default_value=enable_voice),
         DeclareLaunchArgument('enable_tts', default_value='false'),
         DeclareLaunchArgument('enable_task_layer', default_value='true'),
+        DeclareLaunchArgument('enable_inspection_task', default_value='false'),
         DeclareLaunchArgument('enable_inspection_agent', default_value='true'),
         DeclareLaunchArgument('enable_display_ui', default_value='true'),
         DeclareLaunchArgument('enable_system_supervisor', default_value='true'),
@@ -92,7 +94,7 @@ def generate_launch_description():
             executable='inspection_task_node',
             name='inspection_task_node',
             output='screen',
-            condition=IfCondition(enable_task_layer),
+            condition=IfCondition(enable_inspection_task),
             parameters=[
                 params_file,
                 {
@@ -151,14 +153,6 @@ def generate_launch_description():
                 'tts_tail_pause_sec': ParameterValue(voice_tts_tail_pause_sec, value_type=float),
                 'debug_save_asr_audio': ParameterValue(voice_debug_save_asr_audio, value_type=bool),
             }],
-        ),
-        Node(
-            package='ylhb_llm',
-            executable='voice_command_router_node',
-            name='voice_command_router_node',
-            output='screen',
-            condition=IfCondition(enable_task_layer),
-            parameters=[params_file],
         ),
         Node(
             package='ylhb_llm',

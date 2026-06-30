@@ -35,3 +35,31 @@ def test_system_tool_arguments_cannot_override_command_name():
 
     assert system_pub.messages[0]['command'] == 'start_patrol_mode'
     assert system_pub.messages[0]['profile'] == 'inspection'
+
+
+def test_motion_tool_publishes_structured_motion_command():
+    motion_pub = FakePub()
+    event_pub = FakePub()
+    clock = SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=1230000000))
+    tools = AgentTools(
+        SimpleNamespace(get_clock=lambda: clock),
+        SimpleNamespace(system_status={}, patrol_status={}, voice_status={}),
+        FakePub(),
+        motion_pub,
+        FakePub(),
+        event_pub,
+    )
+    decision = {
+        'decision_id': 'd1',
+        'tool_call': {'name': 'send_motion_command', 'arguments': {'command': '后退'}},
+    }
+
+    tools.execute(decision, authorize(decision, {'patrol_state': 'idle'}))
+
+    assert motion_pub.messages[0] == {
+        'schema_version': '1.0',
+        'source': 'inspection_agent',
+        'command': '后退',
+        'request_id': 'd1',
+        'timestamp': 1.23,
+    }

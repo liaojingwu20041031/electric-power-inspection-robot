@@ -46,11 +46,7 @@ def authorize(decision: Dict[str, Any], state: Dict[str, Any]) -> PolicyResult:
             '当前没有可取消的巡逻任务',
             system_command='cancel_patrol',
         )
-    if tool == 'reload_patrol_route':
-        return PolicyResult(True, system_command='reload_patrol_route')
-    if tool == 'return_ready':
-        return PolicyResult(True, system_command='return_ready')
-    if tool == 'send_text_motion':
+    if tool == 'send_motion_command':
         command = str(arguments.get('command') or '')
         return PolicyResult(command in SAFE_MOTIONS, '不支持的运动指令')
     if tool in {'get_system_status', 'get_patrol_status', 'get_voice_status', 'generate_local_status_reply'}:

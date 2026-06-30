@@ -24,7 +24,7 @@ class BasicMotionCommandNode(Node):
     def __init__(self) -> None:
         super().__init__('basic_motion_command_node')
 
-        self.declare_parameter('text_command_topic', '/inspection_ai/text_command')
+        self.declare_parameter('motion_command_topic', '/inspection_ai/motion_command')
         self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
@@ -56,8 +56,8 @@ class BasicMotionCommandNode(Node):
             SayText, self.get_parameter('say_text_topic').value, 10)
         self.create_subscription(
             String,
-            self.get_parameter('text_command_topic').value,
-            self.text_command_callback,
+            self.get_parameter('motion_command_topic').value,
+            self.motion_command_callback,
             10,
         )
         self.create_subscription(
@@ -86,17 +86,17 @@ class BasicMotionCommandNode(Node):
         else:
             self.get_logger().warn(f'Ignoring unknown system_mode: {mode}')
 
-    def text_command_callback(self, msg: String) -> None:
-        text = self.command_text(msg.data)
-        command = self.parse_motion_command(text)
+    def motion_command_callback(self, msg: String) -> None:
+        command_name = self.command_name(msg.data)
+        command = self.parse_motion_command(command_name)
         if command is None:
             return
         self.get_logger().info(
-            f'Received motion command: text="{text}", system_mode={self.system_mode}'
+            f'Received motion command: command="{command_name}", system_mode={self.system_mode}'
         )
-        if self.system_mode in ('sleep', 'fault') and not self.is_stop_command(text):
+        if self.system_mode in ('sleep', 'fault') and command_name != '停止':
             self.get_logger().info(
-                f'Ignoring motion command while system_mode={self.system_mode}: {text}'
+                f'Ignoring motion command while system_mode={self.system_mode}: {command_name}'
             )
             return
 
@@ -129,17 +129,17 @@ class BasicMotionCommandNode(Node):
             f'duration_sec={self.motion_duration_sec:.2f}'
         )
 
-    def command_text(self, data: str) -> str:
+    def command_name(self, data: str) -> str:
         raw = data.strip()
         if not raw.startswith('{'):
-            return raw
+            return ''
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            return raw
+            return ''
         if isinstance(payload, dict):
-            return str(payload.get('text') or raw).strip()
-        return raw
+            return str(payload.get('command') or '').strip()
+        return ''
 
     def timer_callback(self) -> None:
         if self.active_twist is None:
@@ -194,22 +194,17 @@ class BasicMotionCommandNode(Node):
         normalized = text.strip().replace(' ', '')
         if not normalized:
             return None
-        if any(token in normalized for token in ('停止', '停下', '刹车')):
+        if normalized == '停止':
             return 0.0, 0.0
-        if '前进' in normalized:
+        if normalized == '前进':
             return self.linear_speed, 0.0
-        if '后退' in normalized:
+        if normalized == '后退':
             return -self.linear_speed, 0.0
-        if '左转' in normalized:
+        if normalized == '左转':
             return 0.0, self.angular_speed
-        if '右转' in normalized:
+        if normalized == '右转':
             return 0.0, -self.angular_speed
         return None
-
-    def is_stop_command(self, text: str) -> bool:
-        normalized = text.strip().replace(' ', '')
-        return any(token in normalized for token in ('停止', '停下', '刹车'))
-
 
 def main(args=None) -> None:
     rclpy.init(args=args)

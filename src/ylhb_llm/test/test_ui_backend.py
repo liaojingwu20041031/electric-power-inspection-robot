@@ -621,7 +621,8 @@ def test_voice_status_uses_actual_ros_message_fields():
     backend.on_voice_status(SimpleNamespace(speaking=True, current_task_id='voice_session'))
 
     assert backend.state.voice_status == '播报中 voice_session'
-    assert backend.systemStatus['voice_status'] == '播报中 voice_session'
+    assert backend.voiceTtsStatus == '播报中 voice_session'
+    assert 'voice_status' not in backend.systemStatus
     assert signals == ['voice']
 
 
@@ -634,6 +635,8 @@ def test_voice_session_status_updates_derived_properties():
     backend.update_voice_session_status({
         'enabled': True,
         'state': 'WAIT_WAKE',
+        'agent_voice_state': 'waiting_wake',
+        'agent_voice_state_label': '待唤醒',
         'wake_phrase': '小零小零',
         'last_asr_text': '开始巡检',
         'last_published_text': '开始巡检',
@@ -655,7 +658,7 @@ def test_voice_session_status_updates_derived_properties():
     assert backend.voiceActivityTone == 'active'
     assert backend.voiceActivityText == '正在录音'
 
-    backend.update_voice_session_status({'enabled': True, 'state': 'ASR_PROCESSING'})
+    backend.update_voice_session_status({'enabled': True, 'state': 'ASR_PROCESSING', 'agent_voice_state': 'recognizing', 'agent_voice_state_label': '识别中'})
     assert backend.voiceActivityTone == 'busy'
     assert backend.voiceActivityText == '正在识别'
 

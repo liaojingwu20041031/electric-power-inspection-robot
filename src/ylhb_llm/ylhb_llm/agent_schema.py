@@ -12,14 +12,12 @@ ALLOWED_TOOLS = {
     'resume_patrol',
     'cancel_patrol',
     'emergency_stop',
-    'reload_patrol_route',
-    'return_ready',
-    'send_text_motion',
+    'send_motion_command',
     'generate_local_status_reply',
 }
 
 MOTION_COMMANDS = {'前进', '后退', '左转', '右转', '停止'}
-RESPONSE_TYPES = {'tool_call', 'final_answer', 'status_reply', 'need_confirm', 'reject', 'ignore'}
+RESPONSE_TYPES = {'tool_call', 'final_answer', 'status_reply', 'reject', 'ignore'}
 SAFETY_LEVELS = {'emergency', 'normal', 'requires_confirm', 'blocked'}
 RESULT_STATUSES = {'sent', 'done', 'rejected', 'failed', 'timeout', 'ok'}
 LEGACY_RESPONSE_TYPES = {'tool': 'tool_call', 'final': 'final_answer'}
@@ -95,7 +93,7 @@ def validate_decision(value: Any) -> Dict[str, Any]:
         tool_call['arguments'] = arguments
     if not isinstance(arguments, dict):
         raise SchemaError('tool_call.arguments must be object')
-    if name == 'send_text_motion' and str(arguments.get('command') or '') not in MOTION_COMMANDS:
+    if name == 'send_motion_command' and str(arguments.get('command') or '') not in MOTION_COMMANDS:
         raise SchemaError('unsupported motion command')
 
     speak = value['speak']

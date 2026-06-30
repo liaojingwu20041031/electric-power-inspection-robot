@@ -19,7 +19,7 @@ inspection_agent_node:
     agent_request_topic: /inspection_ai/agent_request
     agent_status_topic: /inspection_ai/agent_status
     agent_event_topic: /inspection_ai/agent_event
-    text_command_topic: /inspection_ai/text_command
+    motion_command_topic: /inspection_ai/motion_command
     system_command_topic: /inspection_ai/system_command
     system_status_topic: /inspection_ai/system_status
     patrol_status_topic: /patrol/status
@@ -29,7 +29,7 @@ inspection_agent_node:
     chat_model: qwen3.6-plus
     request_timeout_sec: 12.0
     enable_local_replies: true
-    enable_llm_fallback: false
+    enable_llm_fallback: true
     llm_json_retry_count: 1
     reply_catalog_file: voice_replies.yaml
     voice_intent_catalog_file: voice_intents.yaml
@@ -37,8 +37,7 @@ inspection_agent_node:
 
 basic_motion_command_node:
   ros__parameters:
-    text_command_topic: /inspection_ai/text_command
-    agent_request_topic: /inspection_ai/agent_request
+    motion_command_topic: /inspection_ai/motion_command
     system_mode_topic: /inspection_ai/system_mode
     cmd_vel_topic: /cmd_vel
     say_text_topic: /inspection_ai/say_text
@@ -117,7 +116,7 @@ voice_input_node:
 
 voice_session_node:
   ros__parameters:
-    voice_command_event_topic: /inspection_ai/voice_command_event
+    agent_request_topic: /inspection_ai/agent_request
     voice_session_status_topic: /inspection_ai/voice_session_status
     say_text_topic: /inspection_ai/say_text
     voice_status_topic: /inspection_ai/voice_status
@@ -147,7 +146,6 @@ voice_session_node:
     post_event_listen_pause_sec: 3.0
     ignore_empty_asr_after_event_sec: 6.0
     context_followup_timeout_sec: 8.0
-    single_wake_default: true
     start_prompt_cooldown_sec: 8.0
     repeat_start_feedback: false
     pre_roll_sec: 0.4
@@ -158,60 +156,8 @@ voice_session_node:
     debug_save_asr_audio: false
     debug_audio_dir: /tmp/ylhb_voice_debug
     debug_audio_keep: 20
+    debug_state_transitions: false
     voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
-    followup_words: [确认, 确定, 继续, 暂停, 取消, 停止, 人工接管, 恢复]
-
-voice_command_router_node:
-  ros__parameters:
-    voice_command_event_topic: /inspection_ai/voice_command_event
-    text_command_topic: /inspection_ai/text_command
-    system_command_topic: /inspection_ai/system_command
-    agent_request_topic: /inspection_ai/agent_request
-    agent_event_topic: /inspection_ai/agent_event
-    task_context_status_topic: /inspection_ai/task_context_status
-    system_mode_topic: /inspection_ai/system_mode
-    task_status_topic: /inspection_ai/task_status
-    say_text_topic: /inspection_ai/say_text
-    ignore_unknown_voice: true
-    enable_inspection_agent: true
-    publish_legacy_text_command: false
-    motion_aliases:
-      - "向前进:前进"
-      - "往前走:前进"
-      - "往前:前进"
-      - "向前:前进"
-      - "前进:前进"
-      - "倒车:后退"
-      - "往后退:后退"
-      - "往后:后退"
-      - "向后:后退"
-      - "后退:后退"
-      - "左旋转:左转"
-      - "向左转:左转"
-      - "左转:左转"
-      - "右旋转:右转"
-      - "向右转:右转"
-      - "右转:右转"
-      - "停下来:停止"
-      - "停下:停止"
-      - "刹车:停止"
-      - "停止:停止"
-      - "停:停止"
-    incomplete_motion_words: [旋转]
-    system_commands:
-      - "启动底盘|start_bringup|已发送启动底盘命令。"
-      - "紧急停止|emergency_stop|已发送紧急停止命令。"
-      - "急停|emergency_stop|已发送紧急停止命令。"
-      - "返回准备状态|return_ready|已发送返回准备状态命令。"
-      - "返回准备|return_ready|已发送返回准备状态命令。"
-    voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
-    safety_words: [急停, 停下, 别动, 刹车, 停止]
-    cancel_words: [取消任务, 取消当前任务, 取消巡检, 不要了]
-    system_feedback_words: [怎么不说话, 你怎么不说话, 没声音, 听不到, 没有声音, 你没说话, 语音坏了]
-    general_qa_words: [介绍一下自己, 介绍自己, 你是谁, 你能做什么, 你会做什么, 有什么功能, 能干什么, 怎么用, 使用方法, 语音怎么用]
-    inspection_words: [开始巡检, 启动巡检, 执行巡检, 巡检任务, 暂停巡检, 恢复巡检, 继续巡检, 取消巡检, 人工接管, 检查点, 开始检查, 检测, 告警, 火源, 烟雾, 漏油, 安全帽, 开关, 刀闸]
-    background_words: [调试, 报错, 日志, 代码, 网络, 麦克风]
-    followup_words: [确认, 确定, 继续, 暂停, 取消, 停止, 人工接管, 恢复]
 
 voice_output_node:
   ros__parameters:
