@@ -9,6 +9,8 @@ class UiState:
     task_context: Dict[str, Any] = field(default_factory=dict)
     localized_objects: str = ''
     voice_status: str = '-'
+    agent_status: Dict[str, Any] = field(default_factory=dict)
+    agent_events: List[Dict[str, Any]] = field(default_factory=list)
     robot_mode: str = 'ready'
     patrol_status: Dict[str, Any] = field(default_factory=dict)
     patrol_events: List[Dict[str, Any]] = field(default_factory=list)

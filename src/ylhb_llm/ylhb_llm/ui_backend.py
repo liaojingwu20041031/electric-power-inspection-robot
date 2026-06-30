@@ -86,6 +86,7 @@ class UiBackend(QObject):
     routePreviewChanged = pyqtSignal()
     patrolTasksChanged = pyqtSignal()
     routePreviewLoaded = pyqtSignal(dict, dict)
+    agentStatusChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -149,6 +150,21 @@ class UiBackend(QObject):
     @pyqtProperty('QVariantList', notify=patrolEventsChanged)
     def patrolEvents(self):
         return self.state.patrol_events
+
+    @pyqtProperty('QVariantMap', notify=agentStatusChanged)
+    def agentStatus(self) -> Dict[str, Any]:
+        return self.state.agent_status
+
+    @pyqtProperty('QVariantList', notify=agentStatusChanged)
+    def agentEvents(self):
+        return self.state.agent_events
+
+    @pyqtProperty(str, notify=agentStatusChanged)
+    def agentStatusText(self) -> str:
+        status = self.state.agent_status
+        last_tool = str(status.get('last_tool') or '')
+        result = str(status.get('last_result_status') or status.get('state') or 'ready')
+        return f'{result} {last_tool}'.strip()
 
     @pyqtProperty('QVariantMap', notify=routePreviewChanged)
     def routePreview(self) -> Dict[str, Any]:
@@ -648,6 +664,21 @@ class UiBackend(QObject):
 
     def update_task_context(self, payload: Dict[str, Any]) -> None:
         self.state.task_context = payload
+
+    def update_agent_status(self, payload: Dict[str, Any]) -> None:
+        self.state.agent_status = payload
+        self.agentStatusChanged.emit()
+
+    def update_agent_event(self, payload: Dict[str, Any]) -> None:
+        payload = dict(payload)
+        payload.setdefault('timestamp', time.strftime('%H:%M:%S'))
+        self.state.agent_events.append(payload)
+        if len(self.state.agent_events) > 100:
+            del self.state.agent_events[:-100]
+        message = payload.get('message')
+        if message:
+            self.addLog(f'Agent: {message}')
+        self.agentStatusChanged.emit()
 
     def on_task_event(self, msg: Any) -> None:
         self.addLog(f'任务事件: {msg.intent} task={msg.task_id}')

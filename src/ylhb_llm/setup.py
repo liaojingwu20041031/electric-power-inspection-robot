@@ -34,6 +34,7 @@ setup(
     entry_points={
         'console_scripts': [
             'inspection_task_node = ylhb_llm.inspection_task_node:main',
+            'inspection_agent_node = ylhb_llm.inspection_agent_node:main',
             'inspection_display_ui_node = ylhb_llm.inspection_display_ui_node:main',
             'basic_motion_command_node = ylhb_llm.basic_motion_command_node:main',
             'voice_input_node = ylhb_llm.voice_input_node:main',

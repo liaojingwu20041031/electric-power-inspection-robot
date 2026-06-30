@@ -1,0 +1,7 @@
+replies:
+  start_patrol: 准备开始巡逻。
+  pause_patrol: 准备暂停巡逻。
+  resume_patrol: 准备继续巡逻。
+  cancel_patrol: 准备取消巡逻。
+  emergency_stop: 已发送急停。
+  capability: 我可以协助开始、暂停、继续、取消巡逻，执行短时运动，查询当前状态。

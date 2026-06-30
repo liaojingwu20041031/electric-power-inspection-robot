@@ -29,6 +29,8 @@ class UiSignals(QObject):
     taskStatus = pyqtSignal(object)
     sayText = pyqtSignal(object)
     voiceStatus = pyqtSignal(object)
+    agentStatus = pyqtSignal(dict)
+    agentEvent = pyqtSignal(dict)
     localizedObjects = pyqtSignal(str)
     patrolStatus = pyqtSignal(dict)
     patrolEvent = pyqtSignal(dict)
@@ -48,6 +50,8 @@ class InspectionDisplayRosBridge(Node):
             'say_text_topic': '/inspection_ai/say_text',
             'task_context_status_topic': '/inspection_ai/task_context_status',
             'voice_status_topic': '/inspection_ai/voice_status',
+            'agent_status_topic': '/inspection_ai/agent_status',
+            'agent_event_topic': '/inspection_ai/agent_event',
             'start_voice_session_service_name': '/inspection_ai/start_voice_session',
             'stop_voice_session_service_name': '/inspection_ai/stop_voice_session',
             'capture_voice_service_name': '/inspection_ai/capture_voice',
@@ -75,6 +79,8 @@ class InspectionDisplayRosBridge(Node):
         self.create_subscription(TaskStatus, self._param('task_status_topic'), signals.taskStatus.emit, 10)
         self.create_subscription(SayText, self._param('say_text_topic'), signals.sayText.emit, 10)
         self.create_subscription(VoiceStatus, self._param('voice_status_topic'), signals.voiceStatus.emit, 10)
+        self.create_subscription(String, self._param('agent_status_topic'), self._agent_status, latched_qos())
+        self.create_subscription(String, self._param('agent_event_topic'), self._agent_event, 10)
         self.create_subscription(String, self._param('localized_objects_topic'), self._localized_objects, 10)
         self.create_subscription(
             String,
@@ -120,6 +126,12 @@ class InspectionDisplayRosBridge(Node):
 
     def _patrol_event(self, msg: String) -> None:
         self.signals.patrolEvent.emit(self.parse_json(msg.data))
+
+    def _agent_status(self, msg: String) -> None:
+        self.signals.agentStatus.emit(self.parse_json(msg.data))
+
+    def _agent_event(self, msg: String) -> None:
+        self.signals.agentEvent.emit(self.parse_json(msg.data))
 
     def publish_text_command(self, text: str, source: str = 'ui') -> None:
         self._publish_json(self.text_pub, {

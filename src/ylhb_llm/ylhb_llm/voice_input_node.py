@@ -1,7 +1,9 @@
 import os
+import json
 import subprocess
 import tempfile
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -15,6 +17,7 @@ class VoiceInputNode(Node):
     def __init__(self) -> None:
         super().__init__('voice_input_node')
         self.declare_parameter('text_command_topic', '/inspection_ai/text_command')
+        self.declare_parameter('voice_command_event_topic', '/inspection_ai/voice_command_event')
         self.declare_parameter('capture_voice_service_name', '/inspection_ai/capture_voice')
         self.declare_parameter('audio_device', 'default')
         self.declare_parameter('audio_input_device', 'default')
@@ -24,6 +27,7 @@ class VoiceInputNode(Node):
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
         self.declare_parameter('asr_model', 'qwen3-asr-flash')
         self.declare_parameter('request_timeout_sec', 15.0)
+        self.declare_parameter('publish_legacy_text_command', False)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         input_device = str(self.get_parameter('audio_input_device').value)
@@ -33,8 +37,10 @@ class VoiceInputNode(Node):
         self.sample_rate = int(self.get_parameter('sample_rate').value)
         self.asr_model = self.get_parameter('asr_model').value
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
+        self.publish_legacy_text_command = bool(self.get_parameter('publish_legacy_text_command').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
         self.text_pub = self.create_publisher(String, self.get_parameter('text_command_topic').value, 10)
+        self.voice_event_pub = self.create_publisher(String, self.get_parameter('voice_command_event_topic').value, 10)
         self.capture_lock = threading.Lock()
         self.create_service(
             Trigger,
@@ -68,13 +74,34 @@ class VoiceInputNode(Node):
             response.success = False
             response.message = '未识别到有效语音。'
             return response
-        msg = String()
-        msg.data = text
-        self.text_pub.publish(msg)
+        self.publish_voice_event(text)
+        if self.publish_legacy_text_command:
+            msg = String()
+            msg.data = text
+            self.text_pub.publish(msg)
         self.get_logger().info(f'ASR command: {text}')
         response.success = True
         response.message = text
         return response
+
+    def publish_voice_event(self, text: str) -> None:
+        now = time.time()
+        payload = {
+            'schema_version': '1.0',
+            'source': 'voice_input',
+            'session_id': f'capture_{int(now)}',
+            'utterance_id': f'{int(now * 1000)}',
+            'text': text,
+            'raw_asr_text': text,
+            'awakened': True,
+            'contains_wake_phrase': False,
+            'interaction_phase': 'wake_command',
+            'confidence': 1.0,
+            'timestamp': now,
+        }
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.voice_event_pub.publish(msg)
 
     def capture_once(self) -> str:
         with tempfile.NamedTemporaryFile(prefix='ylhb_asr_', suffix='.wav', delete=False) as f:

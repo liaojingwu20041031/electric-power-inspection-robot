@@ -32,6 +32,7 @@ def generate_launch_description():
     enable_capture_voice = LaunchConfiguration('enable_capture_voice')
     enable_tts = LaunchConfiguration('enable_tts')
     enable_task_layer = LaunchConfiguration('enable_task_layer')
+    enable_inspection_agent = LaunchConfiguration('enable_inspection_agent')
     enable_display_ui = LaunchConfiguration('enable_display_ui')
     enable_system_supervisor = LaunchConfiguration('enable_system_supervisor')
     initial_system_mode = LaunchConfiguration('initial_system_mode')
@@ -61,6 +62,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_capture_voice', default_value=enable_voice),
         DeclareLaunchArgument('enable_tts', default_value='false'),
         DeclareLaunchArgument('enable_task_layer', default_value='true'),
+        DeclareLaunchArgument('enable_inspection_agent', default_value='true'),
         DeclareLaunchArgument('enable_display_ui', default_value='true'),
         DeclareLaunchArgument('enable_system_supervisor', default_value='true'),
         DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
@@ -85,6 +87,20 @@ def generate_launch_description():
                     'dashscope_base_url': dashscope_base_url,
                     'chat_model': chat_model,
                     'enable_llm_parse': ParameterValue(enable_llm_parse, value_type=bool),
+                },
+            ],
+        ),
+        Node(
+            package='ylhb_llm',
+            executable='inspection_agent_node',
+            name='inspection_agent_node',
+            output='screen',
+            condition=IfCondition(enable_inspection_agent),
+            parameters=[
+                params_file,
+                {
+                    'dashscope_base_url': dashscope_base_url,
+                    'chat_model': chat_model,
                 },
             ],
         ),

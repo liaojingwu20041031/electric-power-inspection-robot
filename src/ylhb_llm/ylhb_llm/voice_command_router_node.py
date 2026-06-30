@@ -28,6 +28,8 @@ class VoiceCommandRouterNode(Node):
         self.declare_parameter('voice_command_event_topic', '/inspection_ai/voice_command_event')
         self.declare_parameter('text_command_topic', '/inspection_ai/text_command')
         self.declare_parameter('system_command_topic', '/inspection_ai/system_command')
+        self.declare_parameter('agent_request_topic', '/inspection_ai/agent_request')
+        self.declare_parameter('agent_event_topic', '/inspection_ai/agent_event')
         self.declare_parameter('task_context_status_topic', '/inspection_ai/task_context_status')
         self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
         self.declare_parameter('task_status_topic', '/inspection_ai/task_status')
@@ -44,6 +46,8 @@ class VoiceCommandRouterNode(Node):
         declare_string_array_parameter(self, 'followup_words')
         declare_string_array_parameter(self, 'incomplete_motion_words')
         self.declare_parameter('ignore_unknown_voice', True)
+        self.declare_parameter('enable_inspection_agent', True)
+        self.declare_parameter('publish_legacy_text_command', False)
 
         self.system_mode = 'ready'
         self.task_context: Dict[str, Any] = {}
@@ -52,9 +56,13 @@ class VoiceCommandRouterNode(Node):
         self.motion_aliases = self.parse_motion_aliases([str(v) for v in self.get_parameter('motion_aliases').value])
         self.routing_policy = self.load_routing_policy()
         self.ignore_unknown_voice = bool(self.get_parameter('ignore_unknown_voice').value)
+        self.enable_inspection_agent = bool(self.get_parameter('enable_inspection_agent').value)
+        self.publish_legacy_text_command = bool(self.get_parameter('publish_legacy_text_command').value)
 
         self.text_pub = self.create_publisher(String, self.get_parameter('text_command_topic').value, 10)
         self.system_command_pub = self.create_publisher(String, self.get_parameter('system_command_topic').value, 10)
+        self.agent_request_pub = self.create_publisher(String, self.get_parameter('agent_request_topic').value, 10)
+        self.agent_event_pub = self.create_publisher(String, self.get_parameter('agent_event_topic').value, 10)
         self.say_pub = self.create_publisher(SayText, self.get_parameter('say_text_topic').value, 10)
         self.create_subscription(String, self.get_parameter('voice_command_event_topic').value, self.voice_event_callback, 10)
         self.create_subscription(String, self.get_parameter('task_context_status_topic').value, self.task_context_callback, transient_qos())
@@ -85,18 +93,34 @@ class VoiceCommandRouterNode(Node):
             self.say('voice_router', intent.feedback, priority=7, interrupt=True)
             return
         if intent.route == 'system_command':
-            self.publish_system_command(intent.system_command, intent.text, event)
-            self.say('voice_router', intent.feedback, priority=8, interrupt=intent.system_command == 'emergency_stop')
+            if intent.system_command == 'emergency_stop':
+                self.publish_system_command(intent.system_command, intent.text, event)
+                self.publish_agent_event('emergency_stop', True, 'executed', '语音急停直达 supervisor')
+                self.say('voice_router', intent.feedback, priority=8, interrupt=True)
+                return
+            self.publish_agent_request(intent.text, event, intent.route, intent.system_command)
+            if self.publish_legacy_text_command:
+                self.publish_text_command(intent.text, event, intent.route)
             return
         if intent.route == 'unsupported_motion':
             self.say('voice_router', intent.feedback, priority=7)
             return
         if intent.route in ('global_safety', 'global_cancel', 'motion', 'inspection_command', 'general_qa', 'system_feedback'):
-            self.publish_text_command(intent.text, event, intent.route)
+            if self.enable_inspection_agent:
+                self.publish_agent_request(intent.text, event, intent.route)
+                if self.publish_legacy_text_command:
+                    self.publish_text_command(intent.text, event, intent.route)
+            else:
+                self.publish_text_command(intent.text, event, intent.route)
             if intent.feedback:
                 self.say('voice_router', intent.feedback, priority=7, interrupt=intent.route == 'global_safety')
             return
-        self.publish_text_command(intent.text, event, intent.route)
+        if self.enable_inspection_agent:
+            self.publish_agent_request(intent.text, event, intent.route)
+            if self.publish_legacy_text_command:
+                self.publish_text_command(intent.text, event, intent.route)
+        else:
+            self.publish_text_command(intent.text, event, intent.route)
 
     def classify(self, text: str, interaction_phase: str) -> VoiceIntent:
         intent = classify_voice_intent(text, self.routing_policy, interaction_phase, self.ignore_unknown_voice)
@@ -138,6 +162,45 @@ class VoiceCommandRouterNode(Node):
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.system_command_pub.publish(msg)
+
+    def publish_agent_request(
+        self,
+        text: str,
+        event: Dict[str, Any],
+        route: str,
+        legacy_system_command: str = '',
+    ) -> None:
+        payload = {
+            'schema_version': '1.0',
+            'source': 'voice',
+            'route': route,
+            'session_id': str(event.get('session_id') or ''),
+            'utterance_id': str(event.get('utterance_id') or ''),
+            'text': text,
+            'raw_asr_text': str(event.get('raw_asr_text') or text),
+            'interaction_phase': str(event.get('interaction_phase') or 'wake_command'),
+            'confidence': float(event.get('confidence') or 0.0),
+            'legacy_system_command': legacy_system_command,
+            'timestamp': float(event.get('timestamp') or time.time()),
+        }
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.agent_request_pub.publish(msg)
+
+    def publish_agent_event(self, tool_name: str, ok: bool, status: str, message: str) -> None:
+        payload = {
+            'schema_version': '1.0',
+            'tool_name': tool_name,
+            'ok': ok,
+            'status': status,
+            'message': message,
+            'data': {},
+            'error_code': '',
+            'timestamp': time.time(),
+        }
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.agent_event_pub.publish(msg)
 
     def task_context_callback(self, msg: String) -> None:
         try:

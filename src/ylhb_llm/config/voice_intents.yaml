@@ -1,0 +1,9 @@
+controls:
+  start_patrol: [开始巡逻, 开始巡检, 启动巡逻, 启动巡检, 执行巡逻, 执行巡检]
+  pause_patrol: [暂停巡逻, 暂停巡检]
+  resume_patrol: [继续巡逻, 继续巡检, 恢复巡逻, 恢复巡检]
+  cancel_patrol: [取消巡逻, 取消巡检, 终止巡逻, 终止巡检]
+  emergency_stop: [急停, 紧急停止]
+motion: [前进, 后退, 左转, 右转, 停止]
+status: [状态, 情况, 进度, 怎么样]
+ignore: [调试, 日志, 麦克风]

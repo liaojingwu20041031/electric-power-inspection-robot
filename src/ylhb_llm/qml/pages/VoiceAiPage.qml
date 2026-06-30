@@ -18,6 +18,13 @@ ColumnLayout {
         statusColor: Theme.primary
     }
 
+    StatusCard {
+        Layout.fillWidth: true
+        title: "AI 状态"
+        value: backend.agentStatusText || "等待 Agent 状态"
+        statusColor: Theme.accent
+    }
+
     RowLayout {
         Layout.fillWidth: true
         WarmButton { text: "启动语音会话"; Layout.fillWidth: true; onClicked: backend.callVoiceService("start") }

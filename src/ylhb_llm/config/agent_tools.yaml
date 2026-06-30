@@ -1,0 +1,28 @@
+tools:
+  - name: get_system_status
+    route: local
+    reply_key: system_status
+  - name: get_patrol_status
+    route: local
+    reply_key: patrol_status
+  - name: get_voice_status
+    route: local
+    reply_key: voice_status
+  - name: start_patrol_mode
+    route: /inspection_ai/system_command
+  - name: pause_patrol
+    route: /inspection_ai/system_command
+  - name: resume_patrol
+    route: /inspection_ai/system_command
+  - name: cancel_patrol
+    route: /inspection_ai/system_command
+  - name: emergency_stop
+    route: /inspection_ai/system_command
+  - name: reload_patrol_route
+    route: /inspection_ai/system_command
+  - name: return_ready
+    route: /inspection_ai/system_command
+  - name: send_text_motion
+    route: /inspection_ai/text_command
+  - name: generate_local_status_reply
+    route: local

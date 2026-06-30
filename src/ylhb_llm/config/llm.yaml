@@ -14,6 +14,27 @@ inspection_task_node:
     enable_llm_parse: false
     publish_raw_json: true
 
+inspection_agent_node:
+  ros__parameters:
+    agent_request_topic: /inspection_ai/agent_request
+    agent_status_topic: /inspection_ai/agent_status
+    agent_event_topic: /inspection_ai/agent_event
+    text_command_topic: /inspection_ai/text_command
+    system_command_topic: /inspection_ai/system_command
+    system_status_topic: /inspection_ai/system_status
+    patrol_status_topic: /patrol/status
+    voice_session_status_topic: /inspection_ai/voice_session_status
+    say_text_topic: /inspection_ai/say_text
+    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    chat_model: qwen3.6-plus
+    request_timeout_sec: 12.0
+    enable_local_replies: true
+    enable_llm_fallback: false
+    llm_json_retry_count: 1
+    reply_catalog_file: voice_replies.yaml
+    voice_intent_catalog_file: voice_intents.yaml
+    agent_tools_file: agent_tools.yaml
+
 basic_motion_command_node:
   ros__parameters:
     text_command_topic: /inspection_ai/text_command
@@ -41,6 +62,8 @@ inspection_display_ui_node:
     voice_session_status_topic: /inspection_ai/voice_session_status
     voice_command_event_topic: /inspection_ai/voice_command_event
     voice_status_topic: /inspection_ai/voice_status
+    agent_status_topic: /inspection_ai/agent_status
+    agent_event_topic: /inspection_ai/agent_event
     start_voice_session_service_name: /inspection_ai/start_voice_session
     stop_voice_session_service_name: /inspection_ai/stop_voice_session
     capture_voice_service_name: /inspection_ai/capture_voice
@@ -79,6 +102,7 @@ system_supervisor_node:
 voice_input_node:
   ros__parameters:
     text_command_topic: /inspection_ai/text_command
+    voice_command_event_topic: /inspection_ai/voice_command_event
     capture_voice_service_name: /inspection_ai/capture_voice
     audio_device: default
     audio_input_device: default
@@ -88,6 +112,7 @@ voice_input_node:
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     asr_model: qwen3-asr-flash
     request_timeout_sec: 15.0
+    publish_legacy_text_command: false
 
 voice_session_node:
   ros__parameters:
@@ -130,11 +155,15 @@ voice_command_router_node:
     voice_command_event_topic: /inspection_ai/voice_command_event
     text_command_topic: /inspection_ai/text_command
     system_command_topic: /inspection_ai/system_command
+    agent_request_topic: /inspection_ai/agent_request
+    agent_event_topic: /inspection_ai/agent_event
     task_context_status_topic: /inspection_ai/task_context_status
     system_mode_topic: /inspection_ai/system_mode
     task_status_topic: /inspection_ai/task_status
     say_text_topic: /inspection_ai/say_text
     ignore_unknown_voice: true
+    enable_inspection_agent: true
+    publish_legacy_text_command: false
     motion_aliases:
       - "向前进:前进"
       - "往前走:前进"
