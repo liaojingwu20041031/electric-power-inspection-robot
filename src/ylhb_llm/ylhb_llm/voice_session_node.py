@@ -1,4 +1,5 @@
 import audioop
+from collections import deque
 import json
 import os
 import subprocess
@@ -71,6 +72,16 @@ class VoiceSessionNode(Node):
         self.declare_parameter('ignore_empty_asr_after_event_sec', 6.0)
         self.declare_parameter('context_followup_timeout_sec', 8.0)
         self.declare_parameter('single_wake_default', True)
+        self.declare_parameter('start_prompt_cooldown_sec', 8.0)
+        self.declare_parameter('repeat_start_feedback', False)
+        self.declare_parameter('pre_roll_sec', 0.4)
+        self.declare_parameter('command_vad_silence_sec', 1.25)
+        self.declare_parameter('command_min_voice_sec', 0.8)
+        self.declare_parameter('wait_wake_threshold_multiplier', 1.8)
+        self.declare_parameter('tts_tail_pause_sec', 0.9)
+        self.declare_parameter('debug_save_asr_audio', False)
+        self.declare_parameter('debug_audio_dir', '/tmp/ylhb_voice_debug')
+        self.declare_parameter('debug_audio_keep', 20)
         declare_string_array_parameter(self, 'followup_words')
         declare_string_array_parameter(self, 'voice_close_words')
 
@@ -103,6 +114,17 @@ class VoiceSessionNode(Node):
         self.context_followup_timeout_sec = float(
             self.get_parameter('context_followup_timeout_sec').value)
         self.single_wake_default = bool(self.get_parameter('single_wake_default').value)
+        self.start_prompt_cooldown_sec = float(self.get_parameter('start_prompt_cooldown_sec').value)
+        self.repeat_start_feedback = bool(self.get_parameter('repeat_start_feedback').value)
+        self.pre_roll_sec = float(self.get_parameter('pre_roll_sec').value)
+        self.command_vad_silence_sec = float(self.get_parameter('command_vad_silence_sec').value)
+        self.command_min_voice_sec = float(self.get_parameter('command_min_voice_sec').value)
+        self.wait_wake_threshold_multiplier = float(
+            self.get_parameter('wait_wake_threshold_multiplier').value)
+        self.tts_tail_pause_sec = float(self.get_parameter('tts_tail_pause_sec').value)
+        self.debug_save_asr_audio = bool(self.get_parameter('debug_save_asr_audio').value)
+        self.debug_audio_dir = str(self.get_parameter('debug_audio_dir').value)
+        self.debug_audio_keep = int(self.get_parameter('debug_audio_keep').value)
         self.followup_policy = VoiceRoutingPolicy(
             followup_words=tuple(
                 str(value)
@@ -164,6 +186,10 @@ class VoiceSessionNode(Node):
         self.last_event_published_at = 0.0
         self.context_followup_until = 0.0
         self.in_context_followup = False
+        self.last_start_prompt_at = 0.0
+        self.last_say_text = ''
+        self.last_say_at = 0.0
+        self.last_recording_stats = {}
 
         self.worker = threading.Thread(target=self.session_loop, daemon=True)
         self.worker.start()
@@ -183,6 +209,14 @@ class VoiceSessionNode(Node):
             response.message = 'DASHSCOPE_API_KEY 未设置，无法调用云端 ASR。'
             return response
         with self.lock:
+            if self.session_enabled:
+                now = time.monotonic()
+                if self.repeat_start_feedback and now - self.last_start_prompt_at >= self.start_prompt_cooldown_sec:
+                    self.say('voice_session', '语音模式已经开启。', priority=5)
+                    self.last_start_prompt_at = now
+                response.success = True
+                response.message = '语音模式已经开启。'
+                return response
             self.session_enabled = True
             self.awakened = False
             self.session_id = time.strftime('voice_%Y%m%d_%H%M%S')
@@ -196,6 +230,7 @@ class VoiceSessionNode(Node):
             self.in_context_followup = False
             self.set_state('WAIT_WAKE')
         self.say('voice_session', f'语音模式已开启，请先说{self.wake_phrase}。', priority=6)
+        self.last_start_prompt_at = time.monotonic()
         self.publish_status()
         response.success = True
         response.message = '语音模式已开启。'
@@ -214,7 +249,7 @@ class VoiceSessionNode(Node):
             self.pause_listen_until = max(self.pause_listen_until, now + 0.5)
         if self.last_tts_speaking and not speaking:
             self.last_active_at = now
-            self.pause_listen_until = max(self.pause_listen_until, now + 0.3)
+            self.pause_listen_until = max(self.pause_listen_until, now + self.tts_tail_pause_sec)
             if self.in_context_followup:
                 self.context_followup_until = now + self.context_followup_timeout_sec
         self.is_tts_playing = speaking
@@ -284,9 +319,11 @@ class VoiceSessionNode(Node):
             self.set_state('ASR_PROCESSING')
             text = self.transcribe_pcm(audio)
             if text == ASR_TIMEOUT_MARKER:
+                self.save_debug_asr_audio(audio, '', 'timeout')
                 self.set_state('AWAKENED_IDLE' if self.awakened else 'WAIT_WAKE')
                 self.get_logger().info('Ignoring ASR timeout audio segment.')
                 continue
+            self.save_debug_asr_audio(audio, text, 'asr')
             if not text:
                 self.handle_empty_asr()
                 continue
@@ -322,8 +359,11 @@ class VoiceSessionNode(Node):
     def wait_and_record_by_vad(self, idle_deadline: float = 0.0) -> bytes:
         frame_bytes = int(self.sample_rate * 2 * self.frame_ms / 1000)
         max_frames = max(1, int(self.max_utterance_sec * 1000 / self.frame_ms))
-        min_frames = max(1, int(self.min_voice_sec * 1000 / self.frame_ms))
-        silence_frames = max(1, int(self.vad_silence_sec * 1000 / self.frame_ms))
+        listen_without_wake = self.awakened or self.in_context_followup
+        min_voice_sec, silence_sec = self.effective_vad_timing(listen_without_wake)
+        min_frames = max(1, int(min_voice_sec * 1000 / self.frame_ms))
+        silence_frames = max(1, int(silence_sec * 1000 / self.frame_ms))
+        pre_roll_frames = max(0, int(self.pre_roll_sec * 1000 / self.frame_ms))
         listen_started_at = time.monotonic()
         cmd = [
             'arecord',
@@ -345,13 +385,17 @@ class VoiceSessionNode(Node):
 
         frames: List[bytes] = []
         pending_loud_frames: List[bytes] = []
+        pre_speech_frames = deque(maxlen=pre_roll_frames)
         active = False
         quiet = 0
         loud = 0
+        energy_sum = 0
+        energy_peak = 0
+        energy_count = 0
         effective_energy_threshold = self.energy_threshold
         effective_start_frames = self.voice_start_frames_required
         if not self.awakened and not self.in_context_followup:
-            effective_energy_threshold = int(self.energy_threshold * 1.8)
+            effective_energy_threshold = int(self.energy_threshold * self.wait_wake_threshold_multiplier)
             effective_start_frames = max(self.voice_start_frames_required, 6)
         try:
             while self.session_enabled and not self.stop_event.is_set():
@@ -371,6 +415,9 @@ class VoiceSessionNode(Node):
                 if len(chunk) < frame_bytes:
                     return b''
                 energy = audioop.rms(chunk, 2)
+                energy_sum += energy
+                energy_peak = max(energy_peak, energy)
+                energy_count += 1
                 if not active:
                     if energy >= effective_energy_threshold:
                         loud += 1
@@ -378,11 +425,15 @@ class VoiceSessionNode(Node):
                         if loud >= effective_start_frames:
                             active = True
                             quiet = 0
+                            frames.extend(pre_speech_frames)
                             frames.extend(pending_loud_frames)
                             pending_loud_frames = []
                     else:
+                        if pending_loud_frames:
+                            pre_speech_frames.extend(pending_loud_frames)
                         loud = 0
                         pending_loud_frames = []
+                        pre_speech_frames.append(chunk)
                     continue
                 if energy >= effective_energy_threshold:
                     quiet = 0
@@ -394,6 +445,13 @@ class VoiceSessionNode(Node):
                     frames.append(chunk)
                     if len(frames) >= max_frames or quiet >= silence_frames:
                         break
+            self.last_recording_stats = {
+                'duration_sec': len(frames) * self.frame_ms / 1000.0,
+                'rms_avg': int(energy_sum / energy_count) if energy_count else 0,
+                'rms_peak': int(energy_peak),
+                'threshold': int(effective_energy_threshold),
+                'phase': 'command' if listen_without_wake else 'wake',
+            }
             if len(frames) < min_frames:
                 return b''
             return b''.join(frames)
@@ -404,6 +462,11 @@ class VoiceSessionNode(Node):
                 proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+    def effective_vad_timing(self, listen_without_wake: bool) -> Tuple[float, float]:
+        if listen_without_wake:
+            return self.command_min_voice_sec, self.command_vad_silence_sec
+        return self.min_voice_sec, self.vad_silence_sec
 
     def transcribe_pcm(self, pcm: bytes) -> str:
         with tempfile.NamedTemporaryFile(prefix='ylhb_voice_session_', suffix='.wav', delete=False) as f:
@@ -427,6 +490,48 @@ class VoiceSessionNode(Node):
                     return ASR_TIMEOUT_MARKER
                 return ''
         finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def save_debug_asr_audio(self, pcm: bytes, text: str, phase: str) -> None:
+        if not self.debug_save_asr_audio or not pcm:
+            return
+        try:
+            os.makedirs(self.debug_audio_dir, exist_ok=True)
+            stats = self.last_recording_stats or {}
+            safe_text = ''.join(ch if ch.isalnum() else '_' for ch in text)[:24] or 'empty'
+            filename = (
+                f"{time.strftime('%Y%m%d_%H%M%S')}_{phase}_"
+                f"{stats.get('phase', 'unknown')}_"
+                f"{float(stats.get('duration_sec') or 0.0):.2f}s_"
+                f"rms{int(stats.get('rms_avg') or 0)}_peak{int(stats.get('rms_peak') or 0)}_"
+                f"{safe_text}.wav"
+            )
+            path = os.path.join(self.debug_audio_dir, filename)
+            with wave.open(path, 'wb') as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(self.sample_rate)
+                wav.writeframes(pcm)
+            self.prune_debug_audio()
+            self.get_logger().info(f'已保存 ASR 调试音频：{path}')
+        except Exception as exc:
+            self.get_logger().warn(f'保存 ASR 调试音频失败：{exc}')
+
+    def prune_debug_audio(self) -> None:
+        keep = max(1, int(self.debug_audio_keep))
+        try:
+            files = [
+                os.path.join(self.debug_audio_dir, name)
+                for name in os.listdir(self.debug_audio_dir)
+                if name.endswith('.wav')
+            ]
+        except OSError:
+            return
+        files.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+        for path in files[keep:]:
             try:
                 os.unlink(path)
             except OSError:
@@ -542,7 +647,16 @@ class VoiceSessionNode(Node):
         interrupt: bool = False,
     ) -> None:
         if task_id == 'voice_session':
-            self.pause_listen_until = max(self.pause_listen_until, time.monotonic() + 2.0)
+            now = time.monotonic()
+            if (
+                not interrupt
+                and text == self.last_say_text
+                and now - self.last_say_at < self.start_prompt_cooldown_sec
+            ):
+                return
+            self.last_say_text = text
+            self.last_say_at = now
+            self.pause_listen_until = max(self.pause_listen_until, now + 2.0)
         msg = SayText()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.task_id = task_id

@@ -1,6 +1,6 @@
 inspection_task_node:
   ros__parameters:
-    text_command_topic: /inspection_ai/text_command
+    text_command_topic: /inspection_ai/task_text_command
     localized_objects_topic: /perception/localized_objects
     task_event_topic: /inspection_ai/task_event
     task_status_topic: /inspection_ai/task_status
@@ -38,6 +38,7 @@ inspection_agent_node:
 basic_motion_command_node:
   ros__parameters:
     text_command_topic: /inspection_ai/text_command
+    agent_request_topic: /inspection_ai/agent_request
     system_mode_topic: /inspection_ai/system_mode
     cmd_vel_topic: /cmd_vel
     say_text_topic: /inspection_ai/say_text
@@ -136,7 +137,7 @@ voice_session_node:
     energy_threshold: 800
     vad_silence_sec: 0.85
     min_voice_sec: 0.5
-    max_utterance_sec: 6.0
+    max_utterance_sec: 8.0
     session_idle_timeout_sec: 35.0
     max_listen_wait_sec: 8.0
     voice_start_frames_required: 4
@@ -147,6 +148,16 @@ voice_session_node:
     ignore_empty_asr_after_event_sec: 6.0
     context_followup_timeout_sec: 8.0
     single_wake_default: true
+    start_prompt_cooldown_sec: 8.0
+    repeat_start_feedback: false
+    pre_roll_sec: 0.4
+    command_vad_silence_sec: 1.25
+    command_min_voice_sec: 0.8
+    wait_wake_threshold_multiplier: 1.8
+    tts_tail_pause_sec: 0.9
+    debug_save_asr_audio: false
+    debug_audio_dir: /tmp/ylhb_voice_debug
+    debug_audio_keep: 20
     voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
     followup_words: [确认, 确定, 继续, 暂停, 取消, 停止, 人工接管, 恢复]
 
@@ -189,9 +200,6 @@ voice_command_router_node:
     incomplete_motion_words: [旋转]
     system_commands:
       - "启动底盘|start_bringup|已发送启动底盘命令。"
-      - "开始巡检|start_robot_stack|已发送启动巡检节点命令。"
-      - "启动巡检|start_robot_stack|已发送启动巡检节点命令。"
-      - "停止巡检|stop_robot_stack|已发送停止巡检节点命令。"
       - "紧急停止|emergency_stop|已发送紧急停止命令。"
       - "急停|emergency_stop|已发送紧急停止命令。"
       - "返回准备状态|return_ready|已发送返回准备状态命令。"

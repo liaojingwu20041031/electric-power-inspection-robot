@@ -159,12 +159,132 @@ class UiBackend(QObject):
     def agentEvents(self):
         return self.state.agent_events
 
+    @pyqtProperty('QVariantMap', notify=systemStatusChanged)
+    def voiceSessionStatus(self) -> Dict[str, Any]:
+        return self.state.voice_session_status
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def voiceSessionEnabled(self) -> bool:
+        return bool(self.state.voice_session_status.get('enabled'))
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceSessionState(self) -> str:
+        return str(self.state.voice_session_status.get('state') or 'OFF')
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceSessionStateText(self) -> str:
+        labels = {
+            'OFF': '关闭',
+            'WAIT_WAKE': '待唤醒',
+            'LISTENING': '正在听',
+            'AWAKENED_IDLE': '正在听',
+            'CONTEXT_FOLLOWUP': '正在听',
+            'RECORDING': '录音中',
+            'ASR_PROCESSING': '识别中',
+            'TTS_PAUSED': '播报中',
+            'WAITING_RESPONSE': '等待响应',
+        }
+        return labels.get(self.voiceSessionState, self.voiceSessionState)
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceStatusSummary(self) -> str:
+        return f'{self.voiceSessionStateText} {self.voiceWaitingFor}'.strip()
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceActivityText(self) -> str:
+        state = self.voiceSessionState
+        if state == 'OFF':
+            return '语音关闭'
+        if state == 'WAIT_WAKE':
+            return f'等待唤醒词：{self.voiceWakePhrase or "小零小零"}'
+        if state in ('LISTENING', 'AWAKENED_IDLE', 'CONTEXT_FOLLOWUP'):
+            return '正在接收语音'
+        if state == 'RECORDING':
+            return '正在录音'
+        if state == 'ASR_PROCESSING':
+            return '正在识别'
+        if state == 'TTS_PAUSED':
+            return '正在播报，稍后再说'
+        if state == 'WAITING_RESPONSE':
+            return '等待响应'
+        return state
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceActivityTone(self) -> str:
+        state = self.voiceSessionState
+        if state in ('LISTENING', 'AWAKENED_IDLE', 'CONTEXT_FOLLOWUP', 'RECORDING'):
+            return 'active'
+        if state in ('ASR_PROCESSING', 'WAITING_RESPONSE'):
+            return 'busy'
+        if state == 'TTS_PAUSED':
+            return 'speaking'
+        if state == 'WAIT_WAKE':
+            return 'wake'
+        return 'off'
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceWakePhrase(self) -> str:
+        return str(self.state.voice_session_status.get('wake_phrase') or '')
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceLastAsrText(self) -> str:
+        return str(self.state.voice_session_status.get('last_asr_text') or '')
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceLastPublishedText(self) -> str:
+        return str(self.state.voice_session_status.get('last_published_text') or '')
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceLastError(self) -> str:
+        return str(self.state.voice_session_status.get('last_error') or '')
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def voiceRecording(self) -> bool:
+        return bool(self.state.voice_session_status.get('is_recording'))
+
+    @pyqtProperty(bool, notify=systemStatusChanged)
+    def voiceSpeaking(self) -> bool:
+        return bool(self.state.voice_session_status.get('is_tts_playing'))
+
+    @pyqtProperty(int, notify=systemStatusChanged)
+    def voiceAsrFailCount(self) -> int:
+        return int(self.state.voice_session_status.get('asr_fail_count') or 0)
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceWaitingFor(self) -> str:
+        return str(self.state.voice_session_status.get('waiting_for') or '')
+
+    @pyqtProperty(str, notify=systemStatusChanged)
+    def voiceServiceStatus(self) -> str:
+        return self.state.voice_service_status
+
     @pyqtProperty(str, notify=agentStatusChanged)
     def agentStatusText(self) -> str:
         status = self.state.agent_status
         last_tool = str(status.get('last_tool') or '')
         result = str(status.get('last_result_status') or status.get('state') or 'ready')
         return f'{result} {last_tool}'.strip()
+
+    @pyqtProperty(str, notify=agentStatusChanged)
+    def agentLastIntent(self) -> str:
+        return str(self.state.agent_status.get('last_intent') or '')
+
+    @pyqtProperty(str, notify=agentStatusChanged)
+    def agentLastTool(self) -> str:
+        return str(self.state.agent_status.get('last_tool') or '')
+
+    @pyqtProperty(str, notify=agentStatusChanged)
+    def agentLastResult(self) -> str:
+        return str(self.state.agent_status.get('last_result_status') or '')
+
+    @pyqtProperty(str, notify=agentStatusChanged)
+    def agentLastError(self) -> str:
+        return str(self.state.agent_status.get('last_error') or '')
+
+    @pyqtProperty(str, notify=agentStatusChanged)
+    def agentStatusSummary(self) -> str:
+        parts = [self.agentLastIntent, self.agentLastTool, self.agentLastResult]
+        return ' / '.join(part for part in parts if part) or 'ready'
 
     @pyqtProperty('QVariantMap', notify=routePreviewChanged)
     def routePreview(self) -> Dict[str, Any]:
@@ -578,6 +698,12 @@ class UiBackend(QObject):
             self.addLog(f'UI 指令: {text.strip()}')
 
     @pyqtSlot(str)
+    def sendAgentText(self, text: str) -> None:
+        if text.strip():
+            self.bridge.publish_agent_request(text.strip())
+            self.addLog(f'语言 Agent: {text.strip()}')
+
+    @pyqtSlot(str)
     def setRobotMode(self, mode: str) -> None:
         self.state.robot_mode = mode
         self.bridge.publish_system_mode(mode)
@@ -678,7 +804,24 @@ class UiBackend(QObject):
         message = payload.get('message')
         if message:
             self.addLog(f'Agent: {message}')
+        self.state.agent_status = {
+            **self.state.agent_status,
+            'last_tool': str(payload.get('tool_name') or self.state.agent_status.get('last_tool') or ''),
+            'last_result_status': str(payload.get('status') or self.state.agent_status.get('last_result_status') or ''),
+            'last_error': str(payload.get('error_code') or self.state.agent_status.get('last_error') or ''),
+        }
         self.agentStatusChanged.emit()
+
+    def update_voice_session_status(self, payload: Dict[str, Any]) -> None:
+        self.state.voice_session_status = payload
+        self.state.system_status = dict(self.state.system_status)
+        self.state.system_status['voice_status'] = self.voiceStatusSummary
+        self.systemStatusChanged.emit()
+
+    def update_voice_service_result(self, name: str, success: bool, message: str) -> None:
+        self.state.voice_service_status = f'{name}: {"ok" if success else "failed"} {message}'.strip()
+        self.addLog(f'语音服务: {self.state.voice_service_status}')
+        self.systemStatusChanged.emit()
 
     def on_task_event(self, msg: Any) -> None:
         self.addLog(f'任务事件: {msg.intent} task={msg.task_id}')

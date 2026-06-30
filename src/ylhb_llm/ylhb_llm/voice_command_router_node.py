@@ -95,8 +95,7 @@ class VoiceCommandRouterNode(Node):
         if intent.route == 'system_command':
             if intent.system_command == 'emergency_stop':
                 self.publish_system_command(intent.system_command, intent.text, event)
-                self.publish_agent_event('emergency_stop', True, 'executed', '语音急停直达 supervisor')
-                self.say('voice_router', intent.feedback, priority=8, interrupt=True)
+                self.publish_agent_event('emergency_stop', True, 'sent', 'voice emergency stop direct path')
                 return
             self.publish_agent_request(intent.text, event, intent.route, intent.system_command)
             if self.publish_legacy_text_command:
@@ -112,8 +111,6 @@ class VoiceCommandRouterNode(Node):
                     self.publish_text_command(intent.text, event, intent.route)
             else:
                 self.publish_text_command(intent.text, event, intent.route)
-            if intent.feedback:
-                self.say('voice_router', intent.feedback, priority=7, interrupt=intent.route == 'global_safety')
             return
         if self.enable_inspection_agent:
             self.publish_agent_request(intent.text, event, intent.route)
@@ -134,6 +131,7 @@ class VoiceCommandRouterNode(Node):
         command = {
             'schema_version': '1.0',
             'source': 'voice',
+            'input_type': 'voice',
             'route': route,
             'session_id': str(event.get('session_id') or ''),
             'utterance_id': str(event.get('utterance_id') or ''),
@@ -173,6 +171,7 @@ class VoiceCommandRouterNode(Node):
         payload = {
             'schema_version': '1.0',
             'source': 'voice',
+            'input_type': 'voice',
             'route': route,
             'session_id': str(event.get('session_id') or ''),
             'utterance_id': str(event.get('utterance_id') or ''),

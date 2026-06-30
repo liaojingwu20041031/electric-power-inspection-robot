@@ -40,7 +40,7 @@ class AgentTools:
             payload.update({key: value for key, value in args.items() if key != 'command'})
             payload['command'] = name
             self.publish_json(self.system_pub, payload)
-            result = tool_result(name, True, 'executed', f'已发送系统命令: {name}')
+            result = tool_result(name, True, 'sent', f'已发送系统命令: {name}', {'command': name})
         elif name == 'send_text_motion':
             self.publish_json(self.text_pub, {
                 'schema_version': '1.0',
@@ -48,7 +48,7 @@ class AgentTools:
                 'route': 'motion',
                 'text': str(args.get('command') or ''),
             })
-            result = tool_result(name, True, 'executed', '已发送运动文本命令')
+            result = tool_result(name, True, 'sent', '已发送运动文本命令', {'command': str(args.get('command') or '')})
         elif name == 'get_system_status':
             result = tool_result(name, True, 'ok', 'system status', self.state.system_status)
         elif name == 'get_patrol_status':
@@ -56,14 +56,16 @@ class AgentTools:
         elif name == 'get_voice_status':
             result = tool_result(name, True, 'ok', 'voice status', self.state.voice_status)
         else:
-            answer = str(decision.get('final_answer') or decision.get('speak') or '当前状态未知。')
+            speak = decision.get('speak') or {}
+            answer = str(decision.get('final_answer') or speak.get('text') or '当前状态未知。')
             result = tool_result(name, True, 'ok', answer, {'answer': answer})
 
         self.publish_event(result)
         return result
 
     def say(self, decision: Dict[str, Any], priority: int = 5, interrupt: bool = False) -> None:
-        text = str(decision.get('speak') or decision.get('final_answer') or '')
+        speak = decision.get('speak') or {}
+        text = str(speak.get('text') or decision.get('final_answer') or '')
         if not text:
             return
         from ylhb_interfaces.msg import SayText
@@ -71,8 +73,8 @@ class AgentTools:
         msg = SayText()
         msg.header.stamp = self.node.get_clock().now().to_msg()
         msg.task_id = str(decision.get('decision_id') or 'inspection_agent')
-        msg.priority = int(priority)
-        msg.interrupt = bool(interrupt)
+        msg.priority = int(speak.get('priority') or priority)
+        msg.interrupt = bool(speak.get('interrupt') or interrupt)
         msg.text = text
         self.say_pub.publish(msg)
 

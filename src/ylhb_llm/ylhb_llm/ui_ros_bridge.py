@@ -29,6 +29,8 @@ class UiSignals(QObject):
     taskStatus = pyqtSignal(object)
     sayText = pyqtSignal(object)
     voiceStatus = pyqtSignal(object)
+    voiceSessionStatus = pyqtSignal(dict)
+    voiceServiceResult = pyqtSignal(str, bool, str)
     agentStatus = pyqtSignal(dict)
     agentEvent = pyqtSignal(dict)
     localizedObjects = pyqtSignal(str)
@@ -42,6 +44,7 @@ class InspectionDisplayRosBridge(Node):
         self.signals = signals
         parameters = {
             'text_command_topic': '/inspection_ai/text_command',
+            'agent_request_topic': '/inspection_ai/agent_request',
             'system_mode_topic': '/inspection_ai/system_mode',
             'system_command_topic': '/inspection_ai/system_command',
             'system_status_topic': '/inspection_ai/system_status',
@@ -50,6 +53,7 @@ class InspectionDisplayRosBridge(Node):
             'say_text_topic': '/inspection_ai/say_text',
             'task_context_status_topic': '/inspection_ai/task_context_status',
             'voice_status_topic': '/inspection_ai/voice_status',
+            'voice_session_status_topic': '/inspection_ai/voice_session_status',
             'agent_status_topic': '/inspection_ai/agent_status',
             'agent_event_topic': '/inspection_ai/agent_event',
             'start_voice_session_service_name': '/inspection_ai/start_voice_session',
@@ -69,6 +73,7 @@ class InspectionDisplayRosBridge(Node):
             self.declare_parameter(name, value)
 
         self.text_pub = self.create_publisher(String, self._param('text_command_topic'), 10)
+        self.agent_request_pub = self.create_publisher(String, self._param('agent_request_topic'), 10)
         self.system_mode_pub = self.create_publisher(String, self._param('system_mode_topic'), latched_qos())
         self.system_command_pub = self.create_publisher(String, self._param('system_command_topic'), 10)
         self.patrol_command_pub = self.create_publisher(String, self._param('patrol_command_topic'), 10)
@@ -79,6 +84,7 @@ class InspectionDisplayRosBridge(Node):
         self.create_subscription(TaskStatus, self._param('task_status_topic'), signals.taskStatus.emit, 10)
         self.create_subscription(SayText, self._param('say_text_topic'), signals.sayText.emit, 10)
         self.create_subscription(VoiceStatus, self._param('voice_status_topic'), signals.voiceStatus.emit, 10)
+        self.create_subscription(String, self._param('voice_session_status_topic'), self._voice_session_status, latched_qos())
         self.create_subscription(String, self._param('agent_status_topic'), self._agent_status, latched_qos())
         self.create_subscription(String, self._param('agent_event_topic'), self._agent_event, 10)
         self.create_subscription(String, self._param('localized_objects_topic'), self._localized_objects, 10)
@@ -133,9 +139,21 @@ class InspectionDisplayRosBridge(Node):
     def _agent_event(self, msg: String) -> None:
         self.signals.agentEvent.emit(self.parse_json(msg.data))
 
+    def _voice_session_status(self, msg: String) -> None:
+        self.signals.voiceSessionStatus.emit(self.parse_json(msg.data))
+
     def publish_text_command(self, text: str, source: str = 'ui') -> None:
         self._publish_json(self.text_pub, {
             'schema_version': '1.0', 'source': source, 'text': text, 'timestamp': time.time(),
+        })
+
+    def publish_agent_request(self, text: str, source: str = 'ui') -> None:
+        self._publish_json(self.agent_request_pub, {
+            'schema_version': '1.0',
+            'source': source,
+            'text': text,
+            'input_type': 'text',
+            'timestamp': time.time(),
         })
 
     def publish_system_mode(self, mode: str) -> None:
@@ -163,8 +181,18 @@ class InspectionDisplayRosBridge(Node):
 
     def call_voice_service(self, name: str) -> None:
         client = self.voice_clients[name]
-        if client.service_is_ready():
-            client.call_async(Trigger.Request())
+        if not client.service_is_ready():
+            self.signals.voiceServiceResult.emit(name, False, '语音服务不可用')
+            return
+        future = client.call_async(Trigger.Request())
+        future.add_done_callback(lambda done, service_name=name: self._voice_service_done(service_name, done))
+
+    def _voice_service_done(self, name: str, future) -> None:
+        try:
+            result = future.result()
+            self.signals.voiceServiceResult.emit(name, bool(result.success), str(result.message))
+        except Exception as exc:
+            self.signals.voiceServiceResult.emit(name, False, str(exc))
 
     @staticmethod
     def _publish_json(publisher, payload: Dict[str, Any]) -> None:

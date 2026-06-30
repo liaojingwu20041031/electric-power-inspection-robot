@@ -24,6 +24,7 @@ class FakeBridge:
         self.system_commands = []
         self.patrol_commands = []
         self.twists = []
+        self.agent_requests = []
 
     def publish_system_command(self, command, **extra):
         self.system_commands.append((command, extra))
@@ -39,6 +40,9 @@ class FakeBridge:
 
     def publish_text_command(self, _text):
         pass
+
+    def publish_agent_request(self, text):
+        self.agent_requests.append(text)
 
     def call_voice_service(self, _name):
         pass
@@ -616,3 +620,61 @@ def test_voice_status_uses_actual_ros_message_fields():
 
     assert backend.state.voice_status == '播报中 voice_session'
     assert backend.systemStatus['voice_status'] == '播报中 voice_session'
+
+
+def test_voice_session_status_updates_derived_properties():
+    backend = make_backend(lambda: 100.0)
+
+    backend.update_voice_session_status({
+        'enabled': True,
+        'state': 'WAIT_WAKE',
+        'wake_phrase': '小零小零',
+        'last_asr_text': '开始巡检',
+        'last_published_text': '开始巡检',
+        'asr_fail_count': 1,
+        'waiting_for': 'wake_phrase',
+    })
+
+    assert backend.voiceSessionEnabled is True
+    assert backend.voiceSessionStateText == '待唤醒'
+    assert backend.voiceWakePhrase == '小零小零'
+    assert backend.voiceLastAsrText == '开始巡检'
+    assert backend.voiceAsrFailCount == 1
+    assert '待唤醒' in backend.voiceStatusSummary
+    assert backend.voiceActivityTone == 'wake'
+    assert '等待唤醒词' in backend.voiceActivityText
+
+    backend.update_voice_session_status({'enabled': True, 'state': 'RECORDING'})
+    assert backend.voiceActivityTone == 'active'
+    assert backend.voiceActivityText == '正在录音'
+
+    backend.update_voice_session_status({'enabled': True, 'state': 'ASR_PROCESSING'})
+    assert backend.voiceActivityTone == 'busy'
+    assert backend.voiceActivityText == '正在识别'
+
+
+def test_send_agent_text_publishes_agent_request():
+    backend = make_backend(lambda: 100.0)
+
+    backend.sendAgentText(' 开始巡检 ')
+
+    assert backend.bridge.agent_requests == ['开始巡检']
+
+
+def test_agent_event_updates_recent_tool_result_and_message():
+    backend = make_backend(lambda: 100.0)
+
+    backend.update_agent_event({'tool_name': 'start_patrol_mode', 'status': 'sent', 'message': '已发送'})
+
+    assert backend.agentLastTool == 'start_patrol_mode'
+    assert backend.agentLastResult == 'sent'
+    assert backend.agentEvents[-1]['message'] == '已发送'
+
+
+def test_voice_service_result_updates_status_and_log():
+    backend = make_backend(lambda: 100.0)
+
+    backend.update_voice_service_result('start', True, '语音模式已开启。')
+
+    assert 'start: ok' in backend.voiceServiceStatus
+    assert any('语音服务' in event['message'] for event in backend.logs)

@@ -19,8 +19,11 @@ ALLOWED_TOOLS = {
 }
 
 MOTION_COMMANDS = {'前进', '后退', '左转', '右转', '停止'}
-RESPONSE_TYPES = {'tool', 'final', 'reject', 'ignore'}
-SAFETY_LEVELS = {'safe', 'normal', 'critical', 'blocked'}
+RESPONSE_TYPES = {'tool_call', 'final_answer', 'status_reply', 'need_confirm', 'reject', 'ignore'}
+SAFETY_LEVELS = {'emergency', 'normal', 'requires_confirm', 'blocked'}
+RESULT_STATUSES = {'sent', 'done', 'rejected', 'failed', 'timeout', 'ok'}
+LEGACY_RESPONSE_TYPES = {'tool': 'tool_call', 'final': 'final_answer'}
+LEGACY_SAFETY_LEVELS = {'critical': 'emergency', 'safe': 'normal'}
 REQUIRED_DECISION_FIELDS = {
     'schema_version',
     'decision_id',
@@ -47,6 +50,26 @@ def validate_decision(value: Any) -> Dict[str, Any]:
             raise SchemaError(f'invalid json: {exc}') from exc
     if not isinstance(value, dict):
         raise SchemaError('AgentDecision must be an object')
+    value = dict(value)
+    if 'tool' in value and 'tool_call' not in value:
+        value['tool_call'] = value.pop('tool')
+    if 'final' in value and 'final_answer' not in value:
+        value['final_answer'] = value.pop('final')
+    value['response_type'] = LEGACY_RESPONSE_TYPES.get(
+        str(value.get('response_type') or ''),
+        value.get('response_type'),
+    )
+    value['safety_level'] = LEGACY_SAFETY_LEVELS.get(
+        str(value.get('safety_level') or ''),
+        value.get('safety_level'),
+    )
+    if isinstance(value.get('speak'), str):
+        value['speak'] = {
+            'reply_key': '',
+            'text': value['speak'],
+            'priority': 5,
+            'interrupt': False,
+        }
 
     missing = REQUIRED_DECISION_FIELDS - set(value)
     if missing:
@@ -75,7 +98,15 @@ def validate_decision(value: Any) -> Dict[str, Any]:
     if name == 'send_text_motion' and str(arguments.get('command') or '') not in MOTION_COMMANDS:
         raise SchemaError('unsupported motion command')
 
-    for field in ('decision_id', 'intent', 'speak', 'final_answer', 'reason_cn'):
+    speak = value['speak']
+    if not isinstance(speak, dict):
+        raise SchemaError('speak must be object')
+    speak['reply_key'] = str(speak.get('reply_key') or '')
+    speak['text'] = str(speak.get('text') or '')
+    speak['priority'] = int(speak.get('priority') or 5)
+    speak['interrupt'] = bool(speak.get('interrupt'))
+
+    for field in ('decision_id', 'intent', 'final_answer', 'reason_cn'):
         value[field] = str(value[field])
     return value
 
@@ -88,6 +119,8 @@ def tool_result(
     data: Dict[str, Any] | None = None,
     error_code: str = '',
 ) -> Dict[str, Any]:
+    if str(status) not in RESULT_STATUSES:
+        raise SchemaError('invalid tool result status')
     return {
         'schema_version': '1.0',
         'tool_name': str(tool_name),

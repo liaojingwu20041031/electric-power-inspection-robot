@@ -9,11 +9,11 @@ def valid_decision(**overrides):
     data = {
         'schema_version': '1.0',
         'decision_id': 'd1',
-        'response_type': 'tool',
+        'response_type': 'tool_call',
         'intent': 'start_patrol',
         'safety_level': 'normal',
         'tool_call': {'name': 'start_patrol_mode', 'arguments': {}},
-        'speak': '准备开始巡逻。',
+        'speak': {'reply_key': 'command.patrol_start', 'text': '准备开始巡逻。', 'priority': 5, 'interrupt': False},
         'final_answer': '',
         'need_confirm': False,
         'reason_cn': '用户要求开始巡逻',
@@ -53,8 +53,16 @@ def test_validate_decision_accepts_json_string():
     assert result['tool_call']['name'] == 'start_patrol_mode'
 
 
+def test_validate_decision_converts_legacy_schema():
+    result = validate_decision(valid_decision(response_type='tool', safety_level='critical', speak='已急停。'))
+
+    assert result['response_type'] == 'tool_call'
+    assert result['safety_level'] == 'emergency'
+    assert result['speak']['text'] == '已急停。'
+
+
 def test_tool_result_shape_is_stable():
-    result = tool_result('pause_patrol', True, 'executed', '已发送')
+    result = tool_result('pause_patrol', True, 'sent', '已发送')
 
     assert set(result) == {
         'schema_version',
@@ -67,3 +75,8 @@ def test_tool_result_shape_is_stable():
         'timestamp',
     }
     assert result['tool_name'] == 'pause_patrol'
+
+
+def test_tool_result_rejects_old_status():
+    with pytest.raises(SchemaError):
+        tool_result('pause_patrol', True, 'executed', '已发送')

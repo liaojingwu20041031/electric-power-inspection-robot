@@ -109,3 +109,13 @@ def test_patrol_page_shows_known_and_unknown_startup_steps_and_collapses_diagnos
     assert 'property bool diagnosticsVisible: false' in qml
     assert 'checked: root.diagnosticsVisible' in qml
     assert 'visible: root.diagnosticsVisible' in qml
+
+
+def test_voice_ai_page_sends_text_to_language_agent():
+    qml = Path("src/ylhb_llm/qml/pages/VoiceAiPage.qml").read_text(encoding="utf-8")
+
+    assert "发送到语言 Agent" in qml
+    assert "backend.sendAgentText(commandText.text)" in qml
+    assert "backend.sendTextCommand(commandText.text)" not in qml
+    assert "backend.voiceActivityText" in qml
+    assert "backend.voiceActivityTone" in qml

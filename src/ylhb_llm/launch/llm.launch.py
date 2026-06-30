@@ -44,6 +44,12 @@ def generate_launch_description():
     map_output_dir = LaunchConfiguration('map_output_dir')
     perception_model_path = LaunchConfiguration('perception_model_path')
     enable_llm_parse = LaunchConfiguration('enable_llm_parse')
+    voice_energy_threshold = LaunchConfiguration('voice_energy_threshold')
+    voice_command_vad_silence_sec = LaunchConfiguration('voice_command_vad_silence_sec')
+    voice_command_min_voice_sec = LaunchConfiguration('voice_command_min_voice_sec')
+    voice_wait_wake_threshold_multiplier = LaunchConfiguration('voice_wait_wake_threshold_multiplier')
+    voice_tts_tail_pause_sec = LaunchConfiguration('voice_tts_tail_pause_sec')
+    voice_debug_save_asr_audio = LaunchConfiguration('voice_debug_save_asr_audio')
 
     return LaunchDescription([
         DeclareLaunchArgument('params_file', default_value=default_params),
@@ -74,6 +80,12 @@ def generate_launch_description():
         DeclareLaunchArgument('xauthority', default_value=''),
         DeclareLaunchArgument('force_local_display', default_value='true'),
         DeclareLaunchArgument('enable_llm_parse', default_value='false'),
+        DeclareLaunchArgument('voice_energy_threshold', default_value='800'),
+        DeclareLaunchArgument('voice_command_vad_silence_sec', default_value='1.25'),
+        DeclareLaunchArgument('voice_command_min_voice_sec', default_value='0.8'),
+        DeclareLaunchArgument('voice_wait_wake_threshold_multiplier', default_value='1.8'),
+        DeclareLaunchArgument('voice_tts_tail_pause_sec', default_value='0.9'),
+        DeclareLaunchArgument('voice_debug_save_asr_audio', default_value='false'),
 
         Node(
             package='ylhb_llm',
@@ -126,7 +138,19 @@ def generate_launch_description():
             name='voice_session_node',
             output='screen',
             condition=IfCondition(enable_task_layer),
-            parameters=[params_file, {'dashscope_base_url': dashscope_base_url, 'asr_model': asr_model, 'audio_device': audio_device, 'audio_input_device': audio_input_device, 'enabled': ParameterValue(enable_voice_session, value_type=bool)}],
+            parameters=[params_file, {
+                'dashscope_base_url': dashscope_base_url,
+                'asr_model': asr_model,
+                'audio_device': audio_device,
+                'audio_input_device': audio_input_device,
+                'enabled': ParameterValue(enable_voice_session, value_type=bool),
+                'energy_threshold': ParameterValue(voice_energy_threshold, value_type=int),
+                'command_vad_silence_sec': ParameterValue(voice_command_vad_silence_sec, value_type=float),
+                'command_min_voice_sec': ParameterValue(voice_command_min_voice_sec, value_type=float),
+                'wait_wake_threshold_multiplier': ParameterValue(voice_wait_wake_threshold_multiplier, value_type=float),
+                'tts_tail_pause_sec': ParameterValue(voice_tts_tail_pause_sec, value_type=float),
+                'debug_save_asr_audio': ParameterValue(voice_debug_save_asr_audio, value_type=bool),
+            }],
         ),
         Node(
             package='ylhb_llm',
