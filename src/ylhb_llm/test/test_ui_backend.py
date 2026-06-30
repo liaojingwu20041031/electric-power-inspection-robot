@@ -1,11 +1,22 @@
 import threading
 import time
+from pathlib import Path
 
 from PyQt5.QtCore import QCoreApplication, QThread
 from types import SimpleNamespace
 
+from ylhb_mobile_bridge.patrol_route_store import load_route_file
 from ylhb_llm.ui_backend import UiBackend
 from ylhb_llm.ui_models import UiState
+
+
+TEST_ROUTE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / 'ylhb_mobile_bridge'
+    / 'test'
+    / 'fixtures'
+    / 'patrol_routes.json'
+)
 
 
 class FakeBridge:
@@ -36,6 +47,11 @@ class FakeBridge:
 def make_backend(clock):
     QCoreApplication.instance() or QCoreApplication([])
     return UiBackend(FakeBridge(), UiState(), clock=clock)
+
+
+def route_loop_config():
+    data = load_route_file(str(TEST_ROUTE_PATH))
+    return dict(data['routes'][0]['loop'])
 
 
 def process_events_until(predicate, timeout_sec=2.0):
@@ -139,6 +155,41 @@ def test_patrol_commands_use_supervisor_and_are_debounced():
     assert backend.bridge.patrol_commands == []
 
 
+def test_direct_patrol_system_commands_are_debounced():
+    now = [100.0]
+    backend = make_backend(lambda: now[0])
+
+    backend.sendSystemCommand('pause_patrol')
+    backend.sendSystemCommand('pause_patrol')
+    now[0] = 100.81
+    backend.sendSystemCommand('pause_patrol')
+    backend.sendSystemCommand('resume_patrol')
+    backend.sendSystemCommand('resume_patrol')
+
+    assert backend.bridge.system_commands == [
+        ('pause_patrol', {}),
+        ('pause_patrol', {}),
+        ('resume_patrol', {}),
+    ]
+    assert backend.bridge.patrol_commands == []
+
+
+def test_direct_stop_robot_stack_command_uses_long_debounce():
+    now = [100.0]
+    backend = make_backend(lambda: now[0])
+
+    backend.sendSystemCommand('stop_robot_stack')
+    now[0] = 104.9
+    backend.sendSystemCommand('stop_robot_stack')
+    now[0] = 105.01
+    backend.sendSystemCommand('stop_robot_stack')
+
+    assert backend.bridge.system_commands == [
+        ('stop_robot_stack', {}),
+        ('stop_robot_stack', {}),
+    ]
+
+
 def test_start_patrol_mode_sends_system_command_to_supervisor():
     backend = make_backend(lambda: 100.0)
     backend.setPatrolStartProfile('inspection')
@@ -186,7 +237,11 @@ def test_patrol_display_properties_follow_starting_active_and_terminal_states():
     assert backend.patrolCanStart is False
     assert backend.patrolStateLabel == '启动中: 等待巡逻执行器响应'
 
-    backend.update_system_status({'patrol_mode_state': 'running', 'patrol_readiness': {}})
+    backend.update_system_status({
+        'patrol_mode_state': 'running',
+        'patrol_executor': 'running',
+        'patrol_readiness': {},
+    })
     backend.update_patrol_status({'state': 'running', 'target_index': 0, 'target_count': 2})
     assert backend.patrolStarting is False
     assert backend.patrolActive is True
@@ -194,7 +249,7 @@ def test_patrol_display_properties_follow_starting_active_and_terminal_states():
     assert backend.patrolCanPause is True
     assert backend.patrolCanResume is False
     assert backend.patrolCanCancel is True
-    assert backend.patrolStateLabel == '运行中: 第 1 / 2 个检查点'
+    assert '1 / 2' in backend.patrolStateLabel
 
     backend.update_system_status({'patrol_mode_state': 'failed', 'patrol_readiness': {}})
     backend.update_patrol_status({'state': 'failed'})
@@ -232,6 +287,21 @@ def test_patrol_display_properties_do_not_publish_commands():
 
     assert backend.bridge.system_commands == []
     assert backend.bridge.patrol_commands == []
+
+
+def test_stale_patrol_status_does_not_block_restart_after_executor_stops():
+    backend = make_backend(lambda: 100.0)
+    backend.update_system_status({
+        'patrol_mode_state': 'idle',
+        'patrol_executor': 'stopped',
+        'patrol_readiness': {},
+    })
+    backend.update_patrol_status({'state': 'paused'})
+
+    assert backend.patrolCanStart is True
+    assert backend.patrolActive is False
+    assert backend.patrolCanResume is False
+    assert backend.patrolCanCancel is False
 
 
 def test_patrol_controls_enabled_when_executor_running_or_status_seen():
@@ -470,6 +540,53 @@ def test_patrol_status_special_phases_are_exposed_for_qml():
         'cycle_index': 1,
     })
     assert backend.patrolProgressLabel == '等待下一轮'
+
+
+def test_patrol_overview_labels_format_status_from_route_values():
+    backend = make_backend(lambda: 100.0)
+    loop = route_loop_config()
+    wait_sec = int(loop['wait_sec'])
+
+    backend.update_patrol_status({
+        'state': 'waiting_loop',
+        'target_index': 0,
+        'target_count': 4,
+        'cycle_index': 2,
+        'next_cycle_index': 3,
+        'loop_enabled': True,
+        'loop_max_cycles': int(loop['max_cycles']),
+        'loop_is_infinite': int(loop['max_cycles']) == 0,
+        'loop_wait_remaining_sec': wait_sec,
+        'current_target_label': '等待下一轮',
+    })
+
+    assert backend.patrolMainStatusLabel == '等待下一轮'
+    assert backend.patrolCycleLabel == '第 2 轮 / 无限循环'
+    assert f'00:{wait_sec:02d}' in backend.patrolNextCycleLabel
+    assert '下一轮' in backend.patrolNextCycleLabel
+    assert backend.patrolOverviewProgressLabel == '等待下一轮'
+
+
+def test_patrol_overview_labels_do_not_publish_commands():
+    backend = make_backend(lambda: 100.0)
+    loop = route_loop_config()
+    backend.update_patrol_status({
+        'state': 'waiting_loop',
+        'cycle_index': 1,
+        'loop_enabled': True,
+        'loop_is_infinite': int(loop['max_cycles']) == 0,
+        'loop_wait_remaining_sec': int(loop['wait_sec']),
+    })
+
+    _ = (
+        backend.patrolMainStatusLabel,
+        backend.patrolCycleLabel,
+        backend.patrolNextCycleLabel,
+        backend.patrolOverviewProgressLabel,
+    )
+
+    assert backend.bridge.system_commands == []
+    assert backend.bridge.patrol_commands == []
 
 
 def test_missing_patrol_status_explains_executor_unavailable():

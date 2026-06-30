@@ -241,6 +241,9 @@ class UiBackend(QObject):
             or self._has_patrol_status
         )
 
+    def _patrol_executor_running(self) -> bool:
+        return self.state.system_status.get('patrol_executor') == 'running'
+
     @pyqtProperty(bool, notify=systemStatusChanged)
     def patrolStarting(self) -> bool:
         return self.patrolModeState in ('starting', 'command_sent')
@@ -248,7 +251,8 @@ class UiBackend(QObject):
     @pyqtProperty(bool, notify=systemStatusChanged)
     def patrolActive(self) -> bool:
         return (
-            str(self.state.patrol_status.get('state') or '') in PATROL_ACTIVE_STATES
+            self._patrol_executor_running()
+            and str(self.state.patrol_status.get('state') or '') in PATROL_ACTIVE_STATES
             or self.patrolModeState == 'running'
         )
 
@@ -258,7 +262,8 @@ class UiBackend(QObject):
 
     @pyqtProperty(bool, notify=systemStatusChanged)
     def patrolCanPause(self) -> bool:
-        return str(self.state.patrol_status.get('state') or '') in (
+        state = str(self.state.patrol_status.get('state') or '')
+        return self._patrol_executor_running() and state in (
             'running',
             'returning_home',
             'waiting_loop',
@@ -266,20 +271,26 @@ class UiBackend(QObject):
 
     @pyqtProperty(bool, notify=systemStatusChanged)
     def patrolCanResume(self) -> bool:
-        return str(self.state.patrol_status.get('state') or '') == 'paused'
+        return (
+            self._patrol_executor_running()
+            and str(self.state.patrol_status.get('state') or '') == 'paused'
+        )
 
     @pyqtProperty(bool, notify=systemStatusChanged)
     def patrolCanCancel(self) -> bool:
         status = self.state.patrol_status
         return (
-            str(status.get('state') or '') in (
-                'running',
-                'paused',
-                'returning_home',
-                'waiting_loop',
-                'canceling',
+            self._patrol_executor_running()
+            and (
+                str(status.get('state') or '') in (
+                    'running',
+                    'paused',
+                    'returning_home',
+                    'waiting_loop',
+                    'canceling',
+                )
+                or str(status.get('navigation_phase') or '') in PATROL_NAVIGATION_ACTIVE_PHASES
             )
-            or str(status.get('navigation_phase') or '') in PATROL_NAVIGATION_ACTIVE_PHASES
         )
 
     @pyqtProperty(str, notify=systemStatusChanged)
@@ -299,6 +310,56 @@ class UiBackend(QObject):
         if state in PATROL_TERMINAL_LABELS:
             return PATROL_TERMINAL_LABELS[state]
         return '就绪: 可启动巡逻' if self.patrolReady else '待命: 等待巡逻依赖'
+
+    @pyqtProperty(str, notify=patrolStatusChanged)
+    def patrolMainStatusLabel(self) -> str:
+        state = str(self.state.patrol_status.get('state') or self.patrolModeState)
+        labels = {
+            'running': '运行中',
+            'waiting_loop': '等待下一轮',
+            'returning_home': '返回初始点',
+            'paused': '已暂停',
+            'canceled': '已取消',
+            'cancelled': '已取消',
+            'failed': '失败',
+            'succeeded': '已完成',
+        }
+        return labels.get(state, self.localizedStatus(state))
+
+    @pyqtProperty(str, notify=patrolStatusChanged)
+    def patrolCycleLabel(self) -> str:
+        status = self.state.patrol_status
+        try:
+            cycle_index = int(status.get('cycle_index') or 0)
+        except (TypeError, ValueError):
+            cycle_index = 0
+        if cycle_index <= 0:
+            return ''
+        if bool(status.get('loop_is_infinite')):
+            return f'第 {cycle_index} 轮 / 无限循环'
+        try:
+            max_cycles = int(status.get('loop_max_cycles') or 0)
+        except (TypeError, ValueError):
+            max_cycles = 0
+        if max_cycles > 0:
+            return f'第 {cycle_index} / {max_cycles} 轮'
+        return f'第 {cycle_index} 轮'
+
+    @pyqtProperty(str, notify=patrolStatusChanged)
+    def patrolNextCycleLabel(self) -> str:
+        status = self.state.patrol_status
+        if str(status.get('state') or '') != 'waiting_loop':
+            return ''
+        try:
+            remaining = int(status.get('loop_wait_remaining_sec'))
+        except (TypeError, ValueError):
+            return ''
+        remaining = max(0, remaining)
+        return f'距离下一轮 {remaining // 60:02d}:{remaining % 60:02d}'
+
+    @pyqtProperty(str, notify=patrolStatusChanged)
+    def patrolOverviewProgressLabel(self) -> str:
+        return self._patrol_progress_label(self.state.patrol_status) or '未开始'
 
     @pyqtProperty(str, notify=patrolStatusChanged)
     def patrolProgressLabel(self) -> str:
@@ -412,20 +473,28 @@ class UiBackend(QObject):
         self.addLog('系统命令: start_patrol_mode')
 
     def _is_debounced(self, command: str) -> bool:
-        debounced = {
-            'start_patrol_mode',
-            'patrol:start',
-            'patrol:pause',
-            'patrol:resume',
-            'patrol:cancel',
-            'patrol:reload',
-            'patrol:initialize',
+        cooldowns = {
+            'start_patrol_mode': 0.8,
+            'pause_patrol': 0.8,
+            'resume_patrol': 0.8,
+            'reload_patrol_route': 0.8,
+            'stop_robot_stack': 5.0,
+            'stop_navigation': 5.0,
+            'stop_bringup': 5.0,
+            'stop_patrol_mode': 5.0,
+            'patrol:start': 0.8,
+            'patrol:pause': 0.8,
+            'patrol:resume': 0.8,
+            'patrol:cancel': 0.8,
+            'patrol:reload': 0.8,
+            'patrol:initialize': 0.8,
         }
-        if command not in debounced:
+        cooldown = cooldowns.get(command)
+        if cooldown is None:
             return False
         now = self.clock()
         previous = self._last_system_command_at.get(command)
-        if previous is not None and now - previous < 0.8:
+        if previous is not None and now - previous < cooldown:
             return True
         self._last_system_command_at[command] = now
         return False

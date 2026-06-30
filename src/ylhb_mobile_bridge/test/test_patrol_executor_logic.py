@@ -270,6 +270,36 @@ def test_loop_waits_after_return_then_starts_next_cycle():
     ]
 
 
+def test_loop_wait_status_counts_down_until_next_cycle():
+    route, targets, start_pose, _data = first_target_scenario(
+        return_to_start=True,
+        loop={"enabled": True, "wait_sec": 12.0, "max_cycles": 0},
+    )
+    adapter = FakeAdapter([True, True, True])
+    logic = make_logic(adapter)
+
+    start(logic, route, targets, start_pose)
+    adapter.run_next_scheduled()
+
+    status = logic.status()
+    assert status["state"] == "waiting_loop"
+    assert status["loop_enabled"] is True
+    assert status["loop_is_infinite"] is True
+    assert status["next_cycle_index"] == 2
+    assert status["loop_wait_remaining_sec"] == 12
+    assert status["loop_wait_until"] == 112.0
+
+    adapter.now = 104.2
+    assert logic.status()["loop_wait_remaining_sec"] == 8
+
+    adapter.run_next_scheduled()
+
+    status = logic.status()
+    assert status["state"] == "running"
+    assert status["cycle_index"] == 2
+    assert status["loop_wait_remaining_sec"] is None
+
+
 def test_max_cycles_one_finishes_after_first_cycle():
     route, targets, start_pose, _data = first_target_scenario(
         return_to_start=True,

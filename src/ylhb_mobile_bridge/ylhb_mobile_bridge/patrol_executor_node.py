@@ -129,14 +129,25 @@ class PatrolExecutorLogic:
         self._navigation_purpose: Optional[str] = None
         self._return_home_then_fail = False
         self._loop_wait_token = 0
+        self._loop_wait_started_at: Optional[float] = None
+        self._loop_wait_until: Optional[float] = None
         self._paused_from_state: Optional[str] = None
         self.last_error: Optional[str] = None
 
     def status(self) -> Dict[str, Any]:
         target = self._current_target()
+        loop = self.route.get("loop", {}) if self.route else {}
+        loop_enabled = bool(loop.get("enabled"))
+        loop_max_cycles = int(loop.get("max_cycles", 0)) if loop else 0
         loop_wait_sec = None
-        if self.route and self.route.get("loop"):
-            loop_wait_sec = float(self.route["loop"].get("wait_sec", 0.0))
+        if loop:
+            loop_wait_sec = float(loop.get("wait_sec", 0.0))
+        loop_wait_remaining_sec = None
+        if self.state == "waiting_loop" and self._loop_wait_until is not None:
+            loop_wait_remaining_sec = max(
+                0,
+                int(math.ceil(self._loop_wait_until - self._time_source())),
+            )
         navigation_phase = self._navigation_phase()
         current_target_label = self._current_target_label(target, navigation_phase, len(self.targets))
         return {
@@ -152,6 +163,12 @@ class PatrolExecutorLogic:
             "current_target_label": current_target_label,
             "cycle_index": self.cycle_index if self.route else None,
             "loop_wait_sec": loop_wait_sec,
+            "loop_enabled": loop_enabled,
+            "loop_max_cycles": loop_max_cycles,
+            "loop_is_infinite": loop_enabled and loop_max_cycles == 0,
+            "next_cycle_index": self.cycle_index + 1 if self.route and loop_enabled else None,
+            "loop_wait_remaining_sec": loop_wait_remaining_sec,
+            "loop_wait_until": self._loop_wait_until if self.state == "waiting_loop" else None,
             "home_pose_source": "route_file" if self.home_pose else None,
             "last_error": self.last_error,
             "timestamp": self._time_source(),
@@ -221,6 +238,7 @@ class PatrolExecutorLogic:
         self._retry_count = 0
         self._return_home_then_fail = False
         self._loop_wait_token += 1
+        self._clear_loop_wait()
         self._paused_from_state = None
         self.last_error = None
         self._set_state("running")
@@ -249,6 +267,7 @@ class PatrolExecutorLogic:
         self.home_pose = None
         self.current_target_index = 0
         self.cycle_index = 1
+        self._clear_loop_wait()
         self._set_state("waiting_schedule" if waiting_schedule else "idle")
 
     def pause(self) -> bool:
@@ -257,6 +276,7 @@ class PatrolExecutorLogic:
         self._paused_from_state = self.state
         self._navigation_token += 1
         self._loop_wait_token += 1
+        self._clear_loop_wait()
         if self.state != "waiting_loop":
             self._cancel_navigation()
         self._stop_motion()
@@ -292,6 +312,7 @@ class PatrolExecutorLogic:
             return False
         self._navigation_token += 1
         self._loop_wait_token += 1
+        self._clear_loop_wait()
         self._set_state("canceling")
         self._cancel_navigation()
         self._stop_motion()
@@ -436,15 +457,19 @@ class PatrolExecutorLogic:
             return
         self._loop_wait_token += 1
         token = self._loop_wait_token
+        wait_sec = float(self.route["loop"]["wait_sec"])
+        self._loop_wait_started_at = self._time_source()
+        self._loop_wait_until = self._loop_wait_started_at + wait_sec
         self._set_state("waiting_loop")
         self._schedule_once(
-            float(self.route["loop"]["wait_sec"]),
+            wait_sec,
             lambda: self._loop_wait_finished(token),
         )
 
     def _loop_wait_finished(self, token: int) -> None:
         if token != self._loop_wait_token or self.state != "waiting_loop":
             return
+        self._clear_loop_wait()
         self.cycle_index += 1
         self.current_target_index = 0
         self._retry_count = 0
@@ -455,11 +480,17 @@ class PatrolExecutorLogic:
 
     def _complete_success(self) -> None:
         self._event("route_finished", result="succeeded")
+        self._clear_loop_wait()
         self._set_state("succeeded")
 
     def _finish_failure(self, message: str) -> None:
         self._event("route_failed", reason=message)
+        self._clear_loop_wait()
         self._set_state("failed", message)
+
+    def _clear_loop_wait(self) -> None:
+        self._loop_wait_started_at = None
+        self._loop_wait_until = None
 
 
 class PatrolExecutorNode(Node):

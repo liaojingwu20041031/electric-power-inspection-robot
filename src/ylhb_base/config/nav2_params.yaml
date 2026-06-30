@@ -178,8 +178,8 @@ controller_server:
       transform_tolerance: 1.5
       short_circuit_trajectory_evaluation: True
       stateful: True
-      # 到目标点 0.15m 内认为位置到达。
-      xy_goal_tolerance: 0.15
+      # 到目标点 0.08m 内认为位置到达。
+      xy_goal_tolerance: 0.08
       # 低于该平移速度认为底盘已停止。
       trans_stopped_velocity: 0.03
       # 轨迹评分器：避障、贴近路径、朝向目标、抑制振荡等。
@@ -206,8 +206,9 @@ controller_server:
     goal_checker:
       # 目标检查器：明确使用 SimpleGoalChecker，消除默认 goal checker 警告。
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.15
-      yaw_goal_tolerance: 0.17
+      # 保守收紧到点精度：位置 0.08m、角度 0.08rad。
+      xy_goal_tolerance: 0.08
+      yaw_goal_tolerance: 0.08
       stateful: True
 
 local_costmap:
@@ -311,8 +312,8 @@ planner_server:
     GridBased:
       # Smac 2D 使用代价地图碰撞检查，和 polygon footprint 配合比 Navfn 的点机器人模型更适合实车。
       plugin: "nav2_smac_planner/SmacPlanner2D"
-      # 目标附近 0.20m 内可接受，提升单目标到点精度。
-      tolerance: 0.20
+      # 目标附近 0.08m 内可接受，提升单目标到点精度。
+      tolerance: 0.08
       # 不允许规划穿过未知区域，避免目标附近轻微缺图时贴边冒进。
       allow_unknown: false
       # 保持原始 5cm costmap 分辨率，不下采样，避免窄通道被粗栅格误伤。

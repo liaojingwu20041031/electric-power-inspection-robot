@@ -14,6 +14,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from std_msgs.msg import String
+from std_srvs.srv import Empty
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
 
@@ -30,6 +31,13 @@ START_PROCESS_MESSAGES = {
 PATROL_BRINGUP_TO_NAVIGATION_DELAY_SEC = 3.0
 PATROL_NAVIGATION_TO_EXECUTOR_DELAY_SEC = 20.0
 PATROL_EXECUTOR_TO_START_DELAY_SEC = 6.0
+LONG_RUNNING_COMMANDS = {
+    'start_patrol_mode',
+    'stop_robot_stack',
+    'stop_navigation',
+    'stop_bringup',
+    'stop_patrol_mode',
+}
 
 STARTUP_STEP_LABELS = {
     'starting_bringup': '等待底盘传感器',
@@ -199,6 +207,7 @@ class SystemSupervisorNode(Node):
         self.last_patrol_start_request_id = ''
         self.last_patrol_event: Dict[str, Any] = {}
         self.last_initial_pose_event: Dict[str, Any] = {}
+        self.inflight_commands = set()
         self.lifecycle_clients: Dict[str, Any] = {}
         self.tf_buffer = None
         self.tf_listener = None
@@ -282,7 +291,30 @@ class SystemSupervisorNode(Node):
             self.set_result('', False, 'Missing command.')
             return
 
-        threading.Thread(target=self.handle_command, args=(command, payload), daemon=True).start()
+        if command in LONG_RUNNING_COMMANDS:
+            if not self.try_mark_command_inflight(command):
+                self.set_result(command, True, '重复命令已忽略，命令正在执行')
+                return
+            target = self.handle_inflight_command
+        else:
+            target = self.handle_command
+        threading.Thread(target=target, args=(command, payload), daemon=True).start()
+
+    def try_mark_command_inflight(self, command: str) -> bool:
+        with self.lock:
+            if not hasattr(self, 'inflight_commands'):
+                self.inflight_commands = set()
+            if command in self.inflight_commands:
+                return False
+            self.inflight_commands.add(command)
+            return True
+
+    def handle_inflight_command(self, command: str, payload: Dict[str, Any]) -> None:
+        try:
+            self.handle_command(command, payload)
+        finally:
+            with self.lock:
+                self.inflight_commands.discard(command)
 
     def patrol_status_callback(self, msg: String) -> None:
         try:
@@ -341,8 +373,7 @@ class SystemSupervisorNode(Node):
             return
         if command == 'stop_patrol_mode':
             self.stop_process('patrol_executor')
-            self.patrol_mode_state = 'idle'
-            self.startup_step = ''
+            self.reset_patrol_mode_state()
             self.set_result(command, True, '巡逻模式已停止')
             return
         if command.startswith('start_'):
@@ -426,6 +457,8 @@ class SystemSupervisorNode(Node):
             if not proc.is_running():
                 self.set_result_locked(f'stop_{name}', True, f'{name} already stopped')
                 return
+            if name == 'bringup':
+                self.stop_lidar_motor()
             assert proc.process is not None
             pid = proc.process.pid
             try:
@@ -440,6 +473,24 @@ class SystemSupervisorNode(Node):
             except Exception as exc:
                 self.set_result_locked(f'stop_{name}', False, f'Failed to stop {name}: {exc}')
 
+    def stop_lidar_motor(self) -> bool:
+        try:
+            client = self.create_client(Empty, '/stop_motor')
+            if not client.wait_for_service(timeout_sec=0.5):
+                self.log_info('LiDAR stop_motor service unavailable; stopping bringup process anyway')
+                return False
+            future = client.call_async(Empty.Request())
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if future.done():
+                    return True
+                time.sleep(0.02)
+            self.log_info('LiDAR stop_motor service call timed out; stopping bringup process anyway')
+            return False
+        except Exception as exc:
+            self.log_info(f'LiDAR stop_motor service call failed: {exc}')
+            return False
+
     def start_robot_stack(self) -> None:
         for name in ('bringup', 'zed', 'perception', 'navigation', 'llm'):
             self.start_process(name)
@@ -447,11 +498,23 @@ class SystemSupervisorNode(Node):
         self.set_result('start_robot_stack', True, '巡检节点启动命令已发送')
 
     def stop_robot_stack(self) -> None:
-        for name in ('patrol_executor', 'navigation', 'perception', 'zed', 'bringup'):
+        names = ('patrol_executor', 'navigation', 'perception', 'zed', 'bringup')
+        if all(not self.processes[name].is_running() for name in names):
+            self.reset_patrol_mode_state()
+            self.publish_mode('ready')
+            self.set_result('stop_robot_stack', True, '巡检运动、导航和感知节点已停止，AI/UI 保持运行')
+            return
+        for name in names:
             self.stop_process(name)
             time.sleep(0.2)
+        self.reset_patrol_mode_state()
         self.publish_mode('ready')
         self.set_result('stop_robot_stack', True, '巡检运动、导航和感知节点已停止，AI/UI 保持运行')
+
+    def reset_patrol_mode_state(self) -> None:
+        self.patrol_mode_state = 'idle'
+        self.startup_step = ''
+        self.patrol_error = ''
 
     def start_patrol_mode(self, profile: str = 'navigation') -> None:
         profile = profile if profile in ('navigation', 'inspection') else 'navigation'

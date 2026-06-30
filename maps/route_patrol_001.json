@@ -70,9 +70,9 @@
       ],
       "return_to_start": true,
       "loop": {
-        "enabled": false,
-        "wait_sec": 600,
-        "max_cycles": 0
+        "enabled": true,
+        "wait_sec": 30,
+        "max_cycles": 2
       },
       "goal_timeout_sec": 120,
       "max_retries_per_checkpoint": 1,

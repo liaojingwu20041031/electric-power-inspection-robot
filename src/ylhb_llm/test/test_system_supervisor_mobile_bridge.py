@@ -1,9 +1,11 @@
 import json
+import threading
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
+from std_msgs.msg import String
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
 from ylhb_llm import system_supervisor_node
@@ -304,6 +306,40 @@ def test_patrol_control_commands_are_forwarded_by_system_supervisor():
     assert node.set_result.call_count == 4
 
 
+def test_duplicate_inflight_long_command_does_not_start_second_handler(monkeypatch):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.lock = threading.Lock()
+    node.inflight_commands = set()
+    node.handle_command = Mock()
+    node.set_result = Mock()
+    threads = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+            threads.append(self)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(system_supervisor_node.threading, 'Thread', FakeThread)
+    msg = String()
+    msg.data = json.dumps({'command': 'stop_robot_stack'})
+
+    node.command_callback(msg)
+    node.command_callback(msg)
+
+    assert len(threads) == 1
+    node.handle_command.assert_not_called()
+    node.set_result.assert_called_once_with('stop_robot_stack', True, '重复命令已忽略，命令正在执行')
+
+    threads[0].target(*threads[0].args)
+    node.handle_command.assert_called_once_with('stop_robot_stack', {'command': 'stop_robot_stack'})
+    assert node.inflight_commands == set()
+
+
 def test_cancel_patrol_only_forwards_cancel_without_stopping_processes():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.publish_patrol_command = Mock()
@@ -514,6 +550,70 @@ def test_stop_patrol_mode_stops_executor_without_forwarding_cancel():
     node.publish_patrol_command.assert_not_called()
     node.stop_process.assert_called_once_with('patrol_executor')
     node.set_result.assert_called_with('stop_patrol_mode', True, '巡逻模式已停止')
+
+
+def test_stop_robot_stack_fast_path_when_targets_already_stopped():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {
+        'patrol_executor': FakeProcess(),
+        'navigation': FakeProcess(),
+        'perception': FakeProcess(),
+        'zed': FakeProcess(),
+        'bringup': FakeProcess(),
+    }
+    node.stop_process = Mock()
+    node.publish_mode = Mock()
+    node.set_result = Mock()
+    node.patrol_mode_state = 'running'
+    node.startup_step = 'waiting_nav2'
+    node.patrol_error = 'old error'
+
+    node.stop_robot_stack()
+
+    node.stop_process.assert_not_called()
+    assert node.patrol_mode_state == 'idle'
+    assert node.startup_step == ''
+    assert node.patrol_error == ''
+    node.publish_mode.assert_called_once_with('ready')
+    node.set_result.assert_called_once_with(
+        'stop_robot_stack',
+        True,
+        '巡检运动、导航和感知节点已停止，AI/UI 保持运行',
+    )
+
+
+def test_stopping_bringup_requests_lidar_motor_stop_first(monkeypatch):
+    class RunningProcess:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    process = FakeProcess(running=True)
+    process.process = RunningProcess()
+    node.processes = {'bringup': process}
+    node.lock = type(
+        'Lock',
+        (),
+        {
+            '__enter__': lambda _self: None,
+            '__exit__': lambda _self, *_args: None,
+        },
+    )()
+    sequence = []
+    node.stop_lidar_motor = Mock(side_effect=lambda: sequence.append('stop_lidar_motor'))
+    node.set_result_locked = Mock()
+    monkeypatch.setattr(system_supervisor_node.os, 'getpgid', lambda _pid: 123)
+    monkeypatch.setattr(system_supervisor_node.os, 'killpg', lambda *_args: sequence.append('killpg'))
+
+    node.stop_process('bringup')
+
+    node.stop_lidar_motor.assert_called_once()
+    assert sequence[:2] == ['stop_lidar_motor', 'killpg']
 
 
 def test_mobile_bridge_tcp_status_is_stopped_without_process():
