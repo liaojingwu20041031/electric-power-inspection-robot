@@ -745,6 +745,34 @@ def test_start_route_uses_start_pose_from_reloaded_route_file():
     assert started[0] == (route, targets, data["start_pose"]["pose"])
 
 
+def test_go_to_target_builds_single_target_route_from_route_file():
+    data = route_file_data()
+    target = data["targets"][1]
+    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
+    node._route_data = data
+    node._reload_route_file = lambda: True
+    node.get_logger = lambda: type("Logger", (), {"warning": lambda *_args: None})()
+    started = []
+    node.logic = type(
+        "Logic",
+        (),
+        {
+            "state": "idle",
+            "start_route": lambda _self, selected, expanded, start_pose: (
+                started.append((selected, expanded, start_pose)) or True
+            ),
+            "fail_to_start": lambda *_args: None,
+        },
+    )()
+
+    assert node._go_to_target(target["id"])
+
+    route, targets, start_pose = started[0]
+    assert route["target_ids"] == [target["id"]]
+    assert targets == [target]
+    assert start_pose == data["start_pose"]["pose"]
+
+
 def test_restarting_initial_pose_sequence_destroys_previous_timer():
     data = route_file_data()
     node = PatrolExecutorNode.__new__(PatrolExecutorNode)

@@ -1,0 +1,107 @@
+capabilities:
+  emergency_stop:
+    risk_level: emergency
+    executor: system
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: []
+  stop_motion:
+    risk_level: normal
+    executor: base_skill
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: []
+  rotate_relative:
+    risk_level: normal
+    executor: base_skill
+    timeout_sec: 12.0
+    argument_schema:
+      properties:
+        angle_deg:
+          type: number
+          minimum: -180
+          maximum: 180
+      required: [angle_deg]
+  move_relative:
+    risk_level: normal
+    executor: base_skill
+    timeout_sec: 12.0
+    argument_schema:
+      properties:
+        distance_m:
+          type: number
+          minimum: -0.5
+          maximum: 0.5
+      required: [distance_m]
+  start_route:
+    risk_level: normal
+    executor: route
+    timeout_sec: 3.0
+    argument_schema:
+      properties: {}
+      required: [route_id]
+  go_to_checkpoint:
+    risk_level: normal
+    executor: route
+    timeout_sec: 3.0
+    argument_schema:
+      properties: {}
+      required: [target_id]
+  inspect_checkpoint:
+    risk_level: normal
+    executor: route_read
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: [target_id]
+  list_routes:
+    risk_level: read_only
+    executor: route_read
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: []
+  describe_route:
+    risk_level: read_only
+    executor: route_read
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: [route_id]
+  list_checkpoints:
+    risk_level: read_only
+    executor: route_read
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: [route_id]
+  get_system_status:
+    risk_level: read_only
+    executor: local
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: []
+  get_patrol_status:
+    risk_level: read_only
+    executor: local
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: []
+  get_voice_status:
+    risk_level: read_only
+    executor: local
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: []
+  generate_local_status_reply:
+    risk_level: read_only
+    executor: local
+    timeout_sec: 1.0
+    argument_schema:
+      properties: {}
+      required: []

@@ -15,6 +15,7 @@ ALLOWED_TOOLS = {
     'send_motion_command',
     'generate_local_status_reply',
 }
+DANGEROUS_TOOLS = {'/cmd_vel', 'cmd_vel', 'nav2_goal', 'delete_map', 'edit_route'}
 
 MOTION_COMMANDS = {'前进', '后退', '左转', '右转', '停止'}
 RESPONSE_TYPES = {'tool_call', 'final_answer', 'status_reply', 'reject', 'ignore'}
@@ -40,7 +41,11 @@ class SchemaError(ValueError):
     pass
 
 
-def validate_decision(value: Any) -> Dict[str, Any]:
+def validate_decision(
+    value: Any,
+    allowed_tool_names: set[str] | None = None,
+    tool_schemas: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -85,7 +90,10 @@ def validate_decision(value: Any) -> Dict[str, Any]:
     if not isinstance(tool_call, dict):
         raise SchemaError('tool_call must be object')
     name = str(tool_call.get('name') or '')
-    if name not in ALLOWED_TOOLS:
+    allowed = allowed_tool_names or ALLOWED_TOOLS
+    if name in DANGEROUS_TOOLS:
+        raise SchemaError(f'dangerous tool is forbidden: {name}')
+    if name not in allowed:
         raise SchemaError(f'unknown tool: {name}')
     arguments = tool_call.get('arguments', {})
     if arguments is None:
@@ -95,6 +103,8 @@ def validate_decision(value: Any) -> Dict[str, Any]:
         raise SchemaError('tool_call.arguments must be object')
     if name == 'send_motion_command' and str(arguments.get('command') or '') not in MOTION_COMMANDS:
         raise SchemaError('unsupported motion command')
+    if tool_schemas and name in tool_schemas:
+        _validate_arguments(name, arguments, tool_schemas[name])
 
     speak = value['speak']
     if not isinstance(speak, dict):
@@ -107,6 +117,30 @@ def validate_decision(value: Any) -> Dict[str, Any]:
     for field in ('decision_id', 'intent', 'final_answer', 'reason_cn'):
         value[field] = str(value[field])
     return value
+
+
+def _validate_arguments(name: str, arguments: Dict[str, Any], schema: Dict[str, Any]) -> None:
+    for field in schema.get('required') or []:
+        if field not in arguments:
+            raise SchemaError(f'{name}.{field} is required')
+    properties = schema.get('properties') or {}
+    for field, rules in properties.items():
+        if field not in arguments:
+            continue
+        value = arguments[field]
+        expected_type = rules.get('type')
+        if expected_type == 'string' and not isinstance(value, str):
+            raise SchemaError(f'{name}.{field} must be string')
+        if expected_type == 'number':
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise SchemaError(f'{name}.{field} must be number')
+            if 'minimum' in rules and float(value) < float(rules['minimum']):
+                raise SchemaError(f'{name}.{field} below minimum')
+            if 'maximum' in rules and float(value) > float(rules['maximum']):
+                raise SchemaError(f'{name}.{field} above maximum')
+        enum = rules.get('enum')
+        if enum and value not in enum:
+            raise SchemaError(f'{name}.{field} must be one of {enum}')
 
 
 def tool_result(

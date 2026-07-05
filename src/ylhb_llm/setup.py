@@ -37,6 +37,7 @@ setup(
             'inspection_agent_node = ylhb_llm.inspection_agent_node:main',
             'inspection_display_ui_node = ylhb_llm.inspection_display_ui_node:main',
             'basic_motion_command_node = ylhb_llm.basic_motion_command_node:main',
+            'base_motion_skill_node = ylhb_llm.base_motion_skill_node:main',
             'voice_input_node = ylhb_llm.voice_input_node:main',
             'voice_session_node = ylhb_llm.voice_session_node:main',
             'voice_output_node = ylhb_llm.voice_output_node:main',

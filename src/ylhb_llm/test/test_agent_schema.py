@@ -37,6 +37,33 @@ def test_validate_decision_rejects_unknown_tool():
         validate_decision(data)
 
 
+def test_validate_decision_accepts_dynamic_tool_schema():
+    data = valid_decision(
+        intent='rotate',
+        tool_call={'name': 'rotate_relative', 'arguments': {'angle_deg': 90}},
+    )
+
+    result = validate_decision(
+        data,
+        {'rotate_relative'},
+        {
+            'rotate_relative': {
+                'required': ['angle_deg'],
+                'properties': {'angle_deg': {'type': 'number', 'minimum': -180, 'maximum': 180}},
+            }
+        },
+    )
+
+    assert result['tool_call']['name'] == 'rotate_relative'
+
+
+def test_validate_decision_rejects_dangerous_tool_even_when_allowed():
+    data = valid_decision(tool_call={'name': '/cmd_vel', 'arguments': {}})
+
+    with pytest.raises(SchemaError):
+        validate_decision(data, {'/cmd_vel'}, {})
+
+
 def test_validate_decision_rejects_bad_motion_command():
     data = valid_decision(
         intent='motion',

@@ -48,3 +48,20 @@ def test_dangerous_tool_is_rejected_even_if_schema_was_bypassed():
     result = authorize(decision('/cmd_vel'), {'patrol_state': 'running'})
 
     assert result.allowed is False
+
+
+def test_rotate_relative_range_is_enforced_by_policy_schema():
+    schemas = {
+        'rotate_relative': {
+            'required': ['angle_deg'],
+            'properties': {
+                'angle_deg': {'type': 'number', 'minimum': -180, 'maximum': 180}
+            },
+        }
+    }
+
+    assert authorize(decision('rotate_relative', angle_deg=180), {}, schemas).allowed is True
+    result = authorize(decision('rotate_relative', angle_deg=999), {}, schemas)
+
+    assert result.allowed is False
+    assert result.reason

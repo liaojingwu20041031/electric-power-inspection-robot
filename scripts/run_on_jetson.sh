@@ -91,6 +91,17 @@ start_chinese_ime() {
   fi
 }
 
+require_ylhb_llm_executable() {
+  local executable="$1"
+  local path="${WS_DIR}/install/ylhb_llm/lib/ylhb_llm/${executable}"
+  if [ -x "${path}" ]; then
+    return 0
+  fi
+  echo "ERROR: missing ylhb_llm executable: ${executable}" >&2
+  echo "Run: cd ${WS_DIR} && source /opt/ros/${ROS_DISTRO}/setup.bash && colcon build --symlink-install --packages-select ylhb_llm" >&2
+  exit 2
+}
+
 case "${MODE}" in
   bringup)
     shift || true
@@ -128,6 +139,8 @@ case "${MODE}" in
     ;;
   llm)
     shift || true
+    require_ylhb_llm_executable inspection_agent_node
+    require_ylhb_llm_executable base_motion_skill_node
     exec ros2 launch ylhb_llm llm.launch.py "$@"
     ;;
   inspection)
@@ -145,6 +158,8 @@ case "${MODE}" in
     set_local_xauthority
     disable_display_sleep
     start_chinese_ime
+    require_ylhb_llm_executable inspection_agent_node
+    require_ylhb_llm_executable base_motion_skill_node
     exec ros2 launch ylhb_llm llm.launch.py \
       enable_task_layer:=true \
       enable_display_ui:=true \

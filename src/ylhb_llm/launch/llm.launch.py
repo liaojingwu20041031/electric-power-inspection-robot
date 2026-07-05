@@ -128,6 +128,14 @@ def generate_launch_description():
         ),
         Node(
             package='ylhb_llm',
+            executable='base_motion_skill_node',
+            name='base_motion_skill_node',
+            output='screen',
+            condition=IfCondition(enable_task_layer),
+            parameters=[params_file],
+        ),
+        Node(
+            package='ylhb_llm',
             executable='voice_input_node',
             name='voice_input_node',
             output='screen',

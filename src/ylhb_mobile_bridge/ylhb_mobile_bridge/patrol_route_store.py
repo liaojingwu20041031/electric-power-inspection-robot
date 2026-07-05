@@ -37,6 +37,24 @@ def _require_bool(value: Any, field: str) -> bool:
     return value
 
 
+def _validate_optional_string(value: Any, field: str) -> Union[str, None]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    return value
+
+
+def _validate_optional_string_list(value: Any, field: str) -> List[str]:
+    items = _require_list(value, field)
+    normalized = []
+    for item in items:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{field} items must be non-empty strings")
+        normalized.append(item)
+    return normalized
+
+
 def _require_number(value: Any, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field} must be a number")
@@ -137,8 +155,8 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
     normalized = copy.deepcopy(source)
 
     version = normalized.get("version")
-    if isinstance(version, bool) or version != 2:
-        raise ValueError("version must be 2")
+    if isinstance(version, bool) or version not in (2, 3):
+        raise ValueError("version must be 2 or 3")
     if normalized.get("frame_id") != "map":
         raise ValueError('frame_id must be "map"')
 
@@ -188,6 +206,18 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
                 **target,
                 "id": target_id,
                 "name": name,
+                "aliases": _validate_optional_string_list(
+                    target.get("aliases", []),
+                    f"{field}.aliases",
+                ),
+                "area_id": _validate_optional_string(
+                    target.get("area_id"),
+                    f"{field}.area_id",
+                ),
+                "inspection_items": _validate_optional_string_list(
+                    target.get("inspection_items", []),
+                    f"{field}.inspection_items",
+                ),
                 "pose": _validate_pose(
                     target.get("pose"),
                     f"{field}.pose",
@@ -256,6 +286,14 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
                 **route,
                 "id": route_id,
                 "name": name,
+                "aliases": _validate_optional_string_list(
+                    route.get("aliases", []),
+                    f"{field}.aliases",
+                ),
+                "description": _validate_optional_string(
+                    route.get("description"),
+                    f"{field}.description",
+                ),
                 "target_ids": list(target_refs),
                 "return_to_start": return_to_start,
                 "loop": {
@@ -320,6 +358,24 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
             )
         normalized_schedules.append(normalized_schedule)
     normalized["schedules"] = normalized_schedules
+    if "site" in normalized:
+        normalized["site"] = _require_dict(normalized["site"], "site")
+    if "areas" in normalized:
+        areas = _require_list(normalized["areas"], "areas")
+        area_ids = set()
+        normalized_areas = []
+        for index, area_value in enumerate(areas):
+            field = f"areas[{index}]"
+            area = _require_dict(area_value, field)
+            area_id = _require_id(area.get("id"), f"{field}.id")
+            if area_id in area_ids:
+                raise ValueError(f"duplicate area id: {area_id}")
+            area_ids.add(area_id)
+            name = area.get("name", area_id)
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"{field}.name must be a non-empty string")
+            normalized_areas.append({**area, "id": area_id, "name": name})
+        normalized["areas"] = normalized_areas
 
     return normalized
 

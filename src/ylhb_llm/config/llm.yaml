@@ -20,7 +20,9 @@ inspection_agent_node:
     agent_status_topic: /inspection_ai/agent_status
     agent_event_topic: /inspection_ai/agent_event
     motion_command_topic: /inspection_ai/motion_command
+    base_skill_command_topic: /inspection_ai/base_skill_command
     system_command_topic: /inspection_ai/system_command
+    patrol_command_topic: /patrol/command
     system_status_topic: /inspection_ai/system_status
     patrol_status_topic: /patrol/status
     voice_session_status_topic: /inspection_ai/voice_session_status
@@ -34,6 +36,8 @@ inspection_agent_node:
     reply_catalog_file: voice_replies.yaml
     voice_intent_catalog_file: voice_intents.yaml
     agent_tools_file: agent_tools.yaml
+    route_file_path: /home/nvidia/ros2_DL/maps/route_patrol_001.json
+    robot_capabilities_file: /home/nvidia/ros2_DL/src/ylhb_llm/config/robot_capabilities.yaml
 
 basic_motion_command_node:
   ros__parameters:
@@ -46,6 +50,24 @@ basic_motion_command_node:
     angular_speed: 0.45
     motion_duration_sec: 1.0
     publish_rate_hz: 20.0
+    require_chassis_online: true
+    chassis_status_max_age_sec: 2.5
+
+base_motion_skill_node:
+  ros__parameters:
+    base_skill_command_topic: /inspection_ai/base_skill_command
+    base_skill_status_topic: /inspection_ai/base_skill_status
+    system_mode_topic: /inspection_ai/system_mode
+    zlac_status_topic: /zlac8015d/status
+    cmd_vel_topic: /cmd_vel
+    odom_frame: odom
+    base_frame: base_footprint
+    linear_speed: 0.10
+    angular_speed: 0.35
+    publish_rate_hz: 20.0
+    max_angle_deg: 180.0
+    max_distance_m: 0.5
+    timeout_sec: 12.0
     require_chassis_online: true
     chassis_status_max_age_sec: 2.5
 

@@ -46,6 +46,29 @@ def test_valid_v2_example_passes_and_expands_route():
     assert data["start_pose"]["publish_initial_pose"] is True
 
 
+def test_valid_v3_optional_business_fields_are_preserved():
+    data = valid_route_data()
+    data["version"] = 3
+    data["site"] = {"id": "site_1", "name": "实训站"}
+    data["areas"] = [{"id": "area_1", "name": "主变区"}]
+    data["targets"][0]["aliases"] = ["巡检点一"]
+    data["targets"][0]["area_id"] = "area_1"
+    data["targets"][0]["inspection_items"] = ["设备外观"]
+    data["routes"][0]["aliases"] = ["默认路线"]
+    data["routes"][0]["description"] = "本地巡逻"
+
+    normalized = validate_route_file(data)
+
+    assert normalized["version"] == 3
+    assert normalized["site"]["name"] == "实训站"
+    assert normalized["areas"][0]["id"] == "area_1"
+    assert normalized["targets"][0]["aliases"] == ["巡检点一"]
+    assert normalized["targets"][0]["area_id"] == "area_1"
+    assert normalized["targets"][0]["inspection_items"] == ["设备外观"]
+    assert normalized["routes"][0]["aliases"] == ["默认路线"]
+    assert normalized["routes"][0]["description"] == "本地巡逻"
+
+
 def test_load_route_file_reads_and_validates_json():
     loaded = load_route_file(str(TEST_ROUTE_PATH))
 

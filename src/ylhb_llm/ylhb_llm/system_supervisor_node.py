@@ -358,7 +358,10 @@ class SystemSupervisorNode(Node):
 
     def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
         if command == 'start_patrol_mode':
-            self.start_patrol_mode(str(payload.get('profile') or 'navigation'))
+            self.start_patrol_mode(
+                str(payload.get('profile') or 'navigation'),
+                str(payload.get('route_id') or ''),
+            )
             return
         patrol_commands = {
             'pause_patrol': 'pause',
@@ -516,7 +519,7 @@ class SystemSupervisorNode(Node):
         self.startup_step = ''
         self.patrol_error = ''
 
-    def start_patrol_mode(self, profile: str = 'navigation') -> None:
+    def start_patrol_mode(self, profile: str = 'navigation', route_id: str = '') -> None:
         profile = profile if profile in ('navigation', 'inspection') else 'navigation'
         self.patrol_mode_state = 'starting'
         self.patrol_error = ''
@@ -564,12 +567,18 @@ class SystemSupervisorNode(Node):
             self.set_result('start_patrol_mode', False, '巡逻启动门控失败: ' + self.patrol_error)
             return
         request_id = f"patrol_start_{int(time.time() * 1000)}"
-        self.publish_patrol_command('start', request_id=request_id)
+        if route_id:
+            self.publish_patrol_command('start', request_id=request_id, route_id=route_id)
+        else:
+            self.publish_patrol_command('start', request_id=request_id)
         self.startup_step = 'patrol_start_sent'
         time.sleep(5.0)
         status_state = str((self.last_patrol_status or {}).get('state') or '')
         if status_state in ('idle', 'unavailable'):
-            self.publish_patrol_command('start', request_id=request_id)
+            if route_id:
+                self.publish_patrol_command('start', request_id=request_id, route_id=route_id)
+            else:
+                self.publish_patrol_command('start', request_id=request_id)
         if self.patrol_mode_state == 'starting':
             self.patrol_mode_state = 'command_sent'
             self.startup_step = 'patrol_start_sent'
@@ -587,7 +596,7 @@ class SystemSupervisorNode(Node):
             message = f"{message}（{self.patrol_error}）"
         self.set_result('start_patrol_mode', True, message)
 
-    def publish_patrol_command(self, command: str, request_id: str = '') -> None:
+    def publish_patrol_command(self, command: str, request_id: str = '', route_id: str = '') -> None:
         if not request_id:
             request_id = (
                 f"patrol_start_{int(time.time() * 1000)}"
@@ -597,16 +606,16 @@ class SystemSupervisorNode(Node):
         if command == 'start':
             self.last_patrol_start_request_id = request_id
         msg = String()
-        msg.data = json.dumps(
-            {
-                'schema_version': '1.0',
-                'command': command,
-                'source': 'system_supervisor',
-                'timestamp': time.time(),
-                'request_id': request_id,
-            },
-            ensure_ascii=False,
-        )
+        payload = {
+            'schema_version': '1.0',
+            'command': command,
+            'source': 'system_supervisor',
+            'timestamp': time.time(),
+            'request_id': request_id,
+        }
+        if route_id:
+            payload['route_id'] = route_id
+        msg.data = json.dumps(payload, ensure_ascii=False)
         self.patrol_command_pub.publish(msg)
 
     def build_patrol_readiness(self) -> Dict[str, bool]:

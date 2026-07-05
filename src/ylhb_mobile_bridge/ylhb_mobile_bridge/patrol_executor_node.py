@@ -730,6 +730,8 @@ class PatrolExecutorNode(Node):
             route_id = payload.get("route_id")
             if command == "start":
                 self._start_route_from_file(route_id)
+            elif command == "go_to_target":
+                self._go_to_target(str(payload.get("target_id") or ""))
             elif command == "pause":
                 if not self.logic.pause():
                     raise ValueError(f"cannot pause while {self.logic.state}")
@@ -781,6 +783,37 @@ class PatrolExecutorNode(Node):
             return False
         started = self.logic.start_route(route, targets, home_pose)
         return started
+
+    def _go_to_target(self, target_id: str) -> bool:
+        if self.logic.state in ACTIVE_STATES:
+            self.get_logger().warning(
+                f"Cannot go to target while {self.logic.state}"
+            )
+            return False
+        if not target_id:
+            self.logic.fail_to_start(None, "target_id is required")
+            return False
+        if not self._reload_route_file():
+            self.logic.fail_to_start(None, "route file load failed")
+            return False
+        targets_by_id = {
+            target["id"]: target for target in self._route_data.get("targets", [])
+        }
+        target = targets_by_id.get(target_id)
+        if target is None:
+            self.logic.fail_to_start(None, f"unknown target: {target_id}")
+            return False
+        route = {
+            "id": f"go_to_{target_id}",
+            "name": f"前往{target.get('name', target_id)}",
+            "target_ids": [target_id],
+            "return_to_start": False,
+            "loop": {"enabled": False, "wait_sec": 0.0, "max_cycles": 0},
+            "goal_timeout_sec": 120.0,
+            "max_retries_per_checkpoint": 0,
+            "failure_policy": "abort",
+        }
+        return self.logic.start_route(route, [target], self._route_data["start_pose"]["pose"])
 
     def _request_navigation(
         self,

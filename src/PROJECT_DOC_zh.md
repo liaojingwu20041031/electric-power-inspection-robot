@@ -140,8 +140,9 @@ zed -> perception -> inspection
   `maps/route_patrol_*.json` 给本地巡逻执行器使用。
 - `ylhb_mobile_bridge` 同时包含 HTTP/WebSocket bridge 和本地巡逻执行器。
   前者服务手机/Web 调试，后者直接调用 Nav2；两者共享包但职责不同。
-- `ylhb_llm` 是任务/语音/UI 层，不是底盘控制器。它可以发布短时 `/cmd_vel`
-  或系统命令，但不替代 Nav2 和底盘驱动。本体 QML UI 只通过
+- `ylhb_llm` 是任务/语音/UI 层，不是底盘控制器。动态 Agent 只能调用
+  高层工具：路线工具、基础运动技能、状态查询和系统命令；不能直接调用
+  `/cmd_vel`、Nav2 goal、删图或改路线。本体 QML UI 只通过
   `/inspection_ai/system_command` 请求 supervisor 管理进程。
 
 ## 3. ROS 包职责
@@ -214,7 +215,7 @@ maps/my_map.yaml + /scan + /odom + TF
 ```text
 UI /inspection_ai/system_command start_patrol_mode
   -> system_supervisor_node 启动/复用 bringup + navigation + patrol_executor
-  -> /patrol/command start
+  -> /patrol/command start，可带 route_id
   -> maps/route_patrol_*.json
   -> patrol_executor_node
   -> Nav2 NavigateToPose action
@@ -228,6 +229,10 @@ UI /inspection_ai/system_command start_patrol_mode
 正式本体 UI 的“一键启动巡逻模式”不直接向 `/patrol/command` 发 `start`，
 而是发布 `/inspection_ai/system_command`，由 `system_supervisor_node`
 统一启动或复用依赖进程，再向巡逻执行器发送 `start`。
+动态 Agent 的 `start_route(route_id)` 也走这条链路；未带 `route_id` 时，
+巡逻执行器继续使用路线文件中的 `active_route_id`。`go_to_checkpoint(target_id)`
+直接发布高层 `/patrol/command go_to_target`，由巡逻执行器从路线文件查找目标
+位姿并构造单点临时路线，仍然不直接发 Nav2 goal。
 
 ### 4.5 视觉感知链路
 
@@ -247,11 +252,20 @@ ZED 2i RGB 图像
 ```text
 文字 / 语音 / UI / mobile bridge
   -> /inspection_ai/text_command 或 /inspection_ai/system_command
-  -> inspection_task_node / voice_command_router_node / system_supervisor_node
-  -> /inspection_ai/task_event、/inspection_ai/say_text、/cmd_vel 或系统进程动作
+  -> inspection_task_node / inspection_agent_node / system_supervisor_node
+  -> /inspection_ai/task_event、/inspection_ai/say_text、高层工具命令或系统进程动作
 ```
 
-`ylhb_llm` 不是底盘控制器本体，而是上层任务编排和交互层。`basic_motion_command_node` 可以把“前进、后退、左转、右转、停止”等短命令转换为短时 `/cmd_vel`；`inspection_task_node` 把巡检文本解析成 `TaskEvent`；`system_supervisor_node` 负责启动/停止底层、建图、导航、感知和 mobile bridge 等系统进程；`inspection_display_ui_node` 提供本机中文 QML 操控台。
+`ylhb_llm` 不是底盘控制器本体，而是上层任务编排和交互层。旧的
+`basic_motion_command_node` 继续保留给 UI/语音枚举短指令，把“前进、后退、
+左转、右转、停止”等命令转换为限时 `/cmd_vel`；动态 Agent 不走这个底层
+接口，而是通过 `robot_capabilities.yaml` 暴露的 `rotate_relative`、
+`move_relative`、`stop_motion` 等基础运动技能发布
+`/inspection_ai/base_skill_command`，由 `base_motion_skill_node` 在
+`odom -> base_footprint` TF 可用时按相对位姿差闭环停车，TF 不可用时按超时
+保守停车。`inspection_task_node` 把巡检文本解析成
+`TaskEvent`；`system_supervisor_node` 负责启动/停止底层、建图、导航、感知和
+mobile bridge 等系统进程；`inspection_display_ui_node` 提供本机中文 QML 操控台。
 
 ### 4.7 修改功能时看哪里
 
@@ -820,7 +834,9 @@ ros2 launch ylhb_mobile_bridge patrol_executor.launch.py \
 
 路线文件必须满足以下约束：
 
-- 顶层 `version` 为 `2`，`frame_id` 为 `map`。
+- 顶层 `version` 支持 `2` 和 `3`，`frame_id` 为 `map`。当前正式路线
+  `route_patrol_001.json` 保持 v2 原始现场坐标；v3 仅在需要时额外保留
+  `site`、`areas`、路线/目标 aliases、`area_id` 和 `inspection_items`。
 - `active_route_id` 指定默认路线。
 - `start_pose.pose` 使用机器人真实起点的 `x`、`y`、`yaw`，也是返航位姿。
 - `start_pose.publish_initial_pose=true` 时，执行器启动后发布 `/initialpose`。
@@ -841,6 +857,12 @@ route = load_route_file("/home/nvidia/ros2_DL/maps/route_patrol_001.json")
 print(route["active_route_id"], len(route["targets"]), len(route["routes"]))
 PY
 ```
+
+Agent 侧不会在 `agent_intents.yaml` 或 prompt 中硬编码路线业务语义。启动时
+`inspection_agent_node` 读取路线文件，构建 `RouteCatalog`，再由
+`RouteToolPack` 动态生成 `route_id` 和 `target_id` 枚举；例如“巡检点3”
+通过目标名称解析为 `target_003`。路线/检查点查询只读路线文件，执行动作只
+能走 `start_route(route_id)` 或 `go_to_checkpoint(target_id)`。
 
 ### 12.2 推荐启动顺序
 
@@ -1251,6 +1273,10 @@ ros2 topic echo /inspection_ai/task_context_status
 | `/inspection_ai/system_command` | `std_msgs/String` | UI 发出的系统控制命令 JSON |
 | `/inspection_ai/system_status` | `std_msgs/String` | system supervisor 状态 JSON |
 | `/inspection_ai/system_mode` | `std_msgs/String` | `ready`、`mapping`、`fault` 等系统模式 |
+| `/inspection_ai/agent_request` | `std_msgs/String` | 动态 Agent 文本请求 JSON |
+| `/inspection_ai/agent_event` | `std_msgs/String` | Agent 工具调用、安全拒绝和结果事件 |
+| `/inspection_ai/base_skill_command` | `std_msgs/String` | Agent 发出的基础运动技能命令，不直接暴露 `/cmd_vel` |
+| `/inspection_ai/base_skill_status` | `std_msgs/String` | 基础运动技能执行状态 |
 
 mobile bridge 进程控制命令为 `start_mobile_bridge`、`stop_mobile_bridge` 和
 `restart_mobile_bridge`。这些命令由 `system_supervisor_node` 执行，restart
