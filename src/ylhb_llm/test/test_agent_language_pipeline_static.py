@@ -29,9 +29,25 @@ def test_llm_config_uses_agent_motion_topic_without_router_vocab():
         assert router_vocab.isdisjoint((node.get('ros__parameters') or {}).keys())
 
 
-def test_agent_tools_config_renamed_motion_tool():
-    config = yaml.safe_load(Path('src/ylhb_llm/config/agent_tools.yaml').read_text(encoding='utf-8'))
-    names = {tool['name'] for tool in config['tools']}
+def test_agent_config_uses_planner_flags_and_chat_topic():
+    params = yaml.safe_load(Path('src/ylhb_llm/config/llm.yaml').read_text(encoding='utf-8'))['inspection_agent_node']['ros__parameters']
 
-    assert 'send_motion_command' in names
-    assert 'send_text_motion' not in names
+    assert params['agent_chat_topic'] == '/inspection_ai/agent_chat'
+    assert params['chat_model'] == 'qwen3.7-plus'
+    assert 'enable_llm_planner' in params
+    assert 'offline_safe_mode' in params
+    assert 'enable_llm_fallback' not in params
+
+
+def test_voice_session_config_has_wake_phrase_and_threshold():
+    params = yaml.safe_load(Path('src/ylhb_llm/config/llm.yaml').read_text(encoding='utf-8'))['voice_session_node']['ros__parameters']
+
+    assert params['wake_phrase']
+    assert 0.45 <= params['wake_match_threshold'] <= 0.8
+
+
+def test_launch_defaults_to_available_qwen_model():
+    launch = Path('src/ylhb_llm/launch/llm.launch.py').read_text(encoding='utf-8')
+
+    assert "DeclareLaunchArgument('chat_model', default_value='qwen3.7-plus')" in launch
+    assert "DeclareLaunchArgument('vl_model', default_value='qwen3.7-plus')" in launch

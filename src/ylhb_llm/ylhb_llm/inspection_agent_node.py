@@ -1,20 +1,20 @@
 import json
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
-from .agent_policy import authorize
-from .agent_schema import ALLOWED_TOOLS as ALLOWED_TOOLS_FOR_PROMPT
-from .agent_schema import SchemaError, tool_result, validate_decision
+from .agent_chat_schema import make_agent_chat
+from .agent_schema import SchemaError, tool_result
 from .agent_state import AgentState
 from .agent_tools import AgentTools
-from .qwen_client import QwenClient, QwenClientError, parse_json_object
-from .robot_reply_style import speak as styled_speak
+from .inspection_agent_runtime import InspectionAgentRuntime, decide_local
+from .inspection_agent_spec import InspectionAgentSpecBuilder
+from .qwen_client import QwenClient, QwenClientError
 from .route_toolpack import RouteCatalog, RouteToolPack
 from .skill_toolpack import SkillToolPack
 
@@ -28,46 +28,13 @@ def latched_qos() -> QoSProfile:
     )
 
 
-def make_decision(
-    intent: str,
-    tool: str,
-    text: str,
-    speak: str = '',
-    final_answer: str = '',
-    response_type: str = 'tool_call',
-    safety_level: str = 'normal',
-    arguments: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    return {
-        'schema_version': '1.0',
-        'decision_id': f'{intent}_{int(time.time() * 1000)}',
-        'response_type': response_type,
-        'intent': intent,
-        'safety_level': safety_level,
-        'tool_call': {'name': tool, 'arguments': arguments or {}},
-        'speak': styled_speak(intent, speak),
-        'final_answer': final_answer,
-        'need_confirm': False,
-        'reason_cn': text,
-    }
-
-
-def decide_local(request: Dict[str, Any], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    text = str(request.get('text') or request.get('command') or '').strip()
-    normalized = text.replace(' ', '')
-    if not normalized:
-        return make_decision('empty', 'generate_local_status_reply', text, response_type='ignore')
-    if any(word in normalized for word in ('急停', '紧急停止', '别动', '刹车')):
-        return make_decision('emergency_stop', 'emergency_stop', text, safety_level='emergency')
-    return None
-
-
 class InspectionAgentNode(Node):
     def __init__(self) -> None:
         super().__init__('inspection_agent_node')
         self.declare_parameter('agent_request_topic', '/inspection_ai/agent_request')
         self.declare_parameter('agent_status_topic', '/inspection_ai/agent_status')
         self.declare_parameter('agent_event_topic', '/inspection_ai/agent_event')
+        self.declare_parameter('agent_chat_topic', '/inspection_ai/agent_chat')
         self.declare_parameter('motion_command_topic', '/inspection_ai/motion_command')
         self.declare_parameter('base_skill_command_topic', '/inspection_ai/base_skill_command')
         self.declare_parameter('system_command_topic', '/inspection_ai/system_command')
@@ -77,10 +44,10 @@ class InspectionAgentNode(Node):
         self.declare_parameter('voice_session_status_topic', '/inspection_ai/voice_session_status')
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
-        self.declare_parameter('chat_model', 'qwen3.6-plus')
+        self.declare_parameter('chat_model', 'qwen3.7-plus')
         self.declare_parameter('request_timeout_sec', 12.0)
-        self.declare_parameter('enable_llm_fallback', False)
-        self.declare_parameter('llm_json_retry_count', 1)
+        self.declare_parameter('enable_llm_planner', False)
+        self.declare_parameter('offline_safe_mode', True)
         self.declare_parameter('route_file_path', os.path.expanduser('~/ros2_DL/maps/route_patrol_001.json'))
         self.declare_parameter('robot_capabilities_file', os.path.join(os.path.dirname(__file__), '..', 'config', 'robot_capabilities.yaml'))
 
@@ -88,18 +55,20 @@ class InspectionAgentNode(Node):
         self.qwen = QwenClient(str(self.get_parameter('dashscope_base_url').value))
         self.chat_model = str(self.get_parameter('chat_model').value)
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
-        self.enable_llm_fallback = bool(self.get_parameter('enable_llm_fallback').value)
-        self.llm_json_retry_count = int(self.get_parameter('llm_json_retry_count').value)
+        self.enable_llm_planner = bool(self.get_parameter('enable_llm_planner').value)
+        self.offline_safe_mode = bool(self.get_parameter('offline_safe_mode').value)
+        self.seen_request_ids: set[str] = set()
+        self.last_error_tts: Dict[str, float] = {}
 
         self.status_pub = self.create_publisher(String, self.get_parameter('agent_status_topic').value, latched_qos())
         self.event_pub = self.create_publisher(String, self.get_parameter('agent_event_topic').value, 10)
+        self.chat_pub = self.create_publisher(String, self.get_parameter('agent_chat_topic').value, 10)
         self.system_pub = self.create_publisher(String, self.get_parameter('system_command_topic').value, 10)
         self.motion_pub = self.create_publisher(String, self.get_parameter('motion_command_topic').value, 10)
         self.base_skill_pub = self.create_publisher(String, self.get_parameter('base_skill_command_topic').value, 10)
         self.patrol_pub = self.create_publisher(String, self.get_parameter('patrol_command_topic').value, 10)
         self.say_pub = self.create_publisher(__import__('ylhb_interfaces.msg').msg.SayText, self.get_parameter('say_text_topic').value, 10)
         self.route_toolpack, self.tool_schemas = self.load_toolpacks()
-        self.allowed_tool_names = set(self.tool_schemas) | {'send_motion_command'}
         self.tools = AgentTools(
             self,
             self.state,
@@ -112,6 +81,22 @@ class InspectionAgentNode(Node):
             route_toolpack=self.route_toolpack,
             tool_schemas=self.tool_schemas,
         )
+        self.agent_spec = InspectionAgentSpecBuilder(
+            self.route_toolpack,
+            self.tool_schemas,
+            self.tools.registry,
+        ).build()
+        self.agent_runtime = InspectionAgentRuntime(
+            self.qwen,
+            self.tools,
+            self.state,
+            self.agent_spec,
+            self.tool_schemas,
+            route_toolpack=self.route_toolpack,
+            model=self.chat_model,
+            timeout_sec=self.request_timeout_sec,
+            enabled=self.enable_llm_planner,
+        )
 
         self.create_subscription(String, self.get_parameter('agent_request_topic').value, self.request_callback, 10)
         self.create_subscription(String, self.get_parameter('system_status_topic').value, self.system_status_callback, latched_qos())
@@ -122,34 +107,41 @@ class InspectionAgentNode(Node):
 
     def request_callback(self, msg: String) -> None:
         request = self.parse_payload(msg.data)
+        request_id = self.request_key(request)
+        if request_id and request_id in self.seen_request_ids:
+            return
+        if request_id:
+            self.seen_request_ids.add(request_id)
         self.state.latest_request = request
+        turn_id = request_id or f'turn_{int(time.time() * 1000)}'
+        client_msg_id = str(request.get('client_msg_id') or '')
+        text = str(request.get('text') or request.get('command') or '')
+        self.publish_chat(make_agent_chat('user', text, turn_id, client_msg_id, source=str(request.get('source') or 'user'), raw=request))
         try:
-            decision = decide_local(request, self.state.policy_context()) or self.decide_llm(request)
-            tool_schemas = getattr(self, 'tool_schemas', {})
-            allowed_tool_names = getattr(self, 'allowed_tool_names', None)
-            decision = validate_decision(decision, allowed_tool_names, tool_schemas)
-            policy = authorize(decision, self.state.policy_context(), tool_schemas)
-            if not policy.allowed:
-                result = tool_result(decision['tool_call']['name'], False, 'rejected', policy.reason, error_code='policy_rejected')
-                self.tools.publish_event(result)
-                decision = dict(decision)
-                decision['speak'] = {
-                    'reply_key': 'policy.rejected',
-                    'text': policy.reason or '当前指令已被安全策略拒绝。',
-                    'priority': policy.priority,
-                    'interrupt': policy.interrupt,
-                }
+            turn = self.agent_runtime.run_turn(request)
+            decision = turn.get('decision') or {}
+            result = turn.get('result') or {}
+            role = str(turn.get('role') or 'assistant')
+            if role == 'system':
+                self.publish_chat(make_agent_chat('system', str(turn.get('assistant_text') or ''), turn_id, client_msg_id, status=str(result.get('status') or ''), raw=result))
             else:
-                result = self.tools.execute(decision, policy)
-            self.state.latest_decision = decision
-            self.state.latest_result = result
-            self.tools.say(decision, priority=policy.priority, interrupt=policy.interrupt)
-        except (SchemaError, QwenClientError, ValueError) as exc:
-            self.state.last_error = str(exc)
-            result = tool_result('inspection_agent', False, 'failed', str(exc), error_code='agent_error')
+                self.publish_chat(make_agent_chat('assistant', str(turn.get('assistant_text') or result.get('message') or ''), turn_id, client_msg_id, intent=str(decision.get('intent') or ''), tool_name=str((decision.get('tool_call') or {}).get('name') or ''), status=str(result.get('status') or ''), raw=result))
+            speak = (decision.get('speak') or {}).get('text')
+            if speak:
+                self.tools.say(decision)
+        except (SchemaError, QwenClientError, ValueError, RuntimeError) as exc:
+            error_text = self.format_exception(exc)
+            self.state.last_error = error_text
+            result = tool_result('inspection_agent', False, 'failed', error_text, error_code='agent_error')
             self.state.latest_result = result
             self.tools.publish_event(result)
-            self.tools.say(self.error_decision(str(exc)), priority=7, interrupt=False)
+            self.publish_chat(make_agent_chat('system', f'Planner 调用失败：{error_text}', turn_id, client_msg_id, status='failed', raw=result))
+            logger = self.get_logger()
+            if hasattr(logger, 'error'):
+                logger.error(f'agent planner error: {error_text}')
+            else:
+                logger.info(f'agent planner error: {error_text}')
+            self.say_error_throttled(error_text)
         finally:
             decision = self.state.latest_decision or {}
             result = self.state.latest_result or {}
@@ -163,42 +155,6 @@ class InspectionAgentNode(Node):
                 )
             )
         self.publish_status()
-
-    def decide_llm(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        text = str(request.get('text') or '')
-        if not self.enable_llm_fallback or not self.qwen.available():
-            raise QwenClientError('LLM unavailable')
-        tool_names = '/'.join(sorted(getattr(self, 'allowed_tool_names', ALLOWED_TOOLS_FOR_PROMPT)))
-        prompt = (
-            '你是电力巡检机器人语言智能体。只输出 schema_version=1.0 的 AgentDecision JSON，不要 Markdown。'
-            'response_type 只能用 tool_call/final_answer/status_reply/reject/ignore。'
-            'safety_level 只能用 emergency/normal/requires_confirm/blocked。'
-            f'tool_call.name 只能是 {tool_names}。'
-            '相对旋转用 rotate_relative(angle_deg)，相对直行用 move_relative(distance_m)，停止用 stop_motion。'
-            '路线巡逻用 start_route(route_id)，去检查点用 go_to_checkpoint(target_id)，查询路线用 list_routes/describe_route/list_checkpoints/inspect_checkpoint。'
-            '禁止输出 /cmd_vel、cmd_vel、nav2_goal、delete_map、edit_route。'
-            'final_answer/status_reply/reject 使用 generate_local_status_reply 工具。'
-            f'用户问题：{text}'
-        )
-        last_error = ''
-        for _ in range(max(1, self.llm_json_retry_count + 1)):
-            raw = self.qwen.chat_completion(
-                model=self.chat_model,
-                messages=[{'role': 'user', 'content': prompt}],
-                timeout_sec=self.request_timeout_sec,
-                temperature=0.0,
-                extra_body={'enable_thinking': False},
-            )
-            try:
-                return validate_decision(
-                    parse_json_object(raw),
-                    getattr(self, 'allowed_tool_names', None),
-                    getattr(self, 'tool_schemas', {}),
-                )
-            except (SchemaError, ValueError) as exc:
-                last_error = str(exc)
-                prompt = '上次输出不是合法 AgentDecision JSON，请只输出合法 JSON。'
-        raise SchemaError(last_error or 'LLM JSON invalid')
 
     def load_toolpacks(self):
         route_toolpack = None
@@ -236,6 +192,28 @@ class InspectionAgentNode(Node):
         }
 
     @staticmethod
+    def request_key(request: Dict[str, Any]) -> str:
+        return str(request.get('client_msg_id') or request.get('request_id') or request.get('utterance_id') or '')
+
+    @staticmethod
+    def format_exception(exc: Exception) -> str:
+        text = str(exc).strip() or repr(exc)
+        return f'{exc.__class__.__name__}: {text}'
+
+    def say_error_throttled(self, reason: str) -> None:
+        now = time.monotonic()
+        previous = self.last_error_tts.get(reason, 0.0)
+        if now - previous < 3.0:
+            return
+        self.last_error_tts[reason] = now
+        self.tools.say(self.error_decision(reason), priority=7, interrupt=False)
+
+    def publish_chat(self, payload: Dict[str, Any]) -> None:
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.chat_pub.publish(msg)
+
+    @staticmethod
     def parse_payload(raw: str) -> Dict[str, Any]:
         try:
             data = json.loads(raw)
@@ -259,7 +237,9 @@ class InspectionAgentNode(Node):
 
     def publish_status(self) -> None:
         msg = String()
-        msg.data = json.dumps(self.state.snapshot(), ensure_ascii=False)
+        payload = self.state.snapshot()
+        payload['agent_spec_summary'] = self.agent_spec.summary() if hasattr(self, 'agent_spec') else {}
+        msg.data = json.dumps(payload, ensure_ascii=False)
         self.status_pub.publish(msg)
 
 

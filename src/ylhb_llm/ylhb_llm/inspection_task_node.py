@@ -36,7 +36,7 @@ class InspectionTaskNode(Node):
         self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
         self.declare_parameter('start_demo_service_name', '/inspection_ai/start_demo_task')
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
-        self.declare_parameter('chat_model', 'qwen3.6-plus')
+        self.declare_parameter('chat_model', 'qwen3.7-plus')
         self.declare_parameter('request_timeout_sec', 12.0)
         self.declare_parameter('enable_llm_parse', False)
         self.declare_parameter('publish_raw_json', True)

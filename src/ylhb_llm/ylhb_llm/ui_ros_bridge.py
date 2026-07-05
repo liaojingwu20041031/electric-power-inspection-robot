@@ -33,6 +33,7 @@ class UiSignals(QObject):
     voiceServiceResult = pyqtSignal(str, bool, str)
     agentStatus = pyqtSignal(dict)
     agentEvent = pyqtSignal(dict)
+    agentChat = pyqtSignal(dict)
     localizedObjects = pyqtSignal(str)
     patrolStatus = pyqtSignal(dict)
     patrolEvent = pyqtSignal(dict)
@@ -56,6 +57,7 @@ class InspectionDisplayRosBridge(Node):
             'voice_session_status_topic': '/inspection_ai/voice_session_status',
             'agent_status_topic': '/inspection_ai/agent_status',
             'agent_event_topic': '/inspection_ai/agent_event',
+            'agent_chat_topic': '/inspection_ai/agent_chat',
             'start_voice_session_service_name': '/inspection_ai/start_voice_session',
             'stop_voice_session_service_name': '/inspection_ai/stop_voice_session',
             'capture_voice_service_name': '/inspection_ai/capture_voice',
@@ -87,6 +89,7 @@ class InspectionDisplayRosBridge(Node):
         self.create_subscription(String, self._param('voice_session_status_topic'), self._voice_session_status, latched_qos())
         self.create_subscription(String, self._param('agent_status_topic'), self._agent_status, latched_qos())
         self.create_subscription(String, self._param('agent_event_topic'), self._agent_event, 10)
+        self.create_subscription(String, self._param('agent_chat_topic'), self._agent_chat, 10)
         self.create_subscription(String, self._param('localized_objects_topic'), self._localized_objects, 10)
         self.create_subscription(
             String,
@@ -139,6 +142,9 @@ class InspectionDisplayRosBridge(Node):
     def _agent_event(self, msg: String) -> None:
         self.signals.agentEvent.emit(self.parse_json(msg.data))
 
+    def _agent_chat(self, msg: String) -> None:
+        self.signals.agentChat.emit(self.parse_json(msg.data))
+
     def _voice_session_status(self, msg: String) -> None:
         self.signals.voiceSessionStatus.emit(self.parse_json(msg.data))
 
@@ -147,11 +153,12 @@ class InspectionDisplayRosBridge(Node):
             'schema_version': '1.0', 'source': source, 'text': text, 'timestamp': time.time(),
         })
 
-    def publish_agent_request(self, text: str, source: str = 'ui') -> None:
+    def publish_agent_request(self, text: str, client_msg_id: str = '', source: str = 'ui') -> None:
         self._publish_json(self.agent_request_pub, {
             'schema_version': '1.0',
             'source': source,
             'text': text,
+            'client_msg_id': client_msg_id,
             'input_type': 'text',
             'timestamp': time.time(),
         })

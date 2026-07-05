@@ -7,9 +7,20 @@ import ".."
 ColumnLayout {
     anchors.fill: parent
     anchors.margins: 22
-    spacing: 14
+    spacing: 12
 
-    Label { text: "语言 Agent 控制台"; color: Theme.text; font.pixelSize: 26; font.bold: true }
+    Label { text: "语言 Agent"; color: Theme.text; font.pixelSize: 26; font.bold: true }
+
+    GridLayout {
+        Layout.fillWidth: true
+        columns: 3
+        rowSpacing: 10
+        columnSpacing: 10
+
+        StatusCard { Layout.fillWidth: true; title: "能力"; value: backend.agentSpecSummary.name || "inspection_agent"; statusColor: Theme.accent }
+        StatusCard { Layout.fillWidth: true; title: "语音"; value: backend.voiceStatusSummary || "关闭"; statusColor: Theme.primary }
+        StatusCard { Layout.fillWidth: true; title: "巡逻"; value: backend.patrolStateLabel || "-"; statusColor: Theme.success }
+    }
 
     RowLayout {
         Layout.fillWidth: true
@@ -20,120 +31,134 @@ ColumnLayout {
 
     Rectangle {
         Layout.fillWidth: true
-        Layout.preferredHeight: 64
+        Layout.preferredHeight: 42
         radius: 8
         color: backend.voiceActivityTone === "active" ? Theme.success
              : backend.voiceActivityTone === "busy" ? Theme.warning
              : backend.voiceActivityTone === "speaking" ? Theme.accent
              : backend.voiceActivityTone === "wake" ? Theme.primary
              : Theme.muted
-        RowLayout {
+        Label {
             anchors.fill: parent
-            anchors.margins: 16
-            spacing: 12
-            Rectangle {
-                width: 14
-                height: 14
-                radius: 7
-                color: Theme.surface
-                opacity: backend.voiceActivityTone === "active" ? 1.0 : 0.7
-            }
-            Label {
-                text: backend.voiceActivityText || "语音状态未知"
-                color: Theme.surface
-                font.pixelSize: 22
-                font.bold: true
-                Layout.fillWidth: true
-                elide: Text.ElideRight
-            }
-        }
-    }
-
-    GridLayout {
-        Layout.fillWidth: true
-        columns: 2
-        rowSpacing: 12
-        columnSpacing: 12
-
-        StatusCard { Layout.fillWidth: true; title: "会话状态"; value: backend.voiceStatusSummary || "关闭"; statusColor: Theme.primary }
-        StatusCard { Layout.fillWidth: true; title: "Agent 状态"; value: backend.agentStatusSummary || "ready"; statusColor: Theme.accent }
-        StatusCard { Layout.fillWidth: true; title: "唤醒词"; value: backend.voiceWakePhrase || "-"; statusColor: Theme.primary }
-        StatusCard { Layout.fillWidth: true; title: "最近结果"; value: backend.agentLastResult || "-"; statusColor: Theme.accent }
-    }
-
-    Rectangle {
-        Layout.fillWidth: true
-        Layout.preferredHeight: 160
-        radius: 8
-        color: Theme.surface
-        border.color: Theme.border
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 14
-            spacing: 6
-            Label { text: "语音诊断"; color: Theme.muted }
-            Label { text: "最后识别: " + (backend.voiceLastAsrText || "-"); color: Theme.text; elide: Text.ElideRight; Layout.fillWidth: true }
-            Label { text: "最后发布: " + (backend.voiceLastPublishedText || "-"); color: Theme.text; elide: Text.ElideRight; Layout.fillWidth: true }
-            Label { text: "TTS: " + (backend.voiceTtsStatus || "-"); color: Theme.text; elide: Text.ElideRight; Layout.fillWidth: true }
-            Label { text: "失败次数: " + backend.voiceAsrFailCount + "  录音: " + backend.voiceRecording + "  播报: " + backend.voiceSpeaking; color: Theme.text; Layout.fillWidth: true }
-            Label { text: "最后错误: " + (backend.voiceLastError || "-"); color: Theme.muted; elide: Text.ElideRight; Layout.fillWidth: true }
-            Label { text: "服务: " + (backend.voiceServiceStatus || "-"); color: Theme.muted; elide: Text.ElideRight; Layout.fillWidth: true }
+            anchors.margins: 10
+            text: backend.voiceActivityText || "语音状态未知"
+            color: Theme.surface
+            font.pixelSize: 18
+            font.bold: true
+            elide: Text.ElideRight
         }
     }
 
     Rectangle {
         Layout.fillWidth: true
-        Layout.preferredHeight: 170
+        Layout.fillHeight: true
         radius: 8
         color: Theme.surface
         border.color: Theme.border
-        ColumnLayout {
+
+        ListView {
+            id: chatList
             anchors.fill: parent
-            anchors.margins: 14
-            spacing: 6
-            Label { text: "Agent 诊断"; color: Theme.muted }
-            Label { text: "intent: " + (backend.agentLastIntent || "-"); color: Theme.text; Layout.fillWidth: true }
-            Label { text: "tool: " + (backend.agentLastTool || "-"); color: Theme.text; Layout.fillWidth: true }
-            Label { text: "error: " + (backend.agentLastError || "-"); color: Theme.muted; Layout.fillWidth: true }
-            Repeater {
-                model: Math.min(backend.agentEvents.length, 5)
-                Label {
-                    property var eventData: backend.agentEvents[backend.agentEvents.length - model.index - 1] || ({})
-                    text: (eventData.status || "-") + " " + (eventData.tool_name || "") + " " + (eventData.message || "")
-                    color: Theme.text
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
+            anchors.margins: 12
+            spacing: 10
+            clip: true
+            model: backend.agentMessages
+            onCountChanged: positionViewAtEnd()
+
+            delegate: Item {
+                width: chatList.width
+                height: bubble.height
+                property bool mine: modelData.role === "user"
+                property int bubbleWidth: Math.min(width * 0.82, 640)
+
+                Rectangle {
+                    id: bubble
+                    width: parent.bubbleWidth
+                    height: textItem.implicitHeight + metaItem.implicitHeight + 22
+                    anchors.right: mine ? parent.right : undefined
+                    anchors.left: mine ? undefined : parent.left
+                    radius: 8
+                    color: mine ? Theme.primary : (modelData.role === "system" ? Theme.warning : Theme.background)
+                    border.color: Theme.border
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 4
+                        Label {
+                            id: metaItem
+                            text: (modelData.role || "-") + (modelData.tool_name ? " · " + modelData.tool_name : "")
+                            color: mine ? Theme.surface : Theme.muted
+                            font.pixelSize: 12
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            id: textItem
+                            text: modelData.text || ""
+                            color: mine ? Theme.surface : Theme.text
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                            font.pixelSize: 16
+                        }
+                    }
                 }
             }
         }
     }
 
-    Rectangle {
+    RowLayout {
         Layout.fillWidth: true
-        Layout.preferredHeight: 150
-        radius: 8
-        color: Theme.surface
-        border.color: Theme.border
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 14
-            Label { text: "文本输入"; color: Theme.muted }
-            TextArea {
-                id: commandText
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                wrapMode: TextEdit.Wrap
-                placeholderText: "输入巡检、运动或状态问题"
-            }
-            WarmButton {
-                text: "发送给语言智能体"
-                Layout.alignment: Qt.AlignRight
-                Layout.preferredWidth: 180
-                onClicked: {
+        spacing: 10
+        TextArea {
+            id: commandText
+            Layout.fillWidth: true
+            Layout.preferredHeight: 70
+            wrapMode: TextEdit.Wrap
+            placeholderText: "输入巡检、运动或状态问题"
+            Keys.onReturnPressed: {
+                if (event.modifiers & Qt.ControlModifier) {
                     backend.sendAgentText(commandText.text)
                     commandText.text = ""
+                    event.accepted = true
                 }
             }
+        }
+        WarmButton {
+            text: "发送给语言智能体"
+            Layout.preferredWidth: 180
+            onClicked: {
+                backend.sendAgentText(commandText.text)
+                commandText.text = ""
+            }
+        }
+        WarmButton {
+            text: "清空"
+            Layout.preferredWidth: 90
+            onClicked: backend.clearAgentMessages()
+        }
+        CheckBox {
+            text: "诊断"
+            checked: backend.agentDebugVisible
+            onClicked: backend.toggleAgentDebugVisible()
+        }
+    }
+
+    Rectangle {
+        Layout.fillWidth: true
+        Layout.preferredHeight: backend.agentDebugVisible ? 150 : 0
+        visible: backend.agentDebugVisible
+        radius: 8
+        color: Theme.surface
+        border.color: Theme.border
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 4
+            Label { text: "最近 ASR: " + (backend.voiceLastAsrText || "-"); color: Theme.text; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: "Agent 错误: " + (backend.agentLastError || "-"); color: Theme.muted; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: "最近工具: " + (backend.agentLastTool || "-") + " / " + (backend.agentLastResult || "-"); color: Theme.text; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: "TTS 状态: " + (backend.voiceTtsStatus || "-"); color: Theme.text; wrapMode: Text.Wrap; Layout.fillWidth: true }
         }
     }
 }

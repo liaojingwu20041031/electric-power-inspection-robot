@@ -2,12 +2,14 @@ import json
 import os
 import threading
 import time
+import uuid
 from typing import Any, Callable, Dict, Optional
 
 from PyQt5.QtCore import QObject, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
 
 from .route_preview import build_patrol_tasks, generate_route_preview
 from .ui_models import UiState
+from .agent_chat_schema import dedupe_key, make_agent_chat
 
 
 STATUS_TEXT = {
@@ -87,6 +89,8 @@ class UiBackend(QObject):
     patrolTasksChanged = pyqtSignal()
     routePreviewLoaded = pyqtSignal(dict, dict)
     agentStatusChanged = pyqtSignal()
+    agentMessagesChanged = pyqtSignal()
+    agentDebugVisibleChanged = pyqtSignal()
     voiceStatusChanged = pyqtSignal()
 
     def __init__(
@@ -110,6 +114,8 @@ class UiBackend(QObject):
         self._last_status_log_key = ('', '')
         self._patrol_start_profile = 'navigation'
         self._has_patrol_status = False
+        self._agent_debug_visible = False
+        self._agent_message_keys: set[str] = set()
         self.routePreviewLoaded.connect(self._apply_route_preview_result)
         self.safety_timer = QTimer(self)
         self.safety_timer.timeout.connect(self.checkSafetyTimeout)
@@ -159,6 +165,18 @@ class UiBackend(QObject):
     @pyqtProperty('QVariantList', notify=agentStatusChanged)
     def agentEvents(self):
         return self.state.agent_events
+
+    @pyqtProperty('QVariantList', notify=agentMessagesChanged)
+    def agentMessages(self):
+        return self.state.agent_messages
+
+    @pyqtProperty('QVariantMap', notify=agentStatusChanged)
+    def agentSpecSummary(self) -> Dict[str, Any]:
+        return self.state.agent_spec_summary
+
+    @pyqtProperty(bool, notify=agentDebugVisibleChanged)
+    def agentDebugVisible(self) -> bool:
+        return self._agent_debug_visible
 
     @pyqtProperty('QVariantMap', notify=voiceStatusChanged)
     def voiceSessionStatus(self) -> Dict[str, Any]:
@@ -713,9 +731,23 @@ class UiBackend(QObject):
 
     @pyqtSlot(str)
     def sendAgentText(self, text: str) -> None:
-        if text.strip():
-            self.bridge.publish_agent_request(text.strip())
-            self.addLog(f'语言 Agent: {text.strip()}')
+        value = text.strip()
+        if value:
+            client_msg_id = f'ui_{uuid.uuid4().hex[:12]}'
+            self.update_agent_chat(make_agent_chat('user', value, client_msg_id, client_msg_id, source='ui'))
+            self.bridge.publish_agent_request(value, client_msg_id)
+            self.addLog(f'语言 Agent: {value}')
+
+    @pyqtSlot()
+    def clearAgentMessages(self) -> None:
+        self.state.agent_messages.clear()
+        self._agent_message_keys.clear()
+        self.agentMessagesChanged.emit()
+
+    @pyqtSlot()
+    def toggleAgentDebugVisible(self) -> None:
+        self._agent_debug_visible = not self._agent_debug_visible
+        self.agentDebugVisibleChanged.emit()
 
     @pyqtSlot(str)
     def setRobotMode(self, mode: str) -> None:
@@ -807,6 +839,9 @@ class UiBackend(QObject):
 
     def update_agent_status(self, payload: Dict[str, Any]) -> None:
         self.state.agent_status = payload
+        summary = payload.get('agent_spec_summary')
+        if isinstance(summary, dict):
+            self.state.agent_spec_summary = summary
         self.agentStatusChanged.emit()
 
     def update_agent_event(self, payload: Dict[str, Any]) -> None:
@@ -825,6 +860,20 @@ class UiBackend(QObject):
             'last_error': str(payload.get('error_code') or self.state.agent_status.get('last_error') or ''),
         }
         self.agentStatusChanged.emit()
+
+    def update_agent_chat(self, payload: Dict[str, Any]) -> None:
+        payload = dict(payload)
+        key = dedupe_key(payload)
+        if key in self._agent_message_keys:
+            return
+        self._agent_message_keys.add(key)
+        self.state.agent_messages.append(payload)
+        if len(self.state.agent_messages) > self.state.max_agent_messages:
+            removed = self.state.agent_messages[:-self.state.max_agent_messages]
+            del self.state.agent_messages[:-self.state.max_agent_messages]
+            for item in removed:
+                self._agent_message_keys.discard(dedupe_key(item))
+        self.agentMessagesChanged.emit()
 
     def update_voice_session_status(self, payload: Dict[str, Any]) -> None:
         self.state.voice_session_status = payload

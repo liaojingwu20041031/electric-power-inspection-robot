@@ -55,6 +55,7 @@ def main(args: Optional[List[str]] = None) -> None:
     signals.voiceServiceResult.connect(backend.update_voice_service_result)
     signals.agentStatus.connect(backend.update_agent_status)
     signals.agentEvent.connect(backend.update_agent_event)
+    signals.agentChat.connect(backend.update_agent_chat)
     signals.localizedObjects.connect(backend.on_localized_objects)
     signals.patrolStatus.connect(backend.update_patrol_status)
     signals.patrolEvent.connect(backend.update_patrol_event)

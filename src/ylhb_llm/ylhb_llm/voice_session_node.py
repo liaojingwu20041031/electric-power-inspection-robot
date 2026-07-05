@@ -1,5 +1,6 @@
 import audioop
 from collections import deque
+import difflib
 import json
 import os
 import subprocess
@@ -51,7 +52,7 @@ class VoiceSessionNode(Node):
         self.declare_parameter('asr_model', 'qwen3-asr-flash')
         self.declare_parameter('request_timeout_sec', 15.0)
         self.declare_parameter('wake_phrase', '小零小零')
-        self.declare_parameter('wake_aliases', ['小零小零', '小玲小玲', '小灵小灵', '小林小林', '小零', '小玲'])
+        self.declare_parameter('wake_match_threshold', 0.55)
         self.declare_parameter('sample_rate', 16000)
         self.declare_parameter('frame_ms', 30)
         self.declare_parameter('energy_threshold', 550)
@@ -78,6 +79,7 @@ class VoiceSessionNode(Node):
         self.declare_parameter('debug_audio_dir', '/tmp/ylhb_voice_debug')
         self.declare_parameter('debug_audio_keep', 20)
         self.declare_parameter('debug_state_transitions', False)
+        declare_string_array_parameter(self, 'wake_aliases')
         declare_string_array_parameter(self, 'voice_close_words')
 
         self.enabled = bool(self.get_parameter('enabled').value)
@@ -88,6 +90,7 @@ class VoiceSessionNode(Node):
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.wake_phrase = str(self.get_parameter('wake_phrase').value)
         self.wake_aliases = [str(v) for v in self.get_parameter('wake_aliases').value]
+        self.wake_match_threshold = float(self.get_parameter('wake_match_threshold').value)
         self.sample_rate = int(self.get_parameter('sample_rate').value)
         self.frame_ms = int(self.get_parameter('frame_ms').value)
         self.energy_threshold = int(self.get_parameter('energy_threshold').value)
@@ -609,13 +612,50 @@ class VoiceSessionNode(Node):
         self.publish_status(force=True)
 
     def has_wake_phrase(self, text: str) -> bool:
-        return any(alias and alias in text for alias in self.wake_aliases)
+        return self.find_wake_phrase(text) is not None
 
     def strip_wake_phrase(self, text: str) -> str:
-        command = text
-        for alias in sorted(self.wake_aliases, key=len, reverse=True):
-            command = command.replace(alias, '')
-        return command.strip()
+        match = self.find_wake_phrase(text)
+        if match is None:
+            return text.strip()
+        start, end = match
+        return (text[:start] + text[end:]).strip()
+
+    def normalize_wake_text(self, text: str) -> str:
+        return text.translate(str.maketrans({
+            '玲': '零',
+            '灵': '零',
+            '林': '零',
+            '凌': '零',
+            '铃': '零',
+            '伶': '零',
+            '令': '零',
+        }))
+
+    def find_wake_phrase(self, text: str) -> Tuple[int, int] | None:
+        wake = self.normalize_wake_text(normalize_voice_text(self.wake_phrase))
+        normalized = self.normalize_wake_text(text)
+        phrases = [wake]
+        phrases.extend(
+            self.normalize_wake_text(normalize_voice_text(alias))
+            for alias in self.wake_aliases
+            if alias
+        )
+        phrases = sorted(set(filter(None, phrases)), key=len, reverse=True)
+        for phrase in phrases:
+            index = normalized.find(phrase)
+            if index >= 0:
+                return index, index + len(phrase)
+        short_wake = wake[:2]
+        if normalized.startswith(short_wake) and len(normalized) > len(short_wake):
+            return 0, len(short_wake)
+        threshold = max(0.0, min(1.0, self.wake_match_threshold))
+        for length in range(len(wake), max(1, len(short_wake)) - 1, -1):
+            for start in range(0, max(0, len(normalized) - length) + 1):
+                window = normalized[start:start + length]
+                if difflib.SequenceMatcher(None, window, wake).ratio() >= threshold:
+                    return start, start + length
+        return None
 
     def update_followup_window(self) -> None:
         if self.in_context_followup and time.monotonic() >= self.context_followup_until:

@@ -58,6 +58,53 @@ class QwenClient:
         except Exception as exc:
             raise QwenClientError(f'Unexpected DashScope response: {body[:500]}') from exc
 
+    def chat_tools(
+        self,
+        model: str,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        timeout_sec: float,
+        temperature: float = 0.0,
+        extra_body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if not self.api_key:
+            raise QwenClientError(f'{self.api_key_env} is not set')
+        payload_messages = [{'role': 'system', 'content': system_prompt}]
+        payload_messages.extend(messages)
+        payload: Dict[str, Any] = {
+            'model': model,
+            'messages': payload_messages,
+            'temperature': temperature,
+            'tools': tools,
+        }
+        if extra_body:
+            payload.update(extra_body)
+        data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        request = urllib.request.Request(
+            self.base_url + '/chat/completions',
+            data=data,
+            headers={'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'},
+            method='POST',
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                body = response.read().decode('utf-8')
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode('utf-8', errors='replace')
+            raise QwenClientError(f'DashScope HTTP {exc.code}: {detail}') from exc
+        except Exception as exc:
+            raise QwenClientError(str(exc)) from exc
+        try:
+            message = json.loads(body)['choices'][0]['message']
+        except Exception as exc:
+            raise QwenClientError(f'Unexpected DashScope response: {body[:500]}') from exc
+        return {
+            'content': message.get('content') or '',
+            'tool_calls': message.get('tool_calls') or [],
+            'raw': message,
+        }
+
     def parse_inspection_command(self, text: str, model: str, timeout_sec: float) -> Dict[str, Any]:
         prompt = (
             '你是电力巡检机器人任务解析器。请把用户中文口语命令解析成 JSON，不要 Markdown。'

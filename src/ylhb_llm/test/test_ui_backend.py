@@ -41,8 +41,8 @@ class FakeBridge:
     def publish_text_command(self, _text):
         pass
 
-    def publish_agent_request(self, text):
-        self.agent_requests.append(text)
+    def publish_agent_request(self, text, client_msg_id=''):
+        self.agent_requests.append((text, client_msg_id))
 
     def call_voice_service(self, _name):
         pass
@@ -335,6 +335,36 @@ def test_ui_state_keeps_only_latest_200_events():
     assert len(state.events) == 200
     assert state.events[0]['message'] == 'event-5'
     assert state.events[-1]['message'] == 'event-204'
+
+
+def test_agent_text_adds_local_user_message_with_client_id():
+    backend = make_backend(lambda: 100.0)
+
+    backend.sendAgentText('开始巡逻')
+
+    assert backend.agentMessages[-1]['role'] == 'user'
+    assert backend.agentMessages[-1]['text'] == '开始巡逻'
+    assert backend.bridge.agent_requests[0][0] == '开始巡逻'
+    assert backend.bridge.agent_requests[0][1].startswith('ui_')
+
+
+def test_agent_chat_dedupes_user_client_message_and_keeps_limit():
+    backend = make_backend(lambda: 100.0)
+    backend.update_agent_chat({'role': 'user', 'text': 'a', 'client_msg_id': 'c1'})
+    backend.update_agent_chat({'role': 'user', 'text': 'b', 'client_msg_id': 'c1'})
+
+    assert len(backend.agentMessages) == 1
+    assert backend.agentMessages[0]['text'] == 'a'
+
+
+def test_agent_status_exposes_spec_summary_and_debug_toggle():
+    backend = make_backend(lambda: 100.0)
+
+    backend.update_agent_status({'agent_spec_summary': {'name': 'inspection_agent'}})
+    backend.toggleAgentDebugVisible()
+
+    assert backend.agentSpecSummary['name'] == 'inspection_agent'
+    assert backend.agentDebugVisible is True
 
 
 def test_motion_is_blocked_until_control_is_unlocked():
@@ -680,7 +710,8 @@ def test_send_agent_text_publishes_agent_request():
 
     backend.sendAgentText(' 开始巡检 ')
 
-    assert backend.bridge.agent_requests == ['开始巡检']
+    assert backend.bridge.agent_requests[0][0] == '开始巡检'
+    assert backend.bridge.agent_requests[0][1].startswith('ui_')
 
 
 def test_agent_event_updates_recent_tool_result_and_message():

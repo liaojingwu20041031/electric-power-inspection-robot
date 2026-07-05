@@ -13,6 +13,9 @@ class UiState:
     voice_service_status: str = ''
     agent_status: Dict[str, Any] = field(default_factory=dict)
     agent_events: List[Dict[str, Any]] = field(default_factory=list)
+    agent_messages: List[Dict[str, Any]] = field(default_factory=list)
+    agent_spec_summary: Dict[str, Any] = field(default_factory=dict)
+    max_agent_messages: int = 100
     robot_mode: str = 'ready'
     patrol_status: Dict[str, Any] = field(default_factory=dict)
     patrol_events: List[Dict[str, Any]] = field(default_factory=list)

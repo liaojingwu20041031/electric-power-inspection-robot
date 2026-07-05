@@ -9,7 +9,7 @@ inspection_task_node:
     start_demo_service_name: /inspection_ai/start_demo_task
     system_mode_topic: /inspection_ai/system_mode
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    chat_model: qwen3.6-plus
+    chat_model: qwen3.7-plus
     request_timeout_sec: 12.0
     enable_llm_parse: false
     publish_raw_json: true
@@ -19,6 +19,7 @@ inspection_agent_node:
     agent_request_topic: /inspection_ai/agent_request
     agent_status_topic: /inspection_ai/agent_status
     agent_event_topic: /inspection_ai/agent_event
+    agent_chat_topic: /inspection_ai/agent_chat
     motion_command_topic: /inspection_ai/motion_command
     base_skill_command_topic: /inspection_ai/base_skill_command
     system_command_topic: /inspection_ai/system_command
@@ -28,14 +29,10 @@ inspection_agent_node:
     voice_session_status_topic: /inspection_ai/voice_session_status
     say_text_topic: /inspection_ai/say_text
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    chat_model: qwen3.6-plus
+    chat_model: qwen3.7-plus
     request_timeout_sec: 12.0
-    enable_local_replies: true
-    enable_llm_fallback: true
-    llm_json_retry_count: 1
-    reply_catalog_file: voice_replies.yaml
-    voice_intent_catalog_file: voice_intents.yaml
-    agent_tools_file: agent_tools.yaml
+    enable_llm_planner: true
+    offline_safe_mode: true
     route_file_path: /home/nvidia/ros2_DL/maps/route_patrol_001.json
     robot_capabilities_file: /home/nvidia/ros2_DL/src/ylhb_llm/config/robot_capabilities.yaml
 
@@ -86,6 +83,7 @@ inspection_display_ui_node:
     voice_status_topic: /inspection_ai/voice_status
     agent_status_topic: /inspection_ai/agent_status
     agent_event_topic: /inspection_ai/agent_event
+    agent_chat_topic: /inspection_ai/agent_chat
     start_voice_session_service_name: /inspection_ai/start_voice_session
     stop_voice_session_service_name: /inspection_ai/stop_voice_session
     capture_voice_service_name: /inspection_ai/capture_voice
@@ -152,7 +150,8 @@ voice_session_node:
     asr_model: qwen3-asr-flash
     request_timeout_sec: 15.0
     wake_phrase: 小零小零
-    wake_aliases: [小零小零, 小玲小玲, 小灵小灵, 小林小林, 小零, 小玲]
+    wake_aliases: []
+    wake_match_threshold: 0.55
     sample_rate: 16000
     frame_ms: 30
     energy_threshold: 800

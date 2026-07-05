@@ -115,7 +115,11 @@ def test_voice_ai_page_sends_text_to_language_agent():
     qml = Path("src/ylhb_llm/qml/pages/VoiceAiPage.qml").read_text(encoding="utf-8")
 
     assert "发送给语言智能体" in qml
+    assert "model: backend.agentMessages" in qml
     assert "backend.sendAgentText(commandText.text)" in qml
+    assert "backend.clearAgentMessages()" in qml
+    assert "checked: backend.agentDebugVisible" in qml
+    assert "visible: backend.agentDebugVisible" in qml
     assert "backend.sendTextCommand(commandText.text)" not in qml
     assert "backend.voiceActivityText" in qml
     assert "backend.voiceActivityTone" in qml

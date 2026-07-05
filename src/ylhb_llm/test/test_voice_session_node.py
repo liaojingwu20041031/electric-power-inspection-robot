@@ -44,6 +44,8 @@ def make_node(api_key=True):
     node.context_followup_until = 0.0
     node.in_context_followup = False
     node.wake_phrase = '小零小零'
+    node.wake_aliases = []
+    node.wake_match_threshold = 0.55
     node.start_prompt_cooldown_sec = 8.0
     node.repeat_start_feedback = False
     node.min_voice_sec = 0.5
@@ -230,7 +232,6 @@ def test_wake_then_first_command_publishes_agent_request_and_keeps_listening():
     node = make_node()
     node.session_enabled = True
     node.session_id = 'voice_1'
-    node.wake_aliases = ['小零小零']
     node.voice_close_words = ('关闭语音',)
     node.state = 'WAIT_WAKE'
 
@@ -244,12 +245,50 @@ def test_wake_then_first_command_publishes_agent_request_and_keeps_listening():
     assert node.state == 'AWAKENED_IDLE'
 
 
+def test_homophone_wake_words_publish_command():
+    cases = ['小玲小玲后退', '小林小林后退']
+    for text in cases:
+        node = make_node()
+        node.session_enabled = True
+        node.session_id = 'voice_1'
+        node.voice_close_words = ('关闭语音',)
+        node.state = 'WAIT_WAKE'
+
+        VoiceSessionNode.handle_asr_text(node, text)
+
+        assert json.loads(node.agent_request_pub.messages[0])['text'] == '后退'
+
+
+def test_short_wake_word_publishes_command():
+    node = make_node()
+    node.session_enabled = True
+    node.session_id = 'voice_1'
+    node.voice_close_words = ('关闭语音',)
+    node.state = 'WAIT_WAKE'
+
+    VoiceSessionNode.handle_asr_text(node, '小零后退')
+
+    assert json.loads(node.agent_request_pub.messages[0])['text'] == '后退'
+
+
+def test_plain_text_before_wake_does_not_publish_agent_request():
+    node = make_node()
+    node.session_enabled = True
+    node.session_id = 'voice_1'
+    node.voice_close_words = ('关闭语音',)
+    node.state = 'WAIT_WAKE'
+
+    VoiceSessionNode.handle_asr_text(node, '你能够做什么')
+
+    assert node.agent_request_pub.messages == []
+    assert node.awakened is False
+
+
 def test_second_command_after_wake_does_not_need_wake_phrase():
     node = make_node()
     node.session_enabled = True
     node.awakened = True
     node.session_id = 'voice_1'
-    node.wake_aliases = ['小零小零']
     node.voice_close_words = ('关闭语音',)
 
     VoiceSessionNode.handle_asr_text(node, '你能够做什么')
@@ -261,7 +300,6 @@ def test_close_voice_is_handled_locally_without_agent_request():
     node = make_node()
     node.session_enabled = True
     node.awakened = True
-    node.wake_aliases = ['小零小零']
     node.voice_close_words = ('关闭语音',)
 
     VoiceSessionNode.handle_asr_text(node, '关闭语音')

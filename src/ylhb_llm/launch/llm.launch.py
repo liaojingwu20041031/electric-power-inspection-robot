@@ -55,8 +55,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('params_file', default_value=default_params),
         DeclareLaunchArgument('dashscope_base_url', default_value='https://dashscope.aliyuncs.com/compatible-mode/v1'),
-        DeclareLaunchArgument('vl_model', default_value='qwen3.6-plus'),
-        DeclareLaunchArgument('chat_model', default_value='qwen3.6-plus'),
+        DeclareLaunchArgument('vl_model', default_value='qwen3.7-plus'),
+        DeclareLaunchArgument('chat_model', default_value='qwen3.7-plus'),
         DeclareLaunchArgument('asr_model', default_value='qwen3-asr-flash'),
         DeclareLaunchArgument('tts_model', default_value='qwen3-tts-flash'),
         DeclareLaunchArgument('audio_device', default_value='default'),
