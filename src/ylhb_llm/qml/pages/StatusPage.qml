@@ -8,8 +8,8 @@ ScrollView {
     id: statusPage
     clip: true
     contentWidth: availableWidth
-    property var names: ["bringup", "navigation", "zed", "perception", "patrol_executor", "llm", "mobile_bridge"]
-    property var labels: ["底盘与传感器", "导航", "ZED", "视觉感知", "巡逻执行器", "AI 任务层", "APP 网桥"]
+    property var names: ["bringup", "navigation", "zed", "3d_mapping", "perception", "patrol_executor", "llm", "mobile_bridge"]
+    property var labels: ["底盘与传感器", "导航", "ZED", "三维建模", "视觉感知", "巡逻执行器", "AI 任务层", "APP 网桥"]
 
     ColumnLayout {
         width: parent.width

@@ -103,6 +103,7 @@ system_supervisor_node:
     workspace_dir: /home/nvidia/ros2_DL
     ros_distro: humble
     map_output_dir: /home/nvidia/ros2_DL/maps
+    mapping3d_output_dir: /home/nvidia/ros2_DL/runs/3d_mapping
     default_navigation_map: /home/nvidia/ros2_DL/maps/my_map.yaml
     perception_model_path: /home/nvidia/ros2_DL/src/ylhb_perception/models/yolo26.engine
     embedded_task_layer: true

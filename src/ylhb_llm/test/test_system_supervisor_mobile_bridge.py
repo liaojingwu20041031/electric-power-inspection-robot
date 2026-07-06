@@ -522,6 +522,34 @@ def test_publish_patrol_command_sends_json_to_patrol_command_topic():
     assert node.last_patrol_start_request_id == payload['request_id']
 
 
+def test_3d_mapping_managed_process_is_configured():
+    source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
+
+    assert "'3d_mapping': ManagedProcess(" in source
+    assert 'ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py' in source
+    assert 'output_root:={self.mapping3d_output_dir}' in source
+
+
+def test_export_3d_map_publishes_stop_and_export_command(monkeypatch):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.mapping3d_command_pub = FakePublisher()
+    node.set_result = Mock()
+    monkeypatch.setattr(system_supervisor_node.time, 'time', lambda: 100.0)
+    source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
+
+    node.handle_command('export_3d_map', {})
+
+    payload = json.loads(node.mapping3d_command_pub.messages[-1].data)
+    assert payload['command'] == 'stop_and_export'
+    assert payload['schema_version'] == '1.0'
+    assert payload['source'] == 'system_supervisor'
+    assert payload['request_id'].startswith('3d_mapping_stop_and_export_')
+    assert "'/inspection_ai/mapping3d_command'" in source
+    old_topic = "'/inspection_ai/" + "3d" + "_mapping_command'"
+    assert old_topic not in source
+    node.set_result.assert_called_with('export_3d_map', True, '已发送三维建图导出命令')
+
+
 def test_patrol_executor_launch_command_disables_auto_start():
     source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
 

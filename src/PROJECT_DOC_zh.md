@@ -81,6 +81,7 @@ ROS 包名、launch 模式和业务功能混在一起看。
 | 建图定位 | SLAM Toolbox 建图、地图保存、AMCL 定位、Scan-to-Map 修正 | `mapping`、`navigation`、`scan_map_relocalization_node` | `/map`、`map -> odom`、`/initialpose` 修正 |
 | 导航与巡逻 | Nav2 单点导航、本地路线巡逻、到点任务触发、返航、暂停/恢复/取消 | `navigation`、`patrol_executor.launch.py` | Nav2 action、`/patrol/status`、`/patrol/event` |
 | 视觉感知 | ZED 2i 图像/深度、YOLO/TensorRT 检测、目标空间定位 | `zed`、`perception` | `/perception/detections`、`/perception/localized_objects` |
+| 三维建模 | ZED SDK Spatial Mapping 导出 PLY 点云或 OBJ 网格；不作为 Nav2 地图 | `zed_3d_mapping` | `/inspection_ai/mapping3d_status`、`runs/3d_mapping/map_*` |
 | 任务与交互 | 文本/语音命令、任务事件、TTS、中文 QML 本体操控台、系统进程 supervisor | `llm`、`inspection` | `/inspection_ai/*`、短时 `/cmd_vel`、UI |
 | 外部调试接口 | HTTP/WebSocket 调试、移动端状态查询、低速控制、系统启动/停止入口 | `mobile_bridge.launch.py` | Web API、WebSocket、ROS 话题转发 |
 
@@ -99,6 +100,7 @@ source ROS 环境和 install 环境，并把常用运行模式统一成固定命
 | 单点导航 | `bringup` | `navigation` | 启动后先发布 `map` frame 的 `/initialpose` |
 | 本地巡逻 | `bringup`、`navigation` | `patrol_executor.launch.py` | 默认 `auto_start:=false`，先定位再发送 `start` |
 | 视觉检测 | `zed` | `perception` | ZED wrapper 和 TensorRT 检测分开启动 |
+| 三维建模 | 无；但不能同时运行 `zed`/ZED wrapper | `zed_3d_mapping` | 输出 PLY/OBJ，不写 `map.yaml/pgm` |
 | 任务/语音/UI | 视任务需要启动底层或导航 | `inspection` 或 `llm` | `inspection` 是带 UI、语音和 supervisor 的组合模式 |
 | 移动端调试 | 视接口需要启动底层或导航 | `mobile_bridge.launch.py` | 只做外部协议到 ROS 的转换 |
 
@@ -110,6 +112,7 @@ bringup -> mapping -> 保存地图
 bringup -> navigation -> initialpose -> 单点导航
 bringup -> navigation -> patrol_executor -> /patrol/command start
 zed -> perception -> inspection
+zed_3d_mapping -> /inspection_ai/mapping3d_command start -> stop_and_export
 ```
 
 ## 2. 项目结构总览
@@ -127,6 +130,7 @@ zed -> perception -> inspection
     ├── ylhb_interfaces/      # 巡检任务、状态和语音消息定义
     ├── ylhb_llm/             # 任务层、语音、显示 UI、系统 supervisor
     ├── ylhb_perception/      # ZED 图像、YOLO/TensorRT、深度定位
+    ├── ylhb_3d_mapping/      # ZED SDK 三维点云/网格导出
     ├── ylhb_mobile_bridge/   # HTTP/WebSocket 与 ROS 2 桥接
     ├── hipnuc_imu/           # N300WP PRO/HiPNUC IMU 串口驱动
     ├── rplidar_ros-ros2/     # RPLidar ROS 2 驱动
@@ -154,6 +158,7 @@ zed -> perception -> inspection
 | `rplidar_ros-ros2` | 第三方雷达驱动 | Slamtec RPLidar `/scan` 发布 | 地图、导航策略 |
 | `zed-ros2-wrapper` | 第三方相机 wrapper | ZED 2i 图像、深度、相机信息 | YOLO 业务检测 |
 | `ylhb_perception` | 感知节点、launch、模型配置 | YOLO/TensorRT 检测、深度融合、目标定位输出 | 导航控制、任务调度 |
+| `ylhb_3d_mapping` | Python 节点、launch、配置 | ZED SDK Spatial Mapping 点云/网格采集与导出 | Nav2 地图、底盘控制、YOLO 检测 |
 | `ylhb_interfaces` | 消息定义 | 任务事件、任务状态、语音输出状态等自定义消息 | 运行节点 |
 | `ylhb_llm` | Python 任务/语音/UI 节点 | 文本任务解析、语音输入输出、显示 UI、system supervisor、短时基础运动命令 | 底盘闭环、Nav2 算法、本地路线巡逻状态机 |
 | `ylhb_mobile_bridge` | Python bridge 与巡逻执行器 | HTTP/WebSocket 调试入口、本地 Nav2 巡逻执行器、路线文件校验 | 感知算法、底盘驱动、Nav2 参数调优 |
@@ -168,6 +173,7 @@ zed -> perception -> inspection
 | `ylhb_mobile_bridge patrol_executor.launch.py` | `ylhb_mobile_bridge` | 本地路线巡逻执行器 |
 | `ylhb_mobile_bridge mobile_bridge.launch.py` | `ylhb_mobile_bridge` | HTTP/WebSocket mobile bridge |
 | `ylhb_perception perception.launch.py` | `ylhb_perception` | YOLO 检测与深度目标定位 |
+| `ylhb_3d_mapping zed_spatial_mapping.launch.py` | `ylhb_3d_mapping` | ZED SDK 三维点云/网格导出节点 |
 | `ylhb_llm llm.launch.py` | `ylhb_llm` | 任务、语音、UI、system supervisor 的可选组合 |
 
 ## 4. 数据流与修改入口
@@ -304,6 +310,7 @@ ROS 包应直接位于：
 ~/ros2_DL/src/ylhb_llm
 ~/ros2_DL/src/ylhb_mobile_bridge
 ~/ros2_DL/src/ylhb_perception
+~/ros2_DL/src/ylhb_3d_mapping
 ~/ros2_DL/src/hipnuc_imu
 ~/ros2_DL/src/rplidar_ros-ros2
 ~/ros2_DL/src/zed-ros2-wrapper
@@ -349,10 +356,10 @@ source install/setup.bash
 
 ```bash
 colcon build --symlink-install \
-  --packages-select ylhb_interfaces ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge
+  --packages-select ylhb_interfaces ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge ylhb_3d_mapping
 ```
 
-当前工作空间包含 11 个 ROS 2 包：7 个本项目/驱动包和 4 个 ZED wrapper 子包。`colcon test` 中 ZED 第三方包可能触发上游 lint/copyright 问题，且受限网络下 `xmllint` 可能无法下载 ROS schema；自研包问题应优先用 `--packages-select ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge ylhb_interfaces` 单独验证。
+当前工作空间包含 12 个 ROS 2 包：8 个本项目/驱动包和 4 个 ZED wrapper 子包。`colcon test` 中 ZED 第三方包可能触发上游 lint/copyright 问题，且受限网络下 `xmllint` 可能无法下载 ROS schema；自研包问题应优先用 `--packages-select ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge ylhb_interfaces ylhb_3d_mapping` 单独验证。
 
 ## 7. 硬件绑定与 CAN 检查
 
@@ -1214,6 +1221,92 @@ ros2 topic echo /perception/localized_objects
 ~/ros2_DL/src/ylhb_perception/models/yolo26.engine
 ```
 
+### 13.1 ZED SDK 三维建模
+
+ZED SDK 三维建模是独立入口，不经过 `zed_wrapper`、`ylhb_perception` 或 Nav2。
+它适合现场扫一段设备、柜体或通道，导出 PLY 点云或 OBJ 网格用于巡检记录和复核。
+它不是二维导航地图，不会写入 `maps/my_map.yaml` 或 `maps/my_map.pgm`。
+
+使用前先确认没有其他 ZED 进程占用相机：
+
+```bash
+ps -ef | grep -E 'zed_wrapper|zed_camera|zed_spatial_mapping' | grep -v grep
+```
+
+如果已经运行 `./scripts/run_on_jetson.sh zed`、`zed_wrapper` 或感知链路，先停止它们。
+ZED 2i 通常只能被一个 SDK 客户端占用。
+
+终端 1 启动三维建模节点：
+
+```bash
+cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+./scripts/run_on_jetson.sh zed_3d_mapping
+```
+
+终端 2 观察状态：
+
+```bash
+cd ~/ros2_DL
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic echo /inspection_ai/mapping3d_status
+```
+
+终端 3 开始采集：
+
+```bash
+ros2 topic pub --once /inspection_ai/mapping3d_command std_msgs/msg/String \
+  '{"data":"{\"command\":\"start\"}"}'
+```
+
+启动后状态通常依次变为 `opening_camera`、`tracking_enabled`、
+`mapping_enabled`、`running`。状态进入 `running` 后，缓慢移动相机或机器人扫过目标区域。
+第一版只负责建模导出，不会发布 `/cmd_vel`，不会自动控制底盘。
+
+采集完成后导出：
+
+```bash
+ros2 topic pub --once /inspection_ai/mapping3d_command std_msgs/msg/String \
+  '{"data":"{\"command\":\"stop_and_export\"}"}'
+```
+
+导出期间状态会经过 `extracting`、`saving`，成功后变为 `succeeded`。
+默认输出目录类似：
+
+```text
+~/ros2_DL/runs/3d_mapping/map_20260706_153000/
+├── metadata.json
+├── status.json
+└── pointcloud.ply
+```
+
+查看最近一次输出：
+
+```bash
+ls -lt ~/ros2_DL/runs/3d_mapping | head
+ls -lh ~/ros2_DL/runs/3d_mapping/map_*/pointcloud.ply
+```
+
+PLY 可用 CloudCompare、MeshLab 或支持点云的三维查看器打开。导出 mesh 时启动：
+
+```bash
+./scripts/run_on_jetson.sh zed_3d_mapping map_type:=mesh
+```
+
+mesh 模式输出 `mesh.obj`；如需纹理可加 `save_texture:=true`，但耗时和显存压力更高。
+如果只想停止采集但不导出，发送 `{"command":"stop"}`；如果节点异常或想重新开始，
+发送 `{"command":"reset"}` 后再 `start`。
+
+常见失败：
+
+- `pyzed.sl import failed`：ZED SDK Python API 未安装，或当前终端没有 source 正确环境。
+- `Camera.open failed`：相机未连接、权限不足，或已被 `zed_wrapper` / 其他 ZED 程序占用。
+- 一直没有进入 `running`：先检查 USB 连接、电源和 `dmesg`，再确认没有多个 ZED 进程。
+
+完整说明见 [ZED Spatial Mapping 集成说明](../docs/zed_spatial_mapping_integration.md)。
+
 ## 14. AI 任务层与本体 UI 控制台
 
 `inspection` 是机器人本体的正式 UI 控制台入口。它固定启动 QML 显示 UI、
@@ -1281,12 +1374,15 @@ ros2 topic echo /inspection_ai/task_context_status
 mobile bridge 进程控制命令为 `start_mobile_bridge`、`stop_mobile_bridge` 和
 `restart_mobile_bridge`。这些命令由 `system_supervisor_node` 执行，restart
 明确先停止再启动。本体 UI 不直接调用 bridge 的 HTTP 启动接口。
+三维建模进程由通用 `start_3d_mapping`、`stop_3d_mapping` 控制；`export_3d_map`
+会向 `/inspection_ai/mapping3d_command` 发布 `stop_and_export`。
 
 `/inspection_ai/system_status` 保留既有字段，并增加：
 
 | 字段 | 含义 |
 |---|---|
 | `mobile_bridge` | supervisor 进程状态，`running` 或 `stopped` |
+| `3d_mapping` | ZED SDK 三维建模进程状态，`running` 或 `stopped` |
 | `mobile_bridge_http` | 本机 `/api/status` 健康检查，`http_ok`、`http_error` 或 `stopped` |
 | `mobile_bridge_url` | 手机 APP 使用的 `http://<Jetson_IP>:8000` |
 | `jetson_ip` | supervisor 自动探测的 Jetson 局域网 IP |
@@ -1300,7 +1396,7 @@ mobile bridge 进程控制命令为 `start_mobile_bridge`、`stop_mobile_bridge`
 正式 `/inspection/*` 任务、告警和巡检记录协议尚未实现。当前不要把
 `/inspection_ai/*` 占位接口描述为已经完成的正式业务协议。
 
-`inspection` 模式会启动显示 UI、系统 supervisor、内嵌 AI 任务层、连续语音会话和 TTS。UI 可以发出启动/停止底层、建图、导航、感知和 mobile bridge 等系统命令；核心 ROS 节点仍以各自 launch 管理。
+`inspection` 模式会启动显示 UI、系统 supervisor、内嵌 AI 任务层、连续语音会话和 TTS。UI 可以发出启动/停止底层、建图、导航、感知、三维建模和 mobile bridge 等系统命令；核心 ROS 节点仍以各自 launch 管理。本机状态页包含“三维建模”卡片，读取 `system_status["3d_mapping"]`。
 
 本体 UI 保留 `inspection_display_ui_node` 入口和 `enable_display_ui`、
 `enable_system_supervisor`、`fullscreen`、`display`、`force_local_display`
@@ -1584,6 +1680,7 @@ ros2 launch ylhb_base navigation.launch.py --show-args
 ros2 launch ylhb_mobile_bridge patrol_executor.launch.py --show-args
 ros2 launch ylhb_llm llm.launch.py --show-args
 ros2 launch ylhb_perception perception.launch.py --show-args
+ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py --show-args
 ```
 
 脚本模式：
@@ -1593,6 +1690,7 @@ ros2 launch ylhb_perception perception.launch.py --show-args
 ./scripts/run_on_jetson.sh mapping
 ./scripts/run_on_jetson.sh navigation
 ./scripts/run_on_jetson.sh zed
+./scripts/run_on_jetson.sh zed_3d_mapping
 ./scripts/run_on_jetson.sh perception
 ./scripts/run_on_jetson.sh llm
 ./scripts/run_on_jetson.sh inspection
@@ -1603,7 +1701,7 @@ ros2 launch ylhb_perception perception.launch.py --show-args
 
 ### 编译通过但测试不全绿
 
-当前 ZED wrapper 第三方包存在 lint/copyright 测试失败，受限网络下 `xmllint` 也会因无法加载 `download.ros.org` schema 失败。这不影响 `colcon build` 生成运行文件。自研包问题应优先用 `--packages-select ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge ylhb_interfaces` 单独验证。
+当前 ZED wrapper 第三方包存在 lint/copyright 测试失败，受限网络下 `xmllint` 也会因无法加载 `download.ros.org` schema 失败。这不影响 `colcon build` 生成运行文件。自研包问题应优先用 `--packages-select ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge ylhb_interfaces ylhb_3d_mapping` 单独验证。
 
 ### CAN 不在线
 

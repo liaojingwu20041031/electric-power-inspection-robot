@@ -11,6 +11,13 @@ def test_main_navigation_uses_patrol_and_voice_pages_not_control_or_mapping():
     assert "MappingPage.qml" not in qml
 
 
+def test_status_page_shows_3d_mapping_process_card():
+    qml = Path("src/ylhb_llm/qml/pages/StatusPage.qml").read_text(encoding="utf-8")
+
+    assert '"3d_mapping"' in qml
+    assert "三维建模" in qml
+
+
 def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
     qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
 

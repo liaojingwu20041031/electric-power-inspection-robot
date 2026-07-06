@@ -1,0 +1,11 @@
+zed_spatial_mapping_node:
+  ros__parameters:
+    command_topic: /inspection_ai/mapping3d_command
+    status_topic: /inspection_ai/mapping3d_status
+    result_topic: /inspection_ai/mapping3d_result
+    output_root: /home/nvidia/ros2_DL/runs/3d_mapping
+    map_type: fused_point_cloud
+    resolution_preset: medium
+    range_preset: medium
+    save_texture: false
+    publish_rate_hz: 5.0

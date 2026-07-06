@@ -129,6 +129,10 @@ case "${MODE}" in
     shift || true
     exec ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i "$@"
     ;;
+  zed_3d_mapping)
+    shift || true
+    exec ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py "$@"
+    ;;
   perception)
     shift || true
     exec ros2 launch ylhb_perception perception.launch.py \
@@ -188,6 +192,7 @@ Modes:
   mapping      Start slam_toolbox mapping
   navigation   Start Nav2 with default map ${WS_DIR}/maps/my_map.yaml
   zed          Start ZED 2i wrapper
+  zed_3d_mapping  Start ZED SDK Spatial Mapping and export 3D point cloud/mesh
   perception   Start Jetson YOLO runtime with TensorRT engine
   llm          Start inspection AI task layer and voice I/O nodes
   inspection   Start inspection display UI and system supervisor
@@ -202,6 +207,7 @@ Examples:
   $0 llm enable_voice:=true enable_tts:=true audio_input_device:=plughw:CARD=Luna,DEV=0 audio_output_device:=plughw:CARD=Luna,DEV=0
   $0 inspection fullscreen:=true
   $0 navigation map:=${WS_DIR}/maps/my_map.yaml
+  $0 zed_3d_mapping
 EOF
     ;;
 esac

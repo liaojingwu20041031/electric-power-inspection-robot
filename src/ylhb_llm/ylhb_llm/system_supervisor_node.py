@@ -23,6 +23,7 @@ START_PROCESS_MESSAGES = {
     'navigation': '导航已启动',
     'patrol_executor': '巡逻执行器已启动',
     'zed': 'ZED 相机已启动',
+    '3d_mapping': '三维建图已启动',
     'perception': '感知节点已启动',
     'mobile_bridge': '移动端桥接已启动',
     'mapping': '建图已启动',
@@ -158,6 +159,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('workspace_dir', os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL')))
         self.declare_parameter('ros_distro', 'humble')
         self.declare_parameter('map_output_dir', workspace_path('maps'))
+        self.declare_parameter('mapping3d_output_dir', workspace_path('runs', '3d_mapping'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
         self.declare_parameter('embedded_task_layer', True)
@@ -177,6 +179,7 @@ class SystemSupervisorNode(Node):
         self.workspace_dir = os.path.expanduser(str(self.get_parameter('workspace_dir').value))
         self.ros_distro = str(self.get_parameter('ros_distro').value)
         self.map_output_dir = os.path.expanduser(str(self.get_parameter('map_output_dir').value))
+        self.mapping3d_output_dir = os.path.expanduser(str(self.get_parameter('mapping3d_output_dir').value))
         self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
         self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
         self.embedded_task_layer = bool(self.get_parameter('embedded_task_layer').value)
@@ -227,6 +230,11 @@ class SystemSupervisorNode(Node):
                 f'ros2 launch ylhb_base navigation.launch.py map:={self.default_navigation_map}',
             ),
             'zed': ManagedProcess('zed', 'ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i'),
+            '3d_mapping': ManagedProcess(
+                '3d_mapping',
+                f'ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py '
+                f'output_root:={self.mapping3d_output_dir}',
+            ),
             'perception': ManagedProcess(
                 'perception',
                 f'ros2 launch ylhb_perception perception.launch.py '
@@ -254,6 +262,7 @@ class SystemSupervisorNode(Node):
         self.cmd_vel_pub = self.create_publisher(
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
         self.patrol_command_pub = self.create_publisher(String, '/patrol/command', 10)
+        self.mapping3d_command_pub = self.create_publisher(String, '/inspection_ai/mapping3d_command', 10)
         self.create_subscription(
             String,
             self.get_parameter('system_command_topic').value,
@@ -407,6 +416,10 @@ class SystemSupervisorNode(Node):
             return
         if command == 'save_map':
             self.save_map(str(payload.get('map_name') or '').strip())
+            return
+        if command == 'export_3d_map':
+            self.publish_3d_mapping_command('stop_and_export')
+            self.set_result(command, True, '已发送三维建图导出命令')
             return
         if command == 'emergency_stop':
             self.emergency_stop()
@@ -617,6 +630,17 @@ class SystemSupervisorNode(Node):
             payload['route_id'] = route_id
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.patrol_command_pub.publish(msg)
+
+    def publish_3d_mapping_command(self, command: str) -> None:
+        msg = String()
+        msg.data = json.dumps({
+            'schema_version': '1.0',
+            'command': command,
+            'source': 'system_supervisor',
+            'timestamp': time.time(),
+            'request_id': f"3d_mapping_{command}_{int(time.time() * 1000)}",
+        }, ensure_ascii=False)
+        self.mapping3d_command_pub.publish(msg)
 
     def build_patrol_readiness(self) -> Dict[str, bool]:
         bringup = self.processes.get('bringup')

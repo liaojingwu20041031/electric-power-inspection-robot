@@ -62,6 +62,18 @@ class RunOnJetsonTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('inspection mode is the formal robot console', result.stderr)
 
+    def test_zed_3d_mapping_launch_branch_and_help_text(self):
+        launch = self.run_script('zed_3d_mapping')
+
+        self.assertEqual(launch.returncode, 0, launch.stderr)
+        self.assertIn('launch', launch.stdout)
+        self.assertIn('ylhb_3d_mapping', launch.stdout)
+        self.assertIn('zed_spatial_mapping.launch.py', launch.stdout)
+
+        help_result = self.run_script('help')
+        self.assertIn('zed_3d_mapping', help_result.stdout)
+        self.assertIn('ZED SDK Spatial Mapping', help_result.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

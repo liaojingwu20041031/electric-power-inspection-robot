@@ -48,6 +48,7 @@
 | 传感器接入 | RPLidar、HiPNUC IMU、WTRTK980 RTK_4G、ZED 2i，提供稳定设备别名和统一坐标系 |
 | 状态估计 | 轮速里程计与 IMU 经 `robot_localization` EKF 融合 |
 | 建图定位 | SLAM Toolbox 在线建图，AMCL 定位与 Scan-to-Map 重定位 |
+| 三维建模 | ZED SDK Spatial Mapping 导出巡检用 PLY 点云或 OBJ 网格，不作为 Nav2 地图 |
 | 导航巡逻 | Nav2 单点导航、本地路线巡逻、到点任务触发、返航与暂停/恢复/取消 |
 | 视觉感知 | ZED 深度图像、YOLO、TensorRT 推理和目标空间定位入口 |
 | 任务交互 | 中文控制界面、任务事件、系统状态管理、ASR/TTS 和语音指令 |
@@ -193,6 +194,9 @@ ros2 launch ylhb_base bringup.launch.py enable_rtk:=true
 # ZED 2i 与 TensorRT 感知
 ./scripts/run_on_jetson.sh zed
 ./scripts/run_on_jetson.sh perception
+
+# 可选：ZED SDK 三维建模导出，不要与 zed/zed_wrapper 同时运行
+./scripts/run_on_jetson.sh zed_3d_mapping
 
 # 巡检界面、任务管理与语音交互
 ./scripts/run_on_jetson.sh inspection
