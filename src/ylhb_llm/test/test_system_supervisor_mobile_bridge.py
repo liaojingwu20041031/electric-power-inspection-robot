@@ -525,9 +525,10 @@ def test_publish_patrol_command_sends_json_to_patrol_command_topic():
 def test_3d_mapping_managed_process_is_configured():
     source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
 
-    assert "'3d_mapping': ManagedProcess(" in source
+    assert "'3d_capture': ManagedProcess(" in source
     assert 'ros2 run ylhb_3d_mapping zed_svo_capture' in source
     assert 'output_root:={self.mapping3d_output_dir}' in source
+    assert 'duration_sec:=0' in source
     assert "workspace_path('runs', '3d_capture')" in source
     assert 'ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py' not in source
 
@@ -548,7 +549,7 @@ def test_start_3d_mapping_refuses_zed_or_perception_running():
     node.processes = {
         'zed': FakeProcess(running=True),
         'perception': FakeProcess(running=False),
-        '3d_mapping': FakeProcess(running=False),
+        '3d_capture': FakeProcess(running=False),
     }
     node.start_process = Mock()
     node.publish_3d_mapping_command = Mock()
@@ -568,7 +569,7 @@ def test_start_3d_mapping_starts_process_then_publishes_start():
     node.processes = {
         'zed': FakeProcess(running=False),
         'perception': FakeProcess(running=False),
-        '3d_mapping': FakeProcess(running=False),
+        '3d_capture': FakeProcess(running=False),
     }
     node.start_process = Mock()
     node.publish_3d_mapping_command = Mock()
@@ -576,23 +577,77 @@ def test_start_3d_mapping_starts_process_then_publishes_start():
 
     node.handle_command('start_3d_mapping', {})
 
-    node.start_process.assert_called_once_with('3d_mapping')
+    node.start_process.assert_called_once_with('3d_capture')
     node.publish_3d_mapping_command.assert_not_called()
-    node.set_result.assert_called_with('start_3d_mapping', True, 'SVO 采集已启动，现场只采集证据')
+    node.set_result.assert_called_with('start_3d_mapping', True, '现场 SVO 采集已启动')
 
 
 def test_stop_3d_mapping_stops_svo_capture_process():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
-    node.processes = {'3d_mapping': FakeProcess(running=True)}
+    node.processes = {'3d_capture': FakeProcess(running=True)}
     node.publish_3d_mapping_command = Mock()
     node.stop_process = Mock()
     node.set_result = Mock()
+    node.mapping3d_output_dir = '/tmp/missing'
 
     node.handle_command('stop_3d_mapping', {})
 
     node.publish_3d_mapping_command.assert_not_called()
-    node.stop_process.assert_called_once_with('3d_mapping')
+    node.stop_process.assert_called_once_with('3d_capture')
     node.set_result.assert_called_with('stop_3d_mapping', True, 'SVO 采集已停止')
+
+
+def test_stop_3d_mapping_reports_latest_svo(tmp_path):
+    (tmp_path / 'latest.json').write_text(
+        json.dumps({'svo_file': '/tmp/capture.svo2'}),
+        encoding='utf-8',
+    )
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'3d_capture': FakeProcess(running=True)}
+    node.stop_process = Mock()
+    node.set_result = Mock()
+    node.mapping3d_output_dir = str(tmp_path)
+
+    node.handle_command('stop_3d_mapping', {})
+
+    assert '/tmp/capture.svo2' in node.set_result.call_args.args[2]
+
+
+def test_reconstruct_3d_map_commands_use_latest_and_profiles(tmp_path):
+    (tmp_path / 'latest.json').write_text(
+        json.dumps({'svo_file': '/tmp/capture.svo2'}),
+        encoding='utf-8',
+    )
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {}
+    node.mapping3d_output_dir = str(tmp_path)
+    started_commands = []
+    node.start_process = Mock(side_effect=lambda name: started_commands.append(node.processes[name].command))
+    node.set_result = Mock()
+
+    node.handle_command('reconstruct_latest_3d_map', {})
+    node.handle_command('reconstruct_fast_3d_map', {})
+    node.handle_command('reconstruct_quality_3d_map', {})
+
+    assert node.start_process.call_args_list[0].args == ('3d_reconstruct',)
+    assert all('input:=latest' in command for command in started_commands)
+    assert all('capture_root:=' + str(tmp_path) in command for command in started_commands)
+    assert 'profile:=quality_safe' in started_commands[0]
+    assert 'profile:=fast_check' in started_commands[1]
+    assert 'profile:=quality_plus' in started_commands[2]
+
+
+def test_reconstruct_3d_map_requires_latest_capture(tmp_path):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {}
+    node.mapping3d_output_dir = str(tmp_path)
+    node.start_process = Mock()
+    node.set_result = Mock()
+
+    node.handle_command('reconstruct_latest_3d_map', {})
+
+    node.start_process.assert_not_called()
+    node.set_result.assert_called_with('reconstruct_latest_3d_map', False, '请先完成一次现场采集')
 
 
 def test_patrol_executor_launch_command_disables_auto_start():
@@ -735,7 +790,7 @@ def test_status_payload_contains_mobile_bridge_fields():
 
 def test_status_payload_contains_latest_mapping3d_status_and_result():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
-    node.processes = {'3d_mapping': FakeProcess(running=True)}
+    node.processes = {'3d_capture': FakeProcess(running=True)}
     node.embedded_task_layer = False
     node.last_command = ''
     node.last_success = True
@@ -749,11 +804,14 @@ def test_status_payload_contains_latest_mapping3d_status_and_result():
     node.latest_mapping3d_status = {'state': 'running', 'success_frames': 5}
     node.latest_mapping3d_result = {'output_file': '/tmp/map.ply'}
     node.build_light_patrol_readiness = Mock(return_value={})
+    node.mapping3d_output_dir = '/tmp/missing'
 
     payload = node.build_status_payload()
 
     assert payload['latest_mapping3d_status']['success_frames'] == 5
     assert payload['latest_mapping3d_result']['output_file'] == '/tmp/map.ply'
+    assert payload['latest_3d_capture'] == {}
+    assert payload['latest_3d_reconstruct'] == {}
 
 
 def test_status_payload_contains_patrol_orchestration_fields():

@@ -176,6 +176,53 @@ class UiBackend(QObject):
         message = str(status.get('message') or '')
         return f'{self.localizedStatus(state)} {message}'.strip()
 
+    @pyqtProperty(str, notify=mapping3dStatusChanged)
+    def mapping3dCaptureText(self) -> str:
+        status = self.state.mapping3d_status
+        latest = self.state.system_status.get('latest_3d_capture') or {}
+        state = str(status.get('state') or self.state.system_status.get('3d_capture') or 'stopped')
+        frames = status.get('svo_frame_count') or status.get('success_frames') or latest.get('svo_frame_count')
+        suffix = f' {frames} 帧' if frames not in (None, '') else ''
+        return f'{self.localizedStatus(state)}{suffix}'
+
+    @pyqtProperty(str, notify=mapping3dStatusChanged)
+    def mapping3dReconstructText(self) -> str:
+        status = self.state.mapping3d_result or self.state.system_status.get('latest_3d_reconstruct') or {}
+        state = str(status.get('state') or self.state.system_status.get('3d_reconstruct') or 'stopped')
+        points = status.get('export_point_count')
+        suffix = f' {points} 点' if points not in (None, '') else ''
+        return f'{self.localizedStatus(state)}{suffix}'
+
+    @pyqtProperty(str, notify=mapping3dStatusChanged)
+    def latestSvoFile(self) -> str:
+        latest = self.state.system_status.get('latest_3d_capture') or {}
+        return str(
+            latest.get('svo_file')
+            or self.state.mapping3d_status.get('svo_file')
+            or ''
+        )
+
+    @pyqtProperty(str, notify=mapping3dStatusChanged)
+    def latestModelFile(self) -> str:
+        latest = self.state.system_status.get('latest_3d_reconstruct') or {}
+        return str(
+            latest.get('output_file')
+            or self.state.mapping3d_result.get('output_file')
+            or ''
+        )
+
+    @pyqtProperty(bool, notify=mapping3dStatusChanged)
+    def mapping3dCanStartCapture(self) -> bool:
+        return self.state.system_status.get('3d_capture') != 'running'
+
+    @pyqtProperty(bool, notify=mapping3dStatusChanged)
+    def mapping3dCanStopCapture(self) -> bool:
+        return self.state.system_status.get('3d_capture') == 'running'
+
+    @pyqtProperty(bool, notify=mapping3dStatusChanged)
+    def mapping3dCanReconstruct(self) -> bool:
+        return bool(self.latestSvoFile) and self.state.system_status.get('3d_reconstruct') != 'running'
+
     @pyqtProperty('QVariantMap', notify=agentStatusChanged)
     def agentStatus(self) -> Dict[str, Any]:
         return self.state.agent_status
@@ -658,6 +705,25 @@ class UiBackend(QObject):
         )
         self.addLog('系统命令: start_patrol_mode')
 
+    @pyqtSlot()
+    def start3dCapture(self) -> None:
+        self.bridge.publish_system_command('start_3d_mapping')
+        self.addLog('系统命令: start_3d_mapping')
+
+    @pyqtSlot()
+    def stop3dCapture(self) -> None:
+        self.bridge.publish_system_command('stop_3d_mapping')
+        self.addLog('系统命令: stop_3d_mapping')
+
+    @pyqtSlot(str)
+    def reconstructLatest3dMap(self, profile: str) -> None:
+        command = {
+            'fast_check': 'reconstruct_fast_3d_map',
+            'quality_plus': 'reconstruct_quality_3d_map',
+        }.get(str(profile or '').strip(), 'reconstruct_latest_3d_map')
+        self.bridge.publish_system_command(command)
+        self.addLog(f'系统命令: {command}')
+
     def _is_debounced(self, command: str) -> bool:
         cooldowns = {
             'start_patrol_mode': 0.8,
@@ -833,6 +899,7 @@ class UiBackend(QObject):
             self.state.mapping3d_result = latest_mapping3d_result
             self.mapping3dStatusChanged.emit()
         self.systemStatusChanged.emit()
+        self.mapping3dStatusChanged.emit()
         message = payload.get('message')
         log_key = (str(payload.get('last_command') or ''), str(message or ''))
         if message and log_key != self._last_status_log_key:

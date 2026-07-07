@@ -24,6 +24,8 @@ START_PROCESS_MESSAGES = {
     'patrol_executor': '巡逻执行器已启动',
     'zed': 'ZED 相机已启动',
     '3d_mapping': '三维建图已启动',
+    '3d_capture': '现场 SVO 采集已启动',
+    '3d_reconstruct': '离线三维重建已启动',
     'perception': '感知节点已启动',
     'mobile_bridge': '移动端桥接已启动',
     'mapping': '建图已启动',
@@ -232,10 +234,10 @@ class SystemSupervisorNode(Node):
                 f'ros2 launch ylhb_base navigation.launch.py map:={self.default_navigation_map}',
             ),
             'zed': ManagedProcess('zed', 'ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i'),
-            '3d_mapping': ManagedProcess(
-                '3d_mapping',
+            '3d_capture': ManagedProcess(
+                '3d_capture',
                 f'ros2 run ylhb_3d_mapping zed_svo_capture '
-                f'output_root:={self.mapping3d_output_dir}',
+                f'output_root:={self.mapping3d_output_dir} duration_sec:=0',
             ),
             'perception': ManagedProcess(
                 'perception',
@@ -423,6 +425,15 @@ class SystemSupervisorNode(Node):
             return
         if command == 'stop_3d_mapping':
             self.stop_3d_mapping()
+            return
+        if command == 'reconstruct_latest_3d_map':
+            self.reconstruct_3d_map('quality_safe', command)
+            return
+        if command == 'reconstruct_fast_3d_map':
+            self.reconstruct_3d_map('fast_check', command)
+            return
+        if command == 'reconstruct_quality_3d_map':
+            self.reconstruct_3d_map('quality_plus', command)
             return
         if command == 'export_3d_map':
             self.export_3d_map()
@@ -689,16 +700,44 @@ class SystemSupervisorNode(Node):
                 '请先停止 ZED wrapper/感知进程: ' + ', '.join(blockers),
             )
             return
-        self.start_process('3d_mapping')
-        self.set_result('start_3d_mapping', True, 'SVO 采集已启动，现场只采集证据')
+        self.start_process('3d_capture')
+        self.set_result('start_3d_mapping', True, '现场 SVO 采集已启动')
 
     def stop_3d_mapping(self) -> None:
-        proc = self.processes.get('3d_mapping')
+        proc = self.processes.get('3d_capture')
         if not proc or not proc.is_running():
-            self.set_result('stop_3d_mapping', True, '3d_mapping already stopped')
+            self.set_result('stop_3d_mapping', True, '3d_capture already stopped')
             return
-        self.stop_process('3d_mapping')
-        self.set_result('stop_3d_mapping', True, 'SVO 采集已停止')
+        self.stop_process('3d_capture')
+        latest = self.read_latest_json(self.mapping3d_output_dir)
+        svo_file = str(latest.get('svo_file') or '')
+        message = 'SVO 采集已停止'
+        if svo_file:
+            message = f'SVO 采集已停止，最新文件: {svo_file}'
+        self.set_result('stop_3d_mapping', True, message)
+
+    def reconstruct_3d_map(self, profile: str, command: str) -> None:
+        latest = self.read_latest_json(self.mapping3d_output_dir)
+        if not latest.get('svo_file'):
+            self.set_result(command, False, '请先完成一次现场采集')
+            return
+        proc = self.processes.get('3d_reconstruct')
+        if proc and proc.is_running():
+            self.set_result(command, True, '三维重建已在运行')
+            return
+        reconstruct_root = os.path.join(
+            getattr(self, 'workspace_dir', workspace_path()),
+            'runs',
+            '3d_reconstruct',
+        )
+        self.processes['3d_reconstruct'] = ManagedProcess(
+            '3d_reconstruct',
+            f'ros2 run ylhb_3d_mapping zed_svo_reconstruct '
+            f'input:=latest capture_root:={self.mapping3d_output_dir} '
+            f'output_root:={reconstruct_root} profile:={profile}',
+        )
+        self.start_process('3d_reconstruct')
+        self.set_result(command, True, f'离线三维重建已启动: {profile}')
 
     def export_3d_map(self) -> None:
         self.set_result(
@@ -706,6 +745,14 @@ class SystemSupervisorNode(Node):
             False,
             '最终模型请离线执行: ./scripts/run_on_jetson.sh zed_3d_reconstruct input:=<capture.svo2>',
         )
+
+    def read_latest_json(self, root: str) -> Dict[str, Any]:
+        try:
+            with open(os.path.join(os.path.expanduser(root), 'latest.json'), 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     def wait_for_mapping3d_terminal(self, timeout_sec: float) -> str:
         deadline = time.monotonic() + timeout_sec
@@ -1115,6 +1162,13 @@ class SystemSupervisorNode(Node):
                 payload[name] = 'embedded'
             else:
                 payload[name] = 'running' if proc.is_running() else 'stopped'
+        capture = self.processes.get('3d_capture')
+        reconstruct = self.processes.get('3d_reconstruct')
+        payload['3d_mapping'] = (
+            'running'
+            if (capture and capture.is_running()) or (reconstruct and reconstruct.is_running())
+            else 'stopped'
+        )
         patrol_state = getattr(self, 'patrol_mode_state', 'idle')
         if patrol_state in ('starting', 'command_sent', 'running'):
             patrol_readiness = self.build_patrol_readiness()
@@ -1140,6 +1194,12 @@ class SystemSupervisorNode(Node):
             },
             'latest_mapping3d_status': getattr(self, 'latest_mapping3d_status', {}),
             'latest_mapping3d_result': getattr(self, 'latest_mapping3d_result', {}),
+            'latest_3d_capture': self.read_latest_json(
+                getattr(self, 'mapping3d_output_dir', workspace_path('runs', '3d_capture'))
+            ),
+            'latest_3d_reconstruct': self.read_latest_json(
+                os.path.join(getattr(self, 'workspace_dir', workspace_path()), 'runs', '3d_reconstruct')
+            ),
         })
         return payload
 

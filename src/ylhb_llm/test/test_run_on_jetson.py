@@ -86,6 +86,10 @@ class RunOnJetsonTest(unittest.TestCase):
         help_result = self.run_script('help')
         self.assertIn('zed_3d_capture', help_result.stdout)
         self.assertIn('zed_3d_reconstruct', help_result.stdout)
+        self.assertIn('zed_3d_reconstruct latest', help_result.stdout)
+        self.assertIn('input:=latest profile:=quality_safe', help_result.stdout)
+        self.assertIn('session:=capture_YYYYmmdd_HHMMSS', help_result.stdout)
+        self.assertNotIn('input:=${WS_DIR}/runs/3d_capture/capture_YYYYmmdd_HHMMSS/capture.svo2', help_result.stdout)
 
 
 if __name__ == '__main__':

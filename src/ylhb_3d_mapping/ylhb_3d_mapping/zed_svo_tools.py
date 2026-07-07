@@ -1,10 +1,11 @@
 import json
 import os
+import signal
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .zed_spatial_mapping_node import (
     RANGE_METERS,
@@ -44,6 +45,9 @@ PROFILES = {
 }
 
 
+_STOP_REQUESTED = False
+
+
 def parse_args(args: List[str]) -> Dict[str, str]:
     parsed = {}
     for arg in args:
@@ -64,6 +68,72 @@ def load_zed():
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+
+def write_latest_json(root: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    root_path = Path(os.path.expanduser(root))
+    latest = {
+        'session_id': str(metadata.get('session_id') or Path(str(metadata.get('output_dir', ''))).name),
+        'output_dir': str(metadata.get('output_dir') or ''),
+        'svo_file': str(metadata.get('svo_file') or ''),
+        'metadata_file': str(metadata.get('metadata_file') or ''),
+        'status_file': str(metadata.get('status_file') or ''),
+        'created_at': metadata.get('created_at') or metadata.get('started_at'),
+        'svo_frame_count': int(metadata.get('svo_frame_count') or 0),
+    }
+    for key in ('output_file', 'export_point_count', 'reconstruct_profile', 'source_capture_session_id', 'source_svo_file'):
+        if key in metadata:
+            latest[key] = metadata[key]
+    write_json(root_path / 'latest.json', latest)
+    return latest
+
+
+def update_index_json(root: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    root_path = Path(os.path.expanduser(root))
+    index_path = root_path / 'index.json'
+    try:
+        current = json.loads(index_path.read_text(encoding='utf-8'))
+    except Exception:
+        current = []
+    if not isinstance(current, list):
+        current = []
+    session_id = str(metadata.get('session_id') or Path(str(metadata.get('output_dir', ''))).name)
+    latest = write_latest_json(root, metadata)
+    updated = [latest] + [item for item in current if item.get('session_id') != session_id]
+    write_json(index_path, updated)
+    return updated
+
+
+def resolve_latest_capture(root: str) -> Path:
+    latest_path = Path(os.path.expanduser(root)) / 'latest.json'
+    try:
+        latest = json.loads(latest_path.read_text(encoding='utf-8'))
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f'请先完成一次现场采集: {latest_path}') from exc
+    svo_file = Path(str(latest.get('svo_file') or '')).expanduser()
+    if not svo_file:
+        raise FileNotFoundError(f'latest.json missing svo_file: {latest_path}')
+    return svo_file
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_capture(opts: Dict[str, str]) -> Tuple[Path, Dict[str, Any]]:
+    capture_root = str(opts.get('capture_root') or CAPTURE_DEFAULTS['output_root'])
+    if opts.get('session'):
+        out_dir = Path(os.path.expanduser(capture_root)) / str(opts['session'])
+        return out_dir / 'capture.svo2', _read_json(out_dir / 'metadata.json')
+    input_value = str(opts.get('input') or 'latest')
+    if input_value == 'latest':
+        svo_file = resolve_latest_capture(capture_root)
+        return svo_file, _read_json(svo_file.parent / 'metadata.json')
+    return Path(input_value).expanduser(), _read_json(Path(input_value).expanduser().parent / 'metadata.json')
 
 
 def set_enum(enum_cls, obj: Any, attr: str, value: str) -> None:
@@ -95,17 +165,36 @@ def capture_svo(
     sl=None,
     now: Callable[[], float] = time.time,
     monotonic: Callable[[], float] = time.monotonic,
+    stop_requested: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
+    global _STOP_REQUESTED
     sl = sl or load_zed()
     opts = {**CAPTURE_DEFAULTS, **parse_args(args)}
     started_at = now()
-    out_dir = output_dir(str(opts['output_root']), 'capture', started_at)
+    output_root = str(opts['output_root'])
+    out_dir = output_dir(output_root, 'capture', started_at)
+    session_id = out_dir.name
     svo_file = out_dir / 'capture.svo2'
+    metadata_file = out_dir / 'metadata.json'
+    status_file = out_dir / 'status.json'
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_json(out_dir / 'status.json', {'state': 'recording', 'svo_file': str(svo_file), 'parameters': opts})
+    write_json(status_file, {'state': 'recording', 'svo_file': str(svo_file), 'parameters': opts})
 
     camera = sl.Camera()
+    previous_handlers = {}
+
+    def request_stop(_signum, _frame) -> None:
+        global _STOP_REQUESTED
+        _STOP_REQUESTED = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous_handlers[sig] = signal.getsignal(sig)
+            signal.signal(sig, request_stop)
+        except ValueError:
+            pass
     frames = 0
+    state = 'succeeded'
     try:
         init_params = sl.InitParameters()
         set_enum(sl.RESOLUTION, init_params, 'camera_resolution', str(opts['camera_resolution']))
@@ -124,29 +213,41 @@ def capture_svo(
         start = monotonic()
         duration = float(opts['duration_sec'])
         while duration <= 0 or monotonic() - start < duration:
+            if _STOP_REQUESTED or (stop_requested is not None and stop_requested()):
+                state = 'stopped'
+                break
             if camera.grab() == sl.ERROR_CODE.SUCCESS:
                 frames += 1
-            if duration <= 0:
-                break
     finally:
         if hasattr(camera, 'disable_recording'):
             camera.disable_recording()
         camera.close()
+        for sig, handler in previous_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except ValueError:
+                pass
+        _STOP_REQUESTED = False
 
     finished_at = now()
     metadata = {
         'schema_version': '1.0',
-        'state': 'succeeded',
+        'state': state,
+        'session_id': session_id,
         'svo_file': str(svo_file),
         'output_dir': str(out_dir),
+        'metadata_file': str(metadata_file),
+        'status_file': str(status_file),
+        'created_at': started_at,
         'started_at': started_at,
         'finished_at': finished_at,
         'capture_duration_sec': max(0.0, finished_at - started_at),
         'svo_frame_count': frames,
         'parameters': opts,
     }
-    write_json(out_dir / 'metadata.json', metadata)
-    write_json(out_dir / 'status.json', metadata)
+    write_json(metadata_file, metadata)
+    write_json(status_file, metadata)
+    update_index_json(output_root, metadata)
     return metadata
 
 
@@ -158,13 +259,16 @@ def reconstruct_svo(
 ) -> Dict[str, Any]:
     sl = sl or load_zed()
     opts = parse_args(args)
-    if 'input' not in opts:
-        raise ValueError('input:=/path/to/capture.svo2 is required')
     profile_name = opts.get('profile', 'quality_safe')
     params = {**PROFILES.get(profile_name, PROFILES['quality_safe']), **opts}
-    svo_file = Path(str(params['input'])).expanduser()
+    params.setdefault('input', 'latest')
+    params.setdefault('output_type', 'pointcloud')
+    svo_file, capture_metadata = _resolve_capture(params)
+    params['input'] = str(svo_file)
     started_at = now()
-    out_dir = output_dir(str(params.get('output_root', '/home/nvidia/ros2_DL/runs/3d_reconstruct')), 'reconstruct', started_at)
+    output_root = str(params.get('output_root', '/home/nvidia/ros2_DL/runs/3d_reconstruct'))
+    out_dir = output_dir(output_root, 'reconstruct', started_at)
+    session_id = out_dir.name
     out_dir.mkdir(parents=True, exist_ok=True)
     output_file = out_dir / 'pointcloud.ply'
     write_json(out_dir / 'status.json', {'state': 'reconstructing', 'svo_file': str(svo_file), 'parameters': params})
@@ -213,11 +317,17 @@ def reconstruct_svo(
     metadata = {
         'schema_version': '1.0',
         'state': 'succeeded',
+        'session_id': session_id,
         'svo_file': str(svo_file),
         'svo_frame_count': frame_count,
+        'source_capture_session_id': str(capture_metadata.get('session_id') or svo_file.parent.name),
+        'source_svo_file': str(svo_file),
         'reconstruct_profile': profile_name,
         'output_dir': str(out_dir),
         'output_file': str(output_file),
+        'metadata_file': str(out_dir / 'metadata.json'),
+        'status_file': str(out_dir / 'status.json'),
+        'created_at': started_at,
         'started_at': started_at,
         'finished_at': finished_at,
         'duration_sec': max(0.0, finished_at - started_at),
@@ -226,6 +336,7 @@ def reconstruct_svo(
     }
     write_json(out_dir / 'metadata.json', metadata)
     write_json(out_dir / 'status.json', metadata)
+    update_index_json(output_root, metadata)
     return metadata
 
 

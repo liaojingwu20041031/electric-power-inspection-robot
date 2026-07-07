@@ -212,8 +212,10 @@ Examples:
   $0 llm enable_voice:=true enable_tts:=true audio_input_device:=plughw:CARD=Luna,DEV=0 audio_output_device:=plughw:CARD=Luna,DEV=0
   $0 inspection fullscreen:=true
   $0 navigation map:=${WS_DIR}/maps/my_map.yaml
-  $0 zed_3d_capture duration_sec:=30
-  $0 zed_3d_reconstruct input:=${WS_DIR}/runs/3d_capture/capture_YYYYmmdd_HHMMSS/capture.svo2
+  $0 zed_3d_capture duration_sec:=0
+  $0 zed_3d_reconstruct latest
+  $0 zed_3d_reconstruct input:=latest profile:=quality_safe
+  $0 zed_3d_reconstruct session:=capture_YYYYmmdd_HHMMSS
 EOF
     ;;
 esac

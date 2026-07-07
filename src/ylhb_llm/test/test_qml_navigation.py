@@ -6,7 +6,9 @@ def test_main_navigation_uses_patrol_and_voice_pages_not_control_or_mapping():
 
     assert "property int currentPage: 1" in qml
     assert "pages/PatrolPage.qml" in qml
+    assert "pages/Mapping3DPage.qml" in qml
     assert "pages/VoiceAiPage.qml" in qml
+    assert "三维建模" in qml
     assert "ControlPage.qml" not in qml
     assert "MappingPage.qml" not in qml
 
@@ -19,6 +21,21 @@ def test_status_page_shows_3d_mapping_process_card():
     assert "backend.mapping3dStatus.state" in qml
     assert "backend.mapping3dStateText" in qml
     assert '"recording"' in qml
+
+
+def test_mapping3d_page_uses_backend_slots_not_json_commands():
+    qml = Path("src/ylhb_llm/qml/pages/Mapping3DPage.qml").read_text(encoding="utf-8")
+
+    assert "backend.start3dCapture()" in qml
+    assert "backend.stop3dCapture()" in qml
+    assert 'backend.reconstructLatest3dMap("fast_check")' in qml
+    assert 'backend.reconstructLatest3dMap("quality_plus")' in qml
+    assert "backend.mapping3dCanReconstruct" in qml
+    assert "backend.latestSvoFile" in qml
+    assert "backend.latestModelFile" in qml
+    assert "zed_3d_map" in qml
+    assert "/inspection_ai/mapping3d_pointcloud" in qml
+    assert 'backend.sendSystemCommand("reconstruct' not in qml
 
 
 def test_ui_bridge_connects_mapping3d_status_and_result():

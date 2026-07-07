@@ -251,6 +251,52 @@ def test_mapping3d_status_properties_follow_direct_and_system_status():
     assert backend.mapping3dResult['output_file'] == '/tmp/map.ply'
 
 
+def test_mapping3d_latest_files_and_controls_follow_system_status():
+    backend = make_backend(lambda: 100.0)
+
+    backend.update_system_status({
+        '3d_capture': 'stopped',
+        '3d_reconstruct': 'stopped',
+        'latest_3d_capture': {},
+        'latest_3d_reconstruct': {},
+    })
+    assert backend.mapping3dCanStartCapture is True
+    assert backend.mapping3dCanStopCapture is False
+    assert backend.mapping3dCanReconstruct is False
+
+    backend.update_system_status({
+        '3d_capture': 'running',
+        '3d_reconstruct': 'stopped',
+        'latest_3d_capture': {'svo_file': '/tmp/capture.svo2', 'svo_frame_count': 12},
+        'latest_3d_reconstruct': {'output_file': '/tmp/pointcloud.ply'},
+    })
+
+    assert backend.latestSvoFile == '/tmp/capture.svo2'
+    assert backend.latestModelFile == '/tmp/pointcloud.ply'
+    assert backend.mapping3dCanStartCapture is False
+    assert backend.mapping3dCanStopCapture is True
+    assert backend.mapping3dCanReconstruct is True
+    assert '12 帧' in backend.mapping3dCaptureText
+
+
+def test_mapping3d_slots_publish_supervisor_commands():
+    backend = make_backend(lambda: 100.0)
+
+    backend.start3dCapture()
+    backend.stop3dCapture()
+    backend.reconstructLatest3dMap('fast_check')
+    backend.reconstructLatest3dMap('quality_plus')
+    backend.reconstructLatest3dMap('quality_safe')
+
+    assert backend.bridge.system_commands == [
+        ('start_3d_mapping', {}),
+        ('stop_3d_mapping', {}),
+        ('reconstruct_fast_3d_map', {}),
+        ('reconstruct_quality_3d_map', {}),
+        ('reconstruct_latest_3d_map', {}),
+    ]
+
+
 def test_patrol_display_properties_follow_starting_active_and_terminal_states():
     backend = make_backend(lambda: 100.0)
 
