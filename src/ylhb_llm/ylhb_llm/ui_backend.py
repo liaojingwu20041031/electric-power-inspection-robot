@@ -14,6 +14,8 @@ from .agent_chat_schema import dedupe_key, make_agent_chat
 
 STATUS_TEXT = {
     'running': '运行中',
+    'recording': '录制中',
+    'reconstructing': '重建中',
     'stopped': '已停止',
     'http_ok': '连接正常',
     'http_error': '连接异常',
@@ -85,6 +87,7 @@ class UiBackend(QObject):
     controlUnlockedChanged = pyqtSignal()
     patrolStatusChanged = pyqtSignal()
     patrolEventsChanged = pyqtSignal()
+    mapping3dStatusChanged = pyqtSignal()
     routePreviewChanged = pyqtSignal()
     patrolTasksChanged = pyqtSignal()
     routePreviewLoaded = pyqtSignal(dict, dict)
@@ -157,6 +160,21 @@ class UiBackend(QObject):
     @pyqtProperty('QVariantList', notify=patrolEventsChanged)
     def patrolEvents(self):
         return self.state.patrol_events
+
+    @pyqtProperty('QVariantMap', notify=mapping3dStatusChanged)
+    def mapping3dStatus(self) -> Dict[str, Any]:
+        return self.state.mapping3d_status
+
+    @pyqtProperty('QVariantMap', notify=mapping3dStatusChanged)
+    def mapping3dResult(self) -> Dict[str, Any]:
+        return self.state.mapping3d_result
+
+    @pyqtProperty(str, notify=mapping3dStatusChanged)
+    def mapping3dStateText(self) -> str:
+        status = self.state.mapping3d_status
+        state = str(status.get('state') or self.state.system_status.get('3d_mapping') or 'stopped')
+        message = str(status.get('message') or '')
+        return f'{self.localizedStatus(state)} {message}'.strip()
 
     @pyqtProperty('QVariantMap', notify=agentStatusChanged)
     def agentStatus(self) -> Dict[str, Any]:
@@ -806,6 +824,14 @@ class UiBackend(QObject):
 
     def update_system_status(self, payload: Dict[str, Any]) -> None:
         self.state.system_status = payload
+        latest_mapping3d = payload.get('latest_mapping3d_status')
+        if isinstance(latest_mapping3d, dict) and latest_mapping3d:
+            self.state.mapping3d_status = latest_mapping3d
+            self.mapping3dStatusChanged.emit()
+        latest_mapping3d_result = payload.get('latest_mapping3d_result')
+        if isinstance(latest_mapping3d_result, dict) and latest_mapping3d_result:
+            self.state.mapping3d_result = latest_mapping3d_result
+            self.mapping3dStatusChanged.emit()
         self.systemStatusChanged.emit()
         message = payload.get('message')
         log_key = (str(payload.get('last_command') or ''), str(message or ''))
@@ -833,6 +859,14 @@ class UiBackend(QObject):
         if len(self.state.patrol_events) > 100:
             del self.state.patrol_events[:-100]
         self.patrolEventsChanged.emit()
+
+    def update_mapping3d_status(self, payload: Dict[str, Any]) -> None:
+        self.state.mapping3d_status = payload
+        self.mapping3dStatusChanged.emit()
+
+    def update_mapping3d_result(self, payload: Dict[str, Any]) -> None:
+        self.state.mapping3d_result = payload
+        self.mapping3dStatusChanged.emit()
 
     def update_task_context(self, payload: Dict[str, Any]) -> None:
         self.state.task_context = payload

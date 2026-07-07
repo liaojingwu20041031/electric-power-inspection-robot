@@ -81,7 +81,7 @@ ROS 包名、launch 模式和业务功能混在一起看。
 | 建图定位 | SLAM Toolbox 建图、地图保存、AMCL 定位、Scan-to-Map 修正 | `mapping`、`navigation`、`scan_map_relocalization_node` | `/map`、`map -> odom`、`/initialpose` 修正 |
 | 导航与巡逻 | Nav2 单点导航、本地路线巡逻、到点任务触发、返航、暂停/恢复/取消 | `navigation`、`patrol_executor.launch.py` | Nav2 action、`/patrol/status`、`/patrol/event` |
 | 视觉感知 | ZED 2i 图像/深度、YOLO/TensorRT 检测、目标空间定位 | `zed`、`perception` | `/perception/detections`、`/perception/localized_objects` |
-| 三维建模 | ZED SDK Spatial Mapping 导出 PLY 点云或 OBJ 网格；不作为 Nav2 地图 | `zed_3d_mapping` | `/inspection_ai/mapping3d_status`、`runs/3d_mapping/map_*` |
+| 三维建模 | ZED SVO 现场采集，离线重建 PLY 点云；不作为 Nav2 地图 | `zed_3d_capture`、`zed_3d_reconstruct` | `runs/3d_capture/capture_*`、`runs/3d_reconstruct/reconstruct_*` |
 | 任务与交互 | 文本/语音命令、任务事件、TTS、中文 QML 本体操控台、系统进程 supervisor | `llm`、`inspection` | `/inspection_ai/*`、短时 `/cmd_vel`、UI |
 | 外部调试接口 | HTTP/WebSocket 调试、移动端状态查询、低速控制、系统启动/停止入口 | `mobile_bridge.launch.py` | Web API、WebSocket、ROS 话题转发 |
 
@@ -100,7 +100,7 @@ source ROS 环境和 install 环境，并把常用运行模式统一成固定命
 | 单点导航 | `bringup` | `navigation` | 启动后先发布 `map` frame 的 `/initialpose` |
 | 本地巡逻 | `bringup`、`navigation` | `patrol_executor.launch.py` | 默认 `auto_start:=false`，先定位再发送 `start` |
 | 视觉检测 | `zed` | `perception` | ZED wrapper 和 TensorRT 检测分开启动 |
-| 三维建模 | 无；但不能同时运行 `zed`/ZED wrapper | `zed_3d_mapping` | 输出 PLY/OBJ，不写 `map.yaml/pgm` |
+| 三维建模 | 无；但不能同时运行 `zed`/ZED wrapper | `zed_3d_capture` 后 `zed_3d_reconstruct` | 输出 SVO/PLY，不写 `map.yaml/pgm` |
 | 任务/语音/UI | 视任务需要启动底层或导航 | `inspection` 或 `llm` | `inspection` 是带 UI、语音和 supervisor 的组合模式 |
 | 移动端调试 | 视接口需要启动底层或导航 | `mobile_bridge.launch.py` | 只做外部协议到 ROS 的转换 |
 
@@ -112,7 +112,7 @@ bringup -> mapping -> 保存地图
 bringup -> navigation -> initialpose -> 单点导航
 bringup -> navigation -> patrol_executor -> /patrol/command start
 zed -> perception -> inspection
-zed_3d_mapping -> /inspection_ai/mapping3d_command start -> stop_and_export
+zed_3d_capture -> zed_3d_reconstruct
 ```
 
 ## 2. 项目结构总览
@@ -1223,60 +1223,50 @@ ros2 topic echo /perception/localized_objects
 
 ### 13.1 ZED SDK 三维建模
 
-ZED SDK 三维建模是独立入口，不经过 `zed_wrapper`、`ylhb_perception` 或 Nav2。
-它适合现场扫一段设备、柜体或通道，导出 PLY 点云或 OBJ 网格用于巡检记录和复核。
-它不是二维导航地图，不会写入 `maps/my_map.yaml` 或 `maps/my_map.pgm`。
+ZED SDK 三维建模走“双阶段”流程：现场只录制 ZED SVO，离线再从 SVO 重建 PLY 点云。
+它适合扫一段设备、柜体或通道，用于巡检记录和复核；它不是二维导航地图，不会写入
+`maps/my_map.yaml` 或 `maps/my_map.pgm`，也不参与 Nav2 定位导航。
 
-使用前先确认没有其他 ZED 进程占用相机：
+这条入口不经过 `zed_wrapper`、`ylhb_perception` 或 Nav2。ZED 2i 通常只能被一个
+SDK 客户端占用，所以采集前先确认没有其他 ZED 进程：
 
 ```bash
 ps -ef | grep -E 'zed_wrapper|zed_camera|zed_spatial_mapping' | grep -v grep
 ```
 
 如果已经运行 `./scripts/run_on_jetson.sh zed`、`zed_wrapper` 或感知链路，先停止它们。
-ZED 2i 通常只能被一个 SDK 客户端占用。
 
-终端 1 启动三维建模节点：
-
-```bash
-cd ~/ros2_DL
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-./scripts/run_on_jetson.sh zed_3d_mapping
-```
-
-终端 2 观察状态：
+步骤 1：现场录制 ZED SVO。当前 Orin Nano 8GB 不再使用实时 `zed_3d_mapping`
+模式，避免现场 OOM 和卡顿：
 
 ```bash
 cd ~/ros2_DL
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 topic echo /inspection_ai/mapping3d_status
+./scripts/run_on_jetson.sh zed_3d_capture duration_sec:=30
 ```
 
-终端 3 开始采集：
-
-```bash
-ros2 topic pub --once /inspection_ai/mapping3d_command std_msgs/msg/String \
-  '{"data":"{\"command\":\"start\"}"}'
-```
-
-启动后状态通常依次变为 `opening_camera`、`tracking_enabled`、
-`mapping_enabled`、`running`。状态进入 `running` 后，缓慢移动相机或机器人扫过目标区域。
-第一版只负责建模导出，不会发布 `/cmd_vel`，不会自动控制底盘。
-
-采集完成后导出：
-
-```bash
-ros2 topic pub --once /inspection_ai/mapping3d_command std_msgs/msg/String \
-  '{"data":"{\"command\":\"stop_and_export\"}"}'
-```
-
-导出期间状态会经过 `extracting`、`saving`，成功后变为 `succeeded`。
-默认输出目录类似：
+输出目录类似：
 
 ```text
-~/ros2_DL/runs/3d_mapping/map_20260706_153000/
+~/ros2_DL/runs/3d_capture/capture_20260706_153000/
+├── capture.svo2
+├── metadata.json
+└── status.json
+```
+
+采集时慢速移动相机或机器人，同一区域多角度扫几遍。三维建模流程不会发布 `/cmd_vel`，不会自动控制底盘。
+
+步骤 2：采集结束后，离线重建 PLY：
+
+```bash
+./scripts/run_on_jetson.sh zed_3d_reconstruct input:=runs/3d_capture/capture_20260706_153000/capture.svo2
+```
+
+离线输出目录类似：
+
+```text
+~/ros2_DL/runs/3d_reconstruct/reconstruct_20260706_153500/
 ├── metadata.json
 ├── status.json
 └── pointcloud.ply
@@ -1285,25 +1275,26 @@ ros2 topic pub --once /inspection_ai/mapping3d_command std_msgs/msg/String \
 查看最近一次输出：
 
 ```bash
-ls -lt ~/ros2_DL/runs/3d_mapping | head
-ls -lh ~/ros2_DL/runs/3d_mapping/map_*/pointcloud.ply
+ls -lt ~/ros2_DL/runs/3d_capture | head
+ls -lt ~/ros2_DL/runs/3d_reconstruct | head
+ls -lh ~/ros2_DL/runs/3d_reconstruct/reconstruct_*/pointcloud.ply
 ```
 
-PLY 可用 CloudCompare、MeshLab 或支持点云的三维查看器打开。导出 mesh 时启动：
+PLY 可用 CloudCompare、MeshLab 或支持点云的三维查看器打开。快速检查 SVO 是否可用时，用低负载档：
 
 ```bash
-./scripts/run_on_jetson.sh zed_3d_mapping map_type:=mesh
+./scripts/run_on_jetson.sh zed_3d_reconstruct input:=runs/3d_capture/capture_20260706_153000/capture.svo2 profile:=fast_check
 ```
 
-mesh 模式输出 `mesh.obj`；如需纹理可加 `save_texture:=true`，但耗时和显存压力更高。
-如果只想停止采集但不导出，发送 `{"command":"stop"}`；如果节点异常或想重新开始，
-发送 `{"command":"reset"}` 后再 `start`。
+默认档是 `quality_safe`。机器负载低时可以尝试 `profile:=quality_plus`；如果出现
+`exit code -9` 或 OOM 记录，改回默认档。
 
 常见失败：
 
 - `pyzed.sl import failed`：ZED SDK Python API 未安装，或当前终端没有 source 正确环境。
 - `Camera.open failed`：相机未连接、权限不足，或已被 `zed_wrapper` / 其他 ZED 程序占用。
-- 一直没有进入 `running`：先检查 USB 连接、电源和 `dmesg`，再确认没有多个 ZED 进程。
+- 采集目录没有生成 `capture.svo2`：先检查 USB 连接、电源和 `dmesg`，再确认没有多个 ZED 进程。
+- 离线点云形状差：先用 ZED Depth Viewer / Explorer 检查 SVO 原始图像、曝光和深度质量。
 
 完整说明见 [ZED Spatial Mapping 集成说明](../docs/zed_spatial_mapping_integration.md)。
 
@@ -1690,7 +1681,8 @@ ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py --show-args
 ./scripts/run_on_jetson.sh mapping
 ./scripts/run_on_jetson.sh navigation
 ./scripts/run_on_jetson.sh zed
-./scripts/run_on_jetson.sh zed_3d_mapping
+./scripts/run_on_jetson.sh zed_3d_capture
+./scripts/run_on_jetson.sh zed_3d_reconstruct input:=runs/3d_capture/capture_YYYYmmdd_HHMMSS/capture.svo2
 ./scripts/run_on_jetson.sh perception
 ./scripts/run_on_jetson.sh llm
 ./scripts/run_on_jetson.sh inspection

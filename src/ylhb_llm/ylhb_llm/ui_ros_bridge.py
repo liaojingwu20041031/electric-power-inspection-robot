@@ -37,6 +37,8 @@ class UiSignals(QObject):
     localizedObjects = pyqtSignal(str)
     patrolStatus = pyqtSignal(dict)
     patrolEvent = pyqtSignal(dict)
+    mapping3dStatus = pyqtSignal(dict)
+    mapping3dResult = pyqtSignal(dict)
 
 
 class InspectionDisplayRosBridge(Node):
@@ -65,6 +67,8 @@ class InspectionDisplayRosBridge(Node):
             'patrol_status_topic': '/patrol/status',
             'patrol_event_topic': '/patrol/event',
             'patrol_command_topic': '/patrol/command',
+            'mapping3d_status_topic': '/inspection_ai/mapping3d_status',
+            'mapping3d_result_topic': '/inspection_ai/mapping3d_result',
             'cmd_vel_topic': '/cmd_vel',
             'initial_system_mode': 'ready',
             'fullscreen': True,
@@ -103,6 +107,8 @@ class InspectionDisplayRosBridge(Node):
             self._patrol_event,
             patrol_status_qos_profile(),
         )
+        self.create_subscription(String, self._param('mapping3d_status_topic'), self._mapping3d_status, latched_qos())
+        self.create_subscription(String, self._param('mapping3d_result_topic'), self._mapping3d_result, latched_qos())
         self.voice_clients = {
             'start': self.create_client(Trigger, self._param('start_voice_session_service_name')),
             'stop': self.create_client(Trigger, self._param('stop_voice_session_service_name')),
@@ -135,6 +141,12 @@ class InspectionDisplayRosBridge(Node):
 
     def _patrol_event(self, msg: String) -> None:
         self.signals.patrolEvent.emit(self.parse_json(msg.data))
+
+    def _mapping3d_status(self, msg: String) -> None:
+        self.signals.mapping3dStatus.emit(self.parse_json(msg.data))
+
+    def _mapping3d_result(self, msg: String) -> None:
+        self.signals.mapping3dResult.emit(self.parse_json(msg.data))
 
     def _agent_status(self, msg: String) -> None:
         self.signals.agentStatus.emit(self.parse_json(msg.data))

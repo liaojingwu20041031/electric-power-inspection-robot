@@ -227,6 +227,30 @@ def test_patrol_readiness_properties_follow_system_status():
     assert backend.patrolControlsEnabled is True
 
 
+def test_mapping3d_status_properties_follow_direct_and_system_status():
+    backend = make_backend(lambda: 100.0)
+
+    backend.update_mapping3d_status({
+        'state': 'recording',
+        'message': 'SVO capture running',
+        'success_frames': 12,
+    })
+    assert backend.mapping3dStatus['success_frames'] == 12
+    assert '录制中' in backend.mapping3dStateText
+
+    backend.update_system_status({
+        '3d_mapping': 'running',
+        'latest_mapping3d_status': {
+            'state': 'succeeded',
+            'message': 'exported',
+            'output_file': '/tmp/map.ply',
+        },
+        'latest_mapping3d_result': {'output_file': '/tmp/map.ply'},
+    })
+    assert backend.mapping3dStatus['state'] == 'succeeded'
+    assert backend.mapping3dResult['output_file'] == '/tmp/map.ply'
+
+
 def test_patrol_display_properties_follow_starting_active_and_terminal_states():
     backend = make_backend(lambda: 100.0)
 

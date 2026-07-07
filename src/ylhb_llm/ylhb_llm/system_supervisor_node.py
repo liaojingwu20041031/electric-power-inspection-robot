@@ -159,7 +159,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('workspace_dir', os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL')))
         self.declare_parameter('ros_distro', 'humble')
         self.declare_parameter('map_output_dir', workspace_path('maps'))
-        self.declare_parameter('mapping3d_output_dir', workspace_path('runs', '3d_mapping'))
+        self.declare_parameter('mapping3d_output_dir', workspace_path('runs', '3d_capture'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
         self.declare_parameter('embedded_task_layer', True)
@@ -210,6 +210,8 @@ class SystemSupervisorNode(Node):
         self.last_patrol_start_request_id = ''
         self.last_patrol_event: Dict[str, Any] = {}
         self.last_initial_pose_event: Dict[str, Any] = {}
+        self.latest_mapping3d_status: Dict[str, Any] = {}
+        self.latest_mapping3d_result: Dict[str, Any] = {}
         self.inflight_commands = set()
         self.lifecycle_clients: Dict[str, Any] = {}
         self.tf_buffer = None
@@ -232,7 +234,7 @@ class SystemSupervisorNode(Node):
             'zed': ManagedProcess('zed', 'ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i'),
             '3d_mapping': ManagedProcess(
                 '3d_mapping',
-                f'ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py '
+                f'ros2 run ylhb_3d_mapping zed_svo_capture '
                 f'output_root:={self.mapping3d_output_dir}',
             ),
             'perception': ManagedProcess(
@@ -280,6 +282,18 @@ class SystemSupervisorNode(Node):
             '/patrol/event',
             self.patrol_event_callback,
             patrol_status_qos_profile(),
+        )
+        self.create_subscription(
+            String,
+            '/inspection_ai/mapping3d_status',
+            self.mapping3d_status_callback,
+            latched_qos(),
+        )
+        self.create_subscription(
+            String,
+            '/inspection_ai/mapping3d_result',
+            self.mapping3d_result_callback,
+            latched_qos(),
         )
         self.create_timer(1.0, self.publish_status)
         self.publish_status()
@@ -365,6 +379,22 @@ class SystemSupervisorNode(Node):
             if payload.get('event') == 'initial_pose_published':
                 self.last_initial_pose_event = payload
 
+    def mapping3d_status_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            payload = {'raw': msg.data}
+        if isinstance(payload, dict):
+            self.latest_mapping3d_status = payload
+
+    def mapping3d_result_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            payload = {'raw': msg.data}
+        if isinstance(payload, dict):
+            self.latest_mapping3d_result = payload
+
     def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
         if command == 'start_patrol_mode':
             self.start_patrol_mode(
@@ -387,6 +417,15 @@ class SystemSupervisorNode(Node):
             self.stop_process('patrol_executor')
             self.reset_patrol_mode_state()
             self.set_result(command, True, '巡逻模式已停止')
+            return
+        if command == 'start_3d_mapping':
+            self.start_3d_mapping()
+            return
+        if command == 'stop_3d_mapping':
+            self.stop_3d_mapping()
+            return
+        if command == 'export_3d_map':
+            self.export_3d_map()
             return
         if command.startswith('start_'):
             name = command[len('start_'):]
@@ -416,10 +455,6 @@ class SystemSupervisorNode(Node):
             return
         if command == 'save_map':
             self.save_map(str(payload.get('map_name') or '').strip())
-            return
-        if command == 'export_3d_map':
-            self.publish_3d_mapping_command('stop_and_export')
-            self.set_result(command, True, '已发送三维建图导出命令')
             return
         if command == 'emergency_stop':
             self.emergency_stop()
@@ -641,6 +676,47 @@ class SystemSupervisorNode(Node):
             'request_id': f"3d_mapping_{command}_{int(time.time() * 1000)}",
         }, ensure_ascii=False)
         self.mapping3d_command_pub.publish(msg)
+
+    def start_3d_mapping(self) -> None:
+        blockers = [
+            name for name in ('zed', 'perception')
+            if self.processes.get(name) and self.processes[name].is_running()
+        ]
+        if blockers:
+            self.set_result(
+                'start_3d_mapping',
+                False,
+                '请先停止 ZED wrapper/感知进程: ' + ', '.join(blockers),
+            )
+            return
+        self.start_process('3d_mapping')
+        self.set_result('start_3d_mapping', True, 'SVO 采集已启动，现场只采集证据')
+
+    def stop_3d_mapping(self) -> None:
+        proc = self.processes.get('3d_mapping')
+        if not proc or not proc.is_running():
+            self.set_result('stop_3d_mapping', True, '3d_mapping already stopped')
+            return
+        self.stop_process('3d_mapping')
+        self.set_result('stop_3d_mapping', True, 'SVO 采集已停止')
+
+    def export_3d_map(self) -> None:
+        self.set_result(
+            'export_3d_map',
+            False,
+            '最终模型请离线执行: ./scripts/run_on_jetson.sh zed_3d_reconstruct input:=<capture.svo2>',
+        )
+
+    def wait_for_mapping3d_terminal(self, timeout_sec: float) -> str:
+        deadline = time.monotonic() + timeout_sec
+        last_state = ''
+        while time.monotonic() < deadline:
+            status = getattr(self, 'latest_mapping3d_status', {}) or {}
+            last_state = str(status.get('state') or '')
+            if last_state in ('succeeded', 'failed', 'idle'):
+                return last_state
+            time.sleep(0.2)
+        return last_state or 'timeout'
 
     def build_patrol_readiness(self) -> Dict[str, bool]:
         bringup = self.processes.get('bringup')
@@ -1062,6 +1138,8 @@ class SystemSupervisorNode(Node):
                 'last_initial_pose_event': getattr(self, 'last_initial_pose_event', {}),
                 'last_patrol_start_request_id': getattr(self, 'last_patrol_start_request_id', ''),
             },
+            'latest_mapping3d_status': getattr(self, 'latest_mapping3d_status', {}),
+            'latest_mapping3d_result': getattr(self, 'latest_mapping3d_result', {}),
         })
         return payload
 

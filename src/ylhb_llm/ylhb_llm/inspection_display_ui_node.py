@@ -59,6 +59,8 @@ def main(args: Optional[List[str]] = None) -> None:
     signals.localizedObjects.connect(backend.on_localized_objects)
     signals.patrolStatus.connect(backend.update_patrol_status)
     signals.patrolEvent.connect(backend.update_patrol_event)
+    signals.mapping3dStatus.connect(backend.update_mapping3d_status)
+    signals.mapping3dResult.connect(backend.update_mapping3d_result)
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty('backend', backend)

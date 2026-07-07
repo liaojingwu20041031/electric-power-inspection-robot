@@ -129,9 +129,13 @@ case "${MODE}" in
     shift || true
     exec ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i "$@"
     ;;
-  zed_3d_mapping)
+  zed_3d_capture)
     shift || true
-    exec ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py "$@"
+    exec ros2 run ylhb_3d_mapping zed_svo_capture "$@"
+    ;;
+  zed_3d_reconstruct)
+    shift || true
+    exec ros2 run ylhb_3d_mapping zed_svo_reconstruct "$@"
     ;;
   perception)
     shift || true
@@ -192,7 +196,8 @@ Modes:
   mapping      Start slam_toolbox mapping
   navigation   Start Nav2 with default map ${WS_DIR}/maps/my_map.yaml
   zed          Start ZED 2i wrapper
-  zed_3d_mapping  Start ZED SDK Spatial Mapping and export 3D point cloud/mesh
+  zed_3d_capture  Record ZED SVO for later high-quality 3D reconstruction
+  zed_3d_reconstruct  Reconstruct pointcloud.ply from a recorded ZED SVO
   perception   Start Jetson YOLO runtime with TensorRT engine
   llm          Start inspection AI task layer and voice I/O nodes
   inspection   Start inspection display UI and system supervisor
@@ -207,7 +212,8 @@ Examples:
   $0 llm enable_voice:=true enable_tts:=true audio_input_device:=plughw:CARD=Luna,DEV=0 audio_output_device:=plughw:CARD=Luna,DEV=0
   $0 inspection fullscreen:=true
   $0 navigation map:=${WS_DIR}/maps/my_map.yaml
-  $0 zed_3d_mapping
+  $0 zed_3d_capture duration_sec:=30
+  $0 zed_3d_reconstruct input:=${WS_DIR}/runs/3d_capture/capture_YYYYmmdd_HHMMSS/capture.svo2
 EOF
     ;;
 esac

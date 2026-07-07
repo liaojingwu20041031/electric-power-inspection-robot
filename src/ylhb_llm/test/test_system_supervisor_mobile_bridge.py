@@ -526,28 +526,73 @@ def test_3d_mapping_managed_process_is_configured():
     source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
 
     assert "'3d_mapping': ManagedProcess(" in source
-    assert 'ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py' in source
+    assert 'ros2 run ylhb_3d_mapping zed_svo_capture' in source
     assert 'output_root:={self.mapping3d_output_dir}' in source
+    assert "workspace_path('runs', '3d_capture')" in source
+    assert 'ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py' not in source
 
 
-def test_export_3d_map_publishes_stop_and_export_command(monkeypatch):
+def test_export_3d_map_points_to_offline_svo_reconstruction():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
-    node.mapping3d_command_pub = FakePublisher()
     node.set_result = Mock()
-    monkeypatch.setattr(system_supervisor_node.time, 'time', lambda: 100.0)
-    source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
 
     node.handle_command('export_3d_map', {})
 
-    payload = json.loads(node.mapping3d_command_pub.messages[-1].data)
-    assert payload['command'] == 'stop_and_export'
-    assert payload['schema_version'] == '1.0'
-    assert payload['source'] == 'system_supervisor'
-    assert payload['request_id'].startswith('3d_mapping_stop_and_export_')
-    assert "'/inspection_ai/mapping3d_command'" in source
-    old_topic = "'/inspection_ai/" + "3d" + "_mapping_command'"
-    assert old_topic not in source
-    node.set_result.assert_called_with('export_3d_map', True, '已发送三维建图导出命令')
+    node.set_result.assert_called_once()
+    assert node.set_result.call_args.args[:2] == ('export_3d_map', False)
+    assert 'zed_3d_reconstruct' in node.set_result.call_args.args[2]
+
+
+def test_start_3d_mapping_refuses_zed_or_perception_running():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {
+        'zed': FakeProcess(running=True),
+        'perception': FakeProcess(running=False),
+        '3d_mapping': FakeProcess(running=False),
+    }
+    node.start_process = Mock()
+    node.publish_3d_mapping_command = Mock()
+    node.set_result = Mock()
+
+    node.handle_command('start_3d_mapping', {})
+
+    node.start_process.assert_not_called()
+    node.publish_3d_mapping_command.assert_not_called()
+    assert node.set_result.call_args.args[0] == 'start_3d_mapping'
+    assert node.set_result.call_args.args[1] is False
+    assert 'zed' in node.set_result.call_args.args[2]
+
+
+def test_start_3d_mapping_starts_process_then_publishes_start():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {
+        'zed': FakeProcess(running=False),
+        'perception': FakeProcess(running=False),
+        '3d_mapping': FakeProcess(running=False),
+    }
+    node.start_process = Mock()
+    node.publish_3d_mapping_command = Mock()
+    node.set_result = Mock()
+
+    node.handle_command('start_3d_mapping', {})
+
+    node.start_process.assert_called_once_with('3d_mapping')
+    node.publish_3d_mapping_command.assert_not_called()
+    node.set_result.assert_called_with('start_3d_mapping', True, 'SVO 采集已启动，现场只采集证据')
+
+
+def test_stop_3d_mapping_stops_svo_capture_process():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'3d_mapping': FakeProcess(running=True)}
+    node.publish_3d_mapping_command = Mock()
+    node.stop_process = Mock()
+    node.set_result = Mock()
+
+    node.handle_command('stop_3d_mapping', {})
+
+    node.publish_3d_mapping_command.assert_not_called()
+    node.stop_process.assert_called_once_with('3d_mapping')
+    node.set_result.assert_called_with('stop_3d_mapping', True, 'SVO 采集已停止')
 
 
 def test_patrol_executor_launch_command_disables_auto_start():
@@ -686,6 +731,29 @@ def test_status_payload_contains_mobile_bridge_fields():
     assert payload['mobile_bridge_http'] == 'http_ok'
     assert payload['mobile_bridge_url'] == 'http://192.168.1.50:8000'
     assert payload['jetson_ip'] == '192.168.1.50'
+
+
+def test_status_payload_contains_latest_mapping3d_status_and_result():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'3d_mapping': FakeProcess(running=True)}
+    node.embedded_task_layer = False
+    node.last_command = ''
+    node.last_success = True
+    node.last_message = 'ready'
+    node.mobile_bridge_http = 'stopped'
+    node.mobile_bridge_url = 'http://127.0.0.1:8000'
+    node.jetson_ip = '127.0.0.1'
+    node.patrol_mode_state = 'idle'
+    node.patrol_error = ''
+    node.startup_step = ''
+    node.latest_mapping3d_status = {'state': 'running', 'success_frames': 5}
+    node.latest_mapping3d_result = {'output_file': '/tmp/map.ply'}
+    node.build_light_patrol_readiness = Mock(return_value={})
+
+    payload = node.build_status_payload()
+
+    assert payload['latest_mapping3d_status']['success_frames'] == 5
+    assert payload['latest_mapping3d_result']['output_file'] == '/tmp/map.ply'
 
 
 def test_status_payload_contains_patrol_orchestration_fields():

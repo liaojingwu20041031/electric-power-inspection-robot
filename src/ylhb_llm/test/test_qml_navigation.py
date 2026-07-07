@@ -16,6 +16,20 @@ def test_status_page_shows_3d_mapping_process_card():
 
     assert '"3d_mapping"' in qml
     assert "三维建模" in qml
+    assert "backend.mapping3dStatus.state" in qml
+    assert "backend.mapping3dStateText" in qml
+    assert '"recording"' in qml
+
+
+def test_ui_bridge_connects_mapping3d_status_and_result():
+    bridge = Path("src/ylhb_llm/ylhb_llm/ui_ros_bridge.py").read_text(encoding="utf-8")
+    node = Path("src/ylhb_llm/ylhb_llm/inspection_display_ui_node.py").read_text(encoding="utf-8")
+
+    assert "mapping3d_status_topic" in bridge
+    assert "mapping3d_result_topic" in bridge
+    assert "mapping3dStatus = pyqtSignal(dict)" in bridge
+    assert "signals.mapping3dStatus.connect(backend.update_mapping3d_status)" in node
+    assert "signals.mapping3dResult.connect(backend.update_mapping3d_result)" in node
 
 
 def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():

@@ -10,6 +10,18 @@ ScrollView {
     contentWidth: availableWidth
     property var names: ["bringup", "navigation", "zed", "3d_mapping", "perception", "patrol_executor", "llm", "mobile_bridge"]
     property var labels: ["底盘与传感器", "导航", "ZED", "三维建模", "视觉感知", "巡逻执行器", "AI 任务层", "APP 网桥"]
+    function cardValue(name) {
+        if (name === "3d_mapping" && backend.mapping3dStatus.state) {
+            return backend.mapping3dStateText
+        }
+        return backend.localizedStatus(backend.systemStatus[name] || "stopped")
+    }
+    function cardRunning(name) {
+        if (name === "3d_mapping" && backend.mapping3dStatus.state) {
+            return ["running", "recording", "reconstructing", "opening_camera", "tracking_enabled", "mapping_enabled", "extracting", "saving"].indexOf(backend.mapping3dStatus.state) >= 0
+        }
+        return backend.systemStatus[name] === "running" || backend.systemStatus[name] === "embedded"
+    }
 
     ColumnLayout {
         width: parent.width
@@ -22,8 +34,8 @@ ScrollView {
                 required property int index
                 Layout.fillWidth: true
                 title: statusPage.labels[index]
-                value: backend.localizedStatus(backend.systemStatus[statusPage.names[index]] || "stopped")
-                statusColor: backend.systemStatus[statusPage.names[index]] === "running" || backend.systemStatus[statusPage.names[index]] === "embedded" ? Theme.success : Theme.warning
+                value: statusPage.cardValue(statusPage.names[index])
+                statusColor: statusPage.cardRunning(statusPage.names[index]) ? Theme.success : Theme.warning
             }
         }
     }

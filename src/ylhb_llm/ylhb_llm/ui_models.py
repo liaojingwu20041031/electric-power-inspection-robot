@@ -19,6 +19,8 @@ class UiState:
     robot_mode: str = 'ready'
     patrol_status: Dict[str, Any] = field(default_factory=dict)
     patrol_events: List[Dict[str, Any]] = field(default_factory=list)
+    mapping3d_status: Dict[str, Any] = field(default_factory=dict)
+    mapping3d_result: Dict[str, Any] = field(default_factory=dict)
     route_preview: Dict[str, Any] = field(default_factory=dict)
     patrol_tasks: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     events: List[Dict[str, str]] = field(default_factory=list)

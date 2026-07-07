@@ -37,6 +37,7 @@ core
 core.*
 frames_*.gv
 frames_*.pdf
+runs/
 
 # Local secrets and machine-specific configuration
 .env

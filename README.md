@@ -195,8 +195,9 @@ ros2 launch ylhb_base bringup.launch.py enable_rtk:=true
 ./scripts/run_on_jetson.sh zed
 ./scripts/run_on_jetson.sh perception
 
-# 可选：ZED SDK 三维建模导出，不要与 zed/zed_wrapper 同时运行
-./scripts/run_on_jetson.sh zed_3d_mapping
+# 可选：现场录制 ZED SVO，最终点云用 SVO 离线重建
+./scripts/run_on_jetson.sh zed_3d_capture duration_sec:=30
+./scripts/run_on_jetson.sh zed_3d_reconstruct input:=runs/3d_capture/capture_<timestamp>/capture.svo2
 
 # 巡检界面、任务管理与语音交互
 ./scripts/run_on_jetson.sh inspection

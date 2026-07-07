@@ -3,9 +3,29 @@ zed_spatial_mapping_node:
     command_topic: /inspection_ai/mapping3d_command
     status_topic: /inspection_ai/mapping3d_status
     result_topic: /inspection_ai/mapping3d_result
+    preview_topic: /inspection_ai/mapping3d_pointcloud
     output_root: /home/nvidia/ros2_DL/runs/3d_mapping
     map_type: fused_point_cloud
-    resolution_preset: medium
-    range_preset: medium
+    resolution_preset: high
+    range_preset: near
     save_texture: false
-    publish_rate_hz: 5.0
+    publish_rate_hz: 2.0
+    preview_rate_hz: 1.0
+    preview_frame_id: zed_3d_map
+    preview_max_points: 1000000
+    camera_resolution: HD720
+    camera_fps: 15
+    coordinate_units: METER
+    coordinate_system: RIGHT_HANDED_Z_UP
+    depth_mode: NEURAL
+    depth_minimum_distance: 0.25
+    depth_maximum_distance: 4.0
+    confidence_threshold: 60
+    texture_confidence_threshold: 60
+    spatial_mapping_max_memory_mb: 1024
+    mesh_filter_preset: high
+    max_duration_sec: 0.0
+    max_consecutive_grab_failures: 30
+    min_success_frames_before_export: 30
+    auto_start: false
+    auto_export_on_shutdown: true

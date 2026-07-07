@@ -62,17 +62,30 @@ class RunOnJetsonTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('inspection mode is the formal robot console', result.stderr)
 
-    def test_zed_3d_mapping_launch_branch_and_help_text(self):
-        launch = self.run_script('zed_3d_mapping')
+    def test_zed_3d_mapping_mode_is_removed_from_help(self):
+        help_result = self.run_script('help')
+        self.assertNotIn('zed_3d_mapping', help_result.stdout)
+        self.assertIn('zed_3d_capture', help_result.stdout)
+        self.assertIn('zed_3d_reconstruct', help_result.stdout)
 
-        self.assertEqual(launch.returncode, 0, launch.stderr)
-        self.assertIn('launch', launch.stdout)
-        self.assertIn('ylhb_3d_mapping', launch.stdout)
-        self.assertIn('zed_spatial_mapping.launch.py', launch.stdout)
+    def test_zed_3d_capture_and_reconstruct_routes(self):
+        capture = self.run_script('zed_3d_capture', 'duration_sec:=1')
+        self.assertEqual(capture.returncode, 0, capture.stderr)
+        self.assertIn('run', capture.stdout)
+        self.assertIn('ylhb_3d_mapping', capture.stdout)
+        self.assertIn('zed_svo_capture', capture.stdout)
+        self.assertIn('duration_sec:=1', capture.stdout)
+
+        reconstruct = self.run_script('zed_3d_reconstruct', 'input:=/tmp/capture.svo2')
+        self.assertEqual(reconstruct.returncode, 0, reconstruct.stderr)
+        self.assertIn('run', reconstruct.stdout)
+        self.assertIn('ylhb_3d_mapping', reconstruct.stdout)
+        self.assertIn('zed_svo_reconstruct', reconstruct.stdout)
+        self.assertIn('input:=/tmp/capture.svo2', reconstruct.stdout)
 
         help_result = self.run_script('help')
-        self.assertIn('zed_3d_mapping', help_result.stdout)
-        self.assertIn('ZED SDK Spatial Mapping', help_result.stdout)
+        self.assertIn('zed_3d_capture', help_result.stdout)
+        self.assertIn('zed_3d_reconstruct', help_result.stdout)
 
 
 if __name__ == '__main__':
