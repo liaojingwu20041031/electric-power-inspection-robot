@@ -91,6 +91,7 @@ class UiBackend(QObject):
     routePreviewChanged = pyqtSignal()
     patrolTasksChanged = pyqtSignal()
     routePreviewLoaded = pyqtSignal(dict, dict)
+    uiReadyChanged = pyqtSignal()
     agentStatusChanged = pyqtSignal()
     agentMessagesChanged = pyqtSignal()
     agentDebugVisibleChanged = pyqtSignal()
@@ -119,11 +120,16 @@ class UiBackend(QObject):
         self._has_patrol_status = False
         self._agent_debug_visible = False
         self._agent_message_keys: set[str] = set()
+        self._ui_ready = False
+        self._startup_loading_text = '正在准备操控台...'
         self.routePreviewLoaded.connect(self._apply_route_preview_result)
         self.safety_timer = QTimer(self)
         self.safety_timer.timeout.connect(self.checkSafetyTimeout)
         self.safety_timer.start(1000)
-        self._start_route_preview_refresh(force=False)
+        self.startup_timer = QTimer(self)
+        self.startup_timer.setSingleShot(True)
+        self.startup_timer.timeout.connect(self.finishStartup)
+        self.startup_timer.start(2500)
 
     @pyqtProperty('QVariantMap', notify=systemStatusChanged)
     def systemStatus(self) -> Dict[str, Any]:
@@ -222,6 +228,14 @@ class UiBackend(QObject):
     @pyqtProperty(bool, notify=mapping3dStatusChanged)
     def mapping3dCanReconstruct(self) -> bool:
         return bool(self.latestSvoFile) and self.state.system_status.get('3d_reconstruct') != 'running'
+
+    @pyqtProperty(bool, notify=uiReadyChanged)
+    def uiReady(self) -> bool:
+        return self._ui_ready
+
+    @pyqtProperty(str, notify=uiReadyChanged)
+    def startupLoadingText(self) -> str:
+        return self._startup_loading_text
 
     @pyqtProperty('QVariantMap', notify=agentStatusChanged)
     def agentStatus(self) -> Dict[str, Any]:
@@ -724,6 +738,39 @@ class UiBackend(QObject):
         self.bridge.publish_system_command(command)
         self.addLog(f'系统命令: {command}')
 
+    @pyqtSlot(str, str, str)
+    def rename3dAsset(self, asset_type: str, session_id: str, display_name: str) -> None:
+        self.bridge.publish_system_command(
+            'rename_3d_asset',
+            asset_type=str(asset_type or 'capture'),
+            session_id=str(session_id or ''),
+            display_name=str(display_name or ''),
+        )
+
+    @pyqtSlot(str, str)
+    def delete3dAsset(self, asset_type: str, session_id: str) -> None:
+        self.bridge.publish_system_command(
+            'delete_3d_asset',
+            asset_type=str(asset_type or 'capture'),
+            session_id=str(session_id or ''),
+        )
+
+    @pyqtSlot(str)
+    def setLatest3dCapture(self, session_id: str) -> None:
+        self.bridge.publish_system_command('set_latest_3d_capture', session_id=str(session_id or ''))
+
+    @pyqtSlot(str)
+    def setLatest3dReconstruct(self, session_id: str) -> None:
+        self.bridge.publish_system_command('set_latest_3d_reconstruct', session_id=str(session_id or ''))
+
+    @pyqtSlot(str, str)
+    def reconstruct3dCapture(self, session_id: str, profile: str) -> None:
+        command = {
+            'fast_check': 'reconstruct_fast_3d_map',
+            'quality_plus': 'reconstruct_quality_3d_map',
+        }.get(str(profile or '').strip(), 'reconstruct_latest_3d_map')
+        self.bridge.publish_system_command(command, session_id=str(session_id or ''))
+
     def _is_debounced(self, command: str) -> bool:
         cooldowns = {
             'start_patrol_mode': 0.8,
@@ -754,6 +801,15 @@ class UiBackend(QObject):
     @pyqtSlot()
     def refreshRoutePreview(self) -> None:
         self._start_route_preview_refresh(force=True)
+
+    @pyqtSlot()
+    def finishStartup(self) -> None:
+        if self._ui_ready:
+            return
+        self._ui_ready = True
+        self._startup_loading_text = '正在加载路线预览...'
+        self.uiReadyChanged.emit()
+        self._start_route_preview_refresh(force=False)
 
     def _start_route_preview_refresh(self, force: bool) -> None:
         if self._route_preview_thread and self._route_preview_thread.is_alive():

@@ -5,6 +5,8 @@ def test_main_navigation_uses_patrol_and_voice_pages_not_control_or_mapping():
     qml = Path("src/ylhb_llm/qml/Main.qml").read_text(encoding="utf-8")
 
     assert "property int currentPage: 1" in qml
+    assert "StartupLoadingPage.qml" in qml
+    assert "backend.uiReady" in qml
     assert "pages/PatrolPage.qml" in qml
     assert "pages/Mapping3DPage.qml" in qml
     assert "pages/VoiceAiPage.qml" in qml
@@ -20,7 +22,7 @@ def test_status_page_shows_3d_mapping_process_card():
     assert "三维建模" in qml
     assert "backend.mapping3dStatus.state" in qml
     assert "backend.mapping3dStateText" in qml
-    assert '"recording"' in qml
+    assert "Theme.stateColor" in qml
 
 
 def test_mapping3d_page_uses_backend_slots_not_json_commands():
@@ -35,6 +37,13 @@ def test_mapping3d_page_uses_backend_slots_not_json_commands():
     assert "backend.latestModelFile" in qml
     assert "zed_3d_map" in qml
     assert "/inspection_ai/mapping3d_pointcloud" in qml
+    assert "资源管理" in qml
+    assert "mapping3d_assets" in qml
+    assert "backend.rename3dAsset" in qml
+    assert "backend.delete3dAsset" in qml
+    assert "backend.setLatest3dCapture" in qml
+    assert "backend.reconstruct3dCapture" in qml
+    assert "Theme.stateColor" in qml
     assert 'backend.sendSystemCommand("reconstruct' not in qml
 
 

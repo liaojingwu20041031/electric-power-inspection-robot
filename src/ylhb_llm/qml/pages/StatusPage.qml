@@ -22,6 +22,12 @@ ScrollView {
         }
         return backend.systemStatus[name] === "running" || backend.systemStatus[name] === "embedded"
     }
+    function cardState(name) {
+        if (name === "3d_mapping" && backend.mapping3dStatus.state) {
+            return backend.mapping3dStatus.state
+        }
+        return backend.systemStatus[name] || "stopped"
+    }
 
     ColumnLayout {
         width: parent.width
@@ -35,7 +41,7 @@ ScrollView {
                 Layout.fillWidth: true
                 title: statusPage.labels[index]
                 value: statusPage.cardValue(statusPage.names[index])
-                statusColor: statusPage.cardRunning(statusPage.names[index]) ? Theme.success : Theme.warning
+                statusColor: Theme.stateColor(statusPage.cardState(statusPage.names[index]))
             }
         }
     }

@@ -526,9 +526,10 @@ def test_3d_mapping_managed_process_is_configured():
     source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
 
     assert "'3d_capture': ManagedProcess(" in source
-    assert 'ros2 run ylhb_3d_mapping zed_svo_capture' in source
-    assert 'output_root:={self.mapping3d_output_dir}' in source
-    assert 'duration_sec:=0' in source
+    assert 'ros2 run ylhb_3d_mapping zed_svo_capture_node' in source
+    assert '--ros-args -p output_root:={self.mapping3d_output_dir}' in source
+    assert '-p auto_start:=true' in source
+    assert '-p exit_on_finish:=true' in source
     assert "workspace_path('runs', '3d_capture')" in source
     assert 'ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py' not in source
 
@@ -586,14 +587,15 @@ def test_stop_3d_mapping_stops_svo_capture_process():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.processes = {'3d_capture': FakeProcess(running=True)}
     node.publish_3d_mapping_command = Mock()
+    node.wait_for_mapping3d_terminal = Mock(return_value='stopped')
     node.stop_process = Mock()
     node.set_result = Mock()
     node.mapping3d_output_dir = '/tmp/missing'
 
     node.handle_command('stop_3d_mapping', {})
 
-    node.publish_3d_mapping_command.assert_not_called()
-    node.stop_process.assert_called_once_with('3d_capture')
+    node.publish_3d_mapping_command.assert_called_once_with('stop')
+    node.stop_process.assert_not_called()
     node.set_result.assert_called_with('stop_3d_mapping', True, 'SVO 采集已停止')
 
 
@@ -604,6 +606,8 @@ def test_stop_3d_mapping_reports_latest_svo(tmp_path):
     )
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.processes = {'3d_capture': FakeProcess(running=True)}
+    node.publish_3d_mapping_command = Mock()
+    node.wait_for_mapping3d_terminal = Mock(return_value='succeeded')
     node.stop_process = Mock()
     node.set_result = Mock()
     node.mapping3d_output_dir = str(tmp_path)
@@ -621,6 +625,7 @@ def test_reconstruct_3d_map_commands_use_latest_and_profiles(tmp_path):
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.processes = {}
     node.mapping3d_output_dir = str(tmp_path)
+    node.mapping3d_reconstruct_dir = str(tmp_path / 'recon')
     started_commands = []
     node.start_process = Mock(side_effect=lambda name: started_commands.append(node.processes[name].command))
     node.set_result = Mock()
@@ -635,6 +640,24 @@ def test_reconstruct_3d_map_commands_use_latest_and_profiles(tmp_path):
     assert 'profile:=quality_safe' in started_commands[0]
     assert 'profile:=fast_check' in started_commands[1]
     assert 'profile:=quality_plus' in started_commands[2]
+
+
+def test_reconstruct_3d_map_accepts_capture_session_id(tmp_path):
+    capture = tmp_path / 'capture_1'
+    capture.mkdir()
+    (capture / 'metadata.json').write_text(json.dumps({'svo_file': str(capture / 'capture.svo2')}), encoding='utf-8')
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {}
+    node.mapping3d_output_dir = str(tmp_path)
+    node.mapping3d_reconstruct_dir = str(tmp_path / 'recon')
+    node.start_process = Mock()
+    node.set_result = Mock()
+
+    node.handle_command('reconstruct_fast_3d_map', {'session_id': 'capture_1'})
+
+    command = node.processes['3d_reconstruct'].command
+    assert 'session:=capture_1' in command
+    assert 'input:=latest' not in command
 
 
 def test_reconstruct_3d_map_requires_latest_capture(tmp_path):
@@ -805,6 +828,8 @@ def test_status_payload_contains_latest_mapping3d_status_and_result():
     node.latest_mapping3d_result = {'output_file': '/tmp/map.ply'}
     node.build_light_patrol_readiness = Mock(return_value={})
     node.mapping3d_output_dir = '/tmp/missing'
+    node.mapping3d_capture_dir = '/tmp/missing'
+    node.mapping3d_reconstruct_dir = '/tmp/missing2'
 
     payload = node.build_status_payload()
 
@@ -812,6 +837,27 @@ def test_status_payload_contains_latest_mapping3d_status_and_result():
     assert payload['latest_mapping3d_result']['output_file'] == '/tmp/map.ply'
     assert payload['latest_3d_capture'] == {}
     assert payload['latest_3d_reconstruct'] == {}
+    assert payload['mapping3d_assets'] == {'captures': [], 'reconstructs': []}
+    assert 'mapping3d_storage_summary' in payload
+
+
+def test_asset_commands_route_to_asset_manager(tmp_path):
+    capture = tmp_path / 'capture_1'
+    capture.mkdir()
+    (capture / 'metadata.json').write_text(json.dumps({'session_id': 'capture_1', 'output_dir': str(capture)}), encoding='utf-8')
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.mapping3d_output_dir = str(tmp_path)
+    node.mapping3d_capture_dir = str(tmp_path)
+    node.mapping3d_reconstruct_dir = str(tmp_path / 'recon')
+    node.set_result = Mock()
+
+    node.handle_command('rename_3d_asset', {'asset_type': 'capture', 'session_id': 'capture_1', 'display_name': 'A'})
+    node.handle_command('set_latest_3d_capture', {'session_id': 'capture_1'})
+    node.handle_command('delete_3d_asset', {'asset_type': 'capture', 'session_id': 'capture_1'})
+
+    assert json.loads((tmp_path / 'latest.json').read_text())['display_name'] == 'A'
+    assert not capture.exists()
+    assert (tmp_path / '.trash').exists()
 
 
 def test_status_payload_contains_patrol_orchestration_fields():

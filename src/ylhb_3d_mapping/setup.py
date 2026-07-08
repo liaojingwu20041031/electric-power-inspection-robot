@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'zed_spatial_mapping_node = ylhb_3d_mapping.zed_spatial_mapping_node:main',
             'zed_svo_capture = ylhb_3d_mapping.zed_svo_tools:main_capture',
+            'zed_svo_capture_node = ylhb_3d_mapping.zed_svo_capture_node:main',
             'zed_svo_reconstruct = ylhb_3d_mapping.zed_svo_tools:main_reconstruct',
         ],
     },

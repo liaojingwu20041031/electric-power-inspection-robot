@@ -5,6 +5,7 @@ import socket
 import subprocess
 import threading
 import time
+import sys
 from typing import Any, Dict, Iterable, List, Optional
 
 import rclpy
@@ -16,6 +17,12 @@ from rclpy.time import Time
 from std_msgs.msg import String
 from std_srvs.srv import Empty
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
+
+try:
+    from ylhb_3d_mapping import zed_3d_asset_manager
+except ModuleNotFoundError:
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'ylhb_3d_mapping'))
+    from ylhb_3d_mapping import zed_3d_asset_manager
 
 
 START_PROCESS_MESSAGES = {
@@ -162,6 +169,8 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('ros_distro', 'humble')
         self.declare_parameter('map_output_dir', workspace_path('maps'))
         self.declare_parameter('mapping3d_output_dir', workspace_path('runs', '3d_capture'))
+        self.declare_parameter('mapping3d_capture_dir', '')
+        self.declare_parameter('mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
         self.declare_parameter('embedded_task_layer', True)
@@ -182,6 +191,10 @@ class SystemSupervisorNode(Node):
         self.ros_distro = str(self.get_parameter('ros_distro').value)
         self.map_output_dir = os.path.expanduser(str(self.get_parameter('map_output_dir').value))
         self.mapping3d_output_dir = os.path.expanduser(str(self.get_parameter('mapping3d_output_dir').value))
+        capture_dir = str(self.get_parameter('mapping3d_capture_dir').value or self.mapping3d_output_dir)
+        self.mapping3d_capture_dir = os.path.expanduser(capture_dir)
+        self.mapping3d_output_dir = self.mapping3d_capture_dir
+        self.mapping3d_reconstruct_dir = os.path.expanduser(str(self.get_parameter('mapping3d_reconstruct_dir').value))
         self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
         self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
         self.embedded_task_layer = bool(self.get_parameter('embedded_task_layer').value)
@@ -236,8 +249,9 @@ class SystemSupervisorNode(Node):
             'zed': ManagedProcess('zed', 'ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i'),
             '3d_capture': ManagedProcess(
                 '3d_capture',
-                f'ros2 run ylhb_3d_mapping zed_svo_capture '
-                f'output_root:={self.mapping3d_output_dir} duration_sec:=0',
+                f'ros2 run ylhb_3d_mapping zed_svo_capture_node '
+                f'--ros-args -p output_root:={self.mapping3d_output_dir} '
+                f'-p auto_start:=true -p exit_on_finish:=true',
             ),
             'perception': ManagedProcess(
                 'perception',
@@ -266,7 +280,7 @@ class SystemSupervisorNode(Node):
         self.cmd_vel_pub = self.create_publisher(
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
         self.patrol_command_pub = self.create_publisher(String, '/patrol/command', 10)
-        self.mapping3d_command_pub = self.create_publisher(String, '/inspection_ai/mapping3d_command', 10)
+        self.mapping3d_command_pub = self.create_publisher(String, '/inspection_ai/mapping3d_capture_command', 10)
         self.create_subscription(
             String,
             self.get_parameter('system_command_topic').value,
@@ -427,13 +441,16 @@ class SystemSupervisorNode(Node):
             self.stop_3d_mapping()
             return
         if command == 'reconstruct_latest_3d_map':
-            self.reconstruct_3d_map('quality_safe', command)
+            self.reconstruct_3d_map('quality_safe', command, str(payload.get('session_id') or ''))
             return
         if command == 'reconstruct_fast_3d_map':
-            self.reconstruct_3d_map('fast_check', command)
+            self.reconstruct_3d_map('fast_check', command, str(payload.get('session_id') or ''))
             return
         if command == 'reconstruct_quality_3d_map':
-            self.reconstruct_3d_map('quality_plus', command)
+            self.reconstruct_3d_map('quality_plus', command, str(payload.get('session_id') or ''))
+            return
+        if command in ('list_3d_assets', 'rename_3d_asset', 'delete_3d_asset', 'set_latest_3d_capture', 'set_latest_3d_reconstruct'):
+            self.handle_3d_asset_command(command, payload)
             return
         if command == 'export_3d_map':
             self.export_3d_map()
@@ -708,7 +725,10 @@ class SystemSupervisorNode(Node):
         if not proc or not proc.is_running():
             self.set_result('stop_3d_mapping', True, '3d_capture already stopped')
             return
-        self.stop_process('3d_capture')
+        self.publish_3d_mapping_command('stop')
+        terminal = self.wait_for_mapping3d_terminal(8.0)
+        if terminal == 'timeout' or terminal not in ('succeeded', 'failed', 'idle', 'stopped'):
+            self.stop_process('3d_capture')
         latest = self.read_latest_json(self.mapping3d_output_dir)
         svo_file = str(latest.get('svo_file') or '')
         message = 'SVO 采集已停止'
@@ -716,8 +736,10 @@ class SystemSupervisorNode(Node):
             message = f'SVO 采集已停止，最新文件: {svo_file}'
         self.set_result('stop_3d_mapping', True, message)
 
-    def reconstruct_3d_map(self, profile: str, command: str) -> None:
-        latest = self.read_latest_json(self.mapping3d_output_dir)
+    def reconstruct_3d_map(self, profile: str, command: str, session_id: str = '') -> None:
+        latest = self.read_latest_json(self.mapping3d_output_dir) if not session_id else self.load_json_safe(
+            os.path.join(self.mapping3d_output_dir, session_id, 'metadata.json')
+        )
         if not latest.get('svo_file'):
             self.set_result(command, False, '请先完成一次现场采集')
             return
@@ -725,19 +747,48 @@ class SystemSupervisorNode(Node):
         if proc and proc.is_running():
             self.set_result(command, True, '三维重建已在运行')
             return
-        reconstruct_root = os.path.join(
-            getattr(self, 'workspace_dir', workspace_path()),
-            'runs',
-            '3d_reconstruct',
-        )
+        reconstruct_root = getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
+        input_arg = f'session:={session_id}' if session_id else 'input:=latest'
         self.processes['3d_reconstruct'] = ManagedProcess(
             '3d_reconstruct',
             f'ros2 run ylhb_3d_mapping zed_svo_reconstruct '
-            f'input:=latest capture_root:={self.mapping3d_output_dir} '
+            f'{input_arg} capture_root:={self.mapping3d_output_dir} '
             f'output_root:={reconstruct_root} profile:={profile}',
         )
         self.start_process('3d_reconstruct')
         self.set_result(command, True, f'离线三维重建已启动: {profile}')
+
+    def asset_root(self, asset_type: str) -> str:
+        if asset_type in ('reconstruct', 'reconstructs', '3d_reconstruct'):
+            return getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
+        return getattr(self, 'mapping3d_capture_dir', getattr(self, 'mapping3d_output_dir', workspace_path('runs', '3d_capture')))
+
+    def handle_3d_asset_command(self, command: str, payload: Dict[str, Any]) -> None:
+        asset_type = str(payload.get('asset_type') or 'capture')
+        session_id = str(payload.get('session_id') or '').strip()
+        try:
+            if command == 'list_3d_assets':
+                result = {
+                    'captures': zed_3d_asset_manager.list_assets(self.asset_root('capture'), 'capture')[:10],
+                    'reconstructs': zed_3d_asset_manager.list_assets(self.asset_root('reconstruct'), 'reconstruct')[:10],
+                }
+            elif command == 'rename_3d_asset':
+                result = zed_3d_asset_manager.rename_asset(
+                    self.asset_root(asset_type),
+                    session_id,
+                    str(payload.get('display_name') or session_id),
+                )
+            elif command == 'delete_3d_asset':
+                result = zed_3d_asset_manager.delete_asset(self.asset_root(asset_type), session_id)
+            elif command == 'set_latest_3d_capture':
+                result = zed_3d_asset_manager.set_latest_asset(self.asset_root('capture'), session_id)
+            elif command == 'set_latest_3d_reconstruct':
+                result = zed_3d_asset_manager.set_latest_asset(self.asset_root('reconstruct'), session_id)
+            else:
+                result = {}
+            self.set_result(command, True, json.dumps(result, ensure_ascii=False))
+        except Exception as exc:
+            self.set_result(command, False, str(exc))
 
     def export_3d_map(self) -> None:
         self.set_result(
@@ -747,8 +798,11 @@ class SystemSupervisorNode(Node):
         )
 
     def read_latest_json(self, root: str) -> Dict[str, Any]:
+        return self.load_json_safe(os.path.join(os.path.expanduser(root), 'latest.json'))
+
+    def load_json_safe(self, path: str) -> Dict[str, Any]:
         try:
-            with open(os.path.join(os.path.expanduser(root), 'latest.json'), 'r', encoding='utf-8') as handle:
+            with open(os.path.expanduser(path), 'r', encoding='utf-8') as handle:
                 data = json.load(handle)
             return data if isinstance(data, dict) else {}
         except Exception:
@@ -760,7 +814,7 @@ class SystemSupervisorNode(Node):
         while time.monotonic() < deadline:
             status = getattr(self, 'latest_mapping3d_status', {}) or {}
             last_state = str(status.get('state') or '')
-            if last_state in ('succeeded', 'failed', 'idle'):
+            if last_state in ('succeeded', 'failed', 'idle', 'stopped'):
                 return last_state
             time.sleep(0.2)
         return last_state or 'timeout'
@@ -1195,12 +1249,19 @@ class SystemSupervisorNode(Node):
             'latest_mapping3d_status': getattr(self, 'latest_mapping3d_status', {}),
             'latest_mapping3d_result': getattr(self, 'latest_mapping3d_result', {}),
             'latest_3d_capture': self.read_latest_json(
-                getattr(self, 'mapping3d_output_dir', workspace_path('runs', '3d_capture'))
+                getattr(self, 'mapping3d_capture_dir', getattr(self, 'mapping3d_output_dir', workspace_path('runs', '3d_capture')))
             ),
             'latest_3d_reconstruct': self.read_latest_json(
-                os.path.join(getattr(self, 'workspace_dir', workspace_path()), 'runs', '3d_reconstruct')
+                getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
             ),
         })
+        capture_dir = getattr(self, 'mapping3d_capture_dir', getattr(self, 'mapping3d_output_dir', workspace_path('runs', '3d_capture')))
+        reconstruct_dir = getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
+        payload['mapping3d_assets'] = {
+            'captures': zed_3d_asset_manager.list_assets(capture_dir, 'capture')[:10],
+            'reconstructs': zed_3d_asset_manager.list_assets(reconstruct_dir, 'reconstruct')[:10],
+        }
+        payload['mapping3d_storage_summary'] = zed_3d_asset_manager.storage_summary(capture_dir, reconstruct_dir)
         return payload
 
     def publish_status_locked(self) -> None:

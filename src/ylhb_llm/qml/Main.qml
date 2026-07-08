@@ -27,7 +27,7 @@ ApplicationWindow {
 
     Image {
         anchors.fill: parent
-        source: backend.assetPath("背景图2 (1).png")
+        source: backend.uiReady ? backend.assetPath("背景图2 (1).png") : ""
         fillMode: Image.PreserveAspectCrop
         cache: true
         opacity: 0.28
@@ -120,7 +120,7 @@ ApplicationWindow {
             Loader {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                source: window.pageSources[window.currentPage]
+                source: backend.uiReady ? window.pageSources[window.currentPage] : "pages/StartupLoadingPage.qml"
             }
         }
     }

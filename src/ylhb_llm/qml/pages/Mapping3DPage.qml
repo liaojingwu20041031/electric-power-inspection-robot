@@ -10,6 +10,11 @@ ScrollView {
     contentWidth: availableWidth
     property var latestCapture: backend.systemStatus.latest_3d_capture || ({})
     property var latestReconstruct: backend.systemStatus.latest_3d_reconstruct || ({})
+    property var mapping3d_assets: backend.systemStatus.mapping3d_assets || ({})
+    function assetList(kind) {
+        var group = root.mapping3d_assets || ({})
+        return group[kind] || []
+    }
 
     ColumnLayout {
         width: parent.width
@@ -28,13 +33,13 @@ ScrollView {
                 Layout.fillWidth: true
                 title: "采集状态"
                 value: backend.mapping3dCaptureText
-                statusColor: backend.systemStatus["3d_capture"] === "running" ? Theme.success : Theme.warning
+                statusColor: Theme.stateColor(backend.mapping3dStatus.state || backend.systemStatus["3d_capture"])
             }
             StatusCard {
                 Layout.fillWidth: true
                 title: "重建状态"
                 value: backend.mapping3dReconstructText
-                statusColor: backend.systemStatus["3d_reconstruct"] === "running" ? Theme.primary : Theme.muted
+                statusColor: Theme.stateColor(backend.mapping3dResult.state || backend.systemStatus["3d_reconstruct"])
             }
             StatusCard {
                 Layout.fillWidth: true
@@ -47,6 +52,68 @@ ScrollView {
                 title: "最新模型"
                 value: backend.latestModelFile || "未生成"
                 statusColor: backend.latestModelFile.length > 0 ? Theme.success : Theme.muted
+            }
+        }
+
+        Label { text: "资源管理"; color: Theme.text; font.pixelSize: 20; font.bold: true }
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: assetsColumn.implicitHeight + 32
+            radius: 8
+            color: Theme.surface
+            border.color: Theme.border
+            ColumnLayout {
+                id: assetsColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.margins: 16
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 12
+
+                Label { text: "SVO2 采集记录"; color: Theme.text; font.pixelSize: 16; font.bold: true }
+                Repeater {
+                    model: root.assetList("captures").slice(0, 10)
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label {
+                            Layout.fillWidth: true
+                            text: (modelData.display_name || modelData.session_id) + " / " + modelData.session_id
+                                + " / " + (modelData.svo_frame_count || 0) + " 帧"
+                                + " / " + (modelData.capture_duration_sec || 0) + " s"
+                            color: Theme.text
+                            wrapMode: Text.Wrap
+                        }
+                        Label { text: modelData.state || "ready"; color: Theme.stateColor(modelData.state || "ready") }
+                        Button { text: "最新"; onClicked: backend.setLatest3dCapture(modelData.session_id) }
+                        Button { text: "重命名"; onClicked: backend.rename3dAsset("capture", modelData.session_id, (modelData.display_name || modelData.session_id) + "*") }
+                        Button { text: "删除"; onClicked: backend.delete3dAsset("capture", modelData.session_id) }
+                        Button { text: "快速"; onClicked: backend.reconstruct3dCapture(modelData.session_id, "fast_check") }
+                        Button { text: "高质"; onClicked: backend.reconstruct3dCapture(modelData.session_id, "quality_plus") }
+                    }
+                }
+
+                Label { text: "重建模型记录"; color: Theme.text; font.pixelSize: 16; font.bold: true }
+                Repeater {
+                    model: root.assetList("reconstructs").slice(0, 10)
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label {
+                            Layout.fillWidth: true
+                            text: (modelData.display_name || modelData.session_id) + " / " + modelData.session_id
+                                + " / " + (modelData.export_point_count || 0) + " 点"
+                            color: Theme.text
+                            wrapMode: Text.Wrap
+                        }
+                        Label { text: modelData.state || "ready"; color: Theme.stateColor(modelData.state || "ready") }
+                        Button { text: "最新"; onClicked: backend.setLatest3dReconstruct(modelData.session_id) }
+                        Button { text: "重命名"; onClicked: backend.rename3dAsset("reconstruct", modelData.session_id, (modelData.display_name || modelData.session_id) + "*") }
+                        Button { text: "删除"; onClicked: backend.delete3dAsset("reconstruct", modelData.session_id) }
+                    }
+                }
             }
         }
 

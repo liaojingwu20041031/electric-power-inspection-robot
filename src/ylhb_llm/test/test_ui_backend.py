@@ -96,6 +96,9 @@ def test_route_preview_refresh_runs_in_background_thread():
     )
 
     assert calls == []
+    backend.startup_timer.stop()
+    backend.finishStartup()
+    assert calls == []
     release_loader.set()
     backend._route_preview_thread.join(timeout=2.0)
     assert process_events_until(lambda: backend.routePreviewOk)
@@ -116,6 +119,8 @@ def test_route_preview_result_is_applied_on_qt_main_thread():
         route_preview_loader=lambda force=False: {'ok': True, 'preview_type': 'route_overlay', 'overlay_ok': True, 'image_url': 'file:///tmp/preview.png', 'image_exists': True, 'image_valid': True, 'targets': []},
     )
     backend.routePreviewChanged.connect(lambda: applied_threads.append(QThread.currentThread()))
+    backend.startup_timer.stop()
+    backend.finishStartup()
     backend._route_preview_thread.join(timeout=2.0)
 
     assert process_events_until(lambda: backend.routePreviewOk)
@@ -132,6 +137,8 @@ def test_reload_patrol_route_command_uses_supervisor_and_refreshes_route_preview
         clock=lambda: 100.0,
         route_preview_loader=lambda force=False: calls.append(force) or {'ok': True, 'targets': []},
     )
+    backend.startup_timer.stop()
+    backend.finishStartup()
     backend._route_preview_thread.join(timeout=2.0)
 
     backend.sendPatrolCommand('reload')
@@ -294,6 +301,47 @@ def test_mapping3d_slots_publish_supervisor_commands():
         ('reconstruct_fast_3d_map', {}),
         ('reconstruct_quality_3d_map', {}),
         ('reconstruct_latest_3d_map', {}),
+    ]
+
+
+def test_startup_defers_route_preview_until_timer():
+    calls = []
+    backend = UiBackend(
+        FakeBridge(),
+        UiState(),
+        clock=lambda: 100.0,
+        route_preview_loader=lambda force=False: calls.append(force) or {'ok': True, 'targets': []},
+    )
+
+    assert backend.uiReady is False
+    assert backend.routePreviewLoading is False
+    assert calls == []
+
+    backend.startup_timer.stop()
+    backend.finishStartup()
+    backend._route_preview_thread.join(timeout=2.0)
+
+    assert backend.uiReady is True
+    assert backend.startupLoadingText
+    assert calls == [False]
+
+
+def test_mapping3d_asset_slots_publish_supervisor_commands():
+    backend = make_backend(lambda: 100.0)
+    backend.startup_timer.stop()
+
+    backend.rename3dAsset('capture', 'capture_1', 'Panel A')
+    backend.delete3dAsset('reconstruct', 'reconstruct_1')
+    backend.setLatest3dCapture('capture_1')
+    backend.setLatest3dReconstruct('reconstruct_1')
+    backend.reconstruct3dCapture('capture_1', 'fast_check')
+
+    assert backend.bridge.system_commands[-5:] == [
+        ('rename_3d_asset', {'asset_type': 'capture', 'session_id': 'capture_1', 'display_name': 'Panel A'}),
+        ('delete_3d_asset', {'asset_type': 'reconstruct', 'session_id': 'reconstruct_1'}),
+        ('set_latest_3d_capture', {'session_id': 'capture_1'}),
+        ('set_latest_3d_reconstruct', {'session_id': 'reconstruct_1'}),
+        ('reconstruct_fast_3d_map', {'session_id': 'capture_1'}),
     ]
 
 

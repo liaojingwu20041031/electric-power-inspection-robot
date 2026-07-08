@@ -28,6 +28,7 @@
   <exec_depend>qml-module-qtqml-models2</exec_depend>
   <exec_depend>ylhb_interfaces</exec_depend>
   <exec_depend>ylhb_mobile_bridge</exec_depend>
+  <exec_depend>ylhb_3d_mapping</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

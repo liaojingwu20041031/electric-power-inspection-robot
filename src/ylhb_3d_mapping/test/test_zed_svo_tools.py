@@ -115,6 +115,63 @@ def test_capture_duration_zero_runs_until_stop_requested_and_indexes(tmp_path):
     assert json.loads((tmp_path / 'latest.json').read_text(encoding='utf-8'))['svo_frame_count'] == 2
 
 
+def test_capture_writes_recording_status_periodically(tmp_path):
+    class Sl:
+        class ERROR_CODE:
+            SUCCESS = 'SUCCESS'
+
+        class DEPTH_MODE:
+            NONE = 'none'
+
+        class RESOLUTION:
+            HD720 = 'hd720'
+
+        class SVO_COMPRESSION_MODE:
+            H264 = 'h264'
+
+        class InitParameters:
+            pass
+
+        class RecordingParameters:
+            pass
+
+        class Camera:
+            def open(self, _params):
+                return 'SUCCESS'
+
+            def enable_recording(self, _params):
+                return 'SUCCESS'
+
+            def grab(self):
+                return 'SUCCESS'
+
+            def disable_recording(self):
+                pass
+
+            def close(self):
+                pass
+
+    statuses = []
+    times = iter([100.0, 102.4])
+    monotonic_values = iter([0.0, 0.0, 1.1, 1.1, 2.2, 2.2, 3.1, 3.1])
+
+    metadata = zed_svo_tools.capture_svo(
+        ['output_root:=' + str(tmp_path), 'duration_sec:=3'],
+        sl=Sl,
+        now=lambda: next(times),
+        monotonic=lambda: next(monotonic_values),
+        status_callback=statuses.append,
+        status_period_sec=1.0,
+    )
+
+    recording = [item for item in statuses if item['state'] == 'recording']
+    assert [item['svo_frame_count'] for item in recording] == [0, 1, 2]
+    assert recording[-1]['capture_duration_sec'] >= recording[0]['capture_duration_sec']
+    assert metadata['svo_frame_count'] == 3
+    status = json.loads((Path(metadata['output_dir']) / 'status.json').read_text())
+    assert status['state'] == 'succeeded'
+
+
 def test_reconstruct_uses_svo_offline_mode_and_profile(tmp_path):
     svo_file = tmp_path / 'capture.svo2'
     svo_file.write_text('svo', encoding='utf-8')
@@ -324,3 +381,10 @@ def test_reconstruct_resolves_latest_default_and_session(tmp_path):
     assert default_meta['svo_file'] == str(svo_file)
     assert session_meta['source_capture_session_id'] == session_dir.name
     assert session_meta['parameters']['output_type'] == 'mesh'
+
+
+def test_capture_node_treats_external_shutdown_as_clean_exit():
+    source = Path('src/ylhb_3d_mapping/ylhb_3d_mapping/zed_svo_capture_node.py').read_text(encoding='utf-8')
+
+    assert 'ExternalShutdownException' in source
+    assert 'except (KeyboardInterrupt, ExternalShutdownException):' in source

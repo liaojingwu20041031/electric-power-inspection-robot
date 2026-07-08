@@ -72,14 +72,30 @@ def write_json(path: Path, payload: Dict[str, Any]) -> None:
 
 def write_latest_json(root: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     root_path = Path(os.path.expanduser(root))
+    file_path = str(metadata.get('svo_file') or metadata.get('output_file') or '')
+    file_size = int(metadata.get('file_size_bytes') or 0)
+    if not file_size and file_path:
+        try:
+            file_size = Path(file_path).stat().st_size
+        except OSError:
+            file_size = 0
     latest = {
         'session_id': str(metadata.get('session_id') or Path(str(metadata.get('output_dir', ''))).name),
+        'display_name': str(metadata.get('display_name') or metadata.get('session_id') or Path(str(metadata.get('output_dir', ''))).name),
+        'type': str(metadata.get('type') or ('reconstruct' if metadata.get('output_file') else 'capture')),
+        'state': str(metadata.get('state') or ''),
         'output_dir': str(metadata.get('output_dir') or ''),
         'svo_file': str(metadata.get('svo_file') or ''),
+        'output_file': str(metadata.get('output_file') or ''),
         'metadata_file': str(metadata.get('metadata_file') or ''),
         'status_file': str(metadata.get('status_file') or ''),
         'created_at': metadata.get('created_at') or metadata.get('started_at'),
         'svo_frame_count': int(metadata.get('svo_frame_count') or 0),
+        'file_size_bytes': file_size,
+        'capture_duration_sec': metadata.get('capture_duration_sec'),
+        'export_point_count': metadata.get('export_point_count'),
+        'note': metadata.get('note') or '',
+        'tags': metadata.get('tags') if isinstance(metadata.get('tags'), list) else [],
     }
     for key in ('output_file', 'export_point_count', 'reconstruct_profile', 'source_capture_session_id', 'source_svo_file'):
         if key in metadata:
@@ -166,6 +182,9 @@ def capture_svo(
     now: Callable[[], float] = time.time,
     monotonic: Callable[[], float] = time.monotonic,
     stop_requested: Optional[Callable[[], bool]] = None,
+    status_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    status_period_sec: float = 1.0,
+    final_state_on_stop: str = 'stopped',
 ) -> Dict[str, Any]:
     global _STOP_REQUESTED
     sl = sl or load_zed()
@@ -178,7 +197,34 @@ def capture_svo(
     metadata_file = out_dir / 'metadata.json'
     status_file = out_dir / 'status.json'
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_json(status_file, {'state': 'recording', 'svo_file': str(svo_file), 'parameters': opts})
+    def status_payload(state: str, frames: int, elapsed: float, message: str = '') -> Dict[str, Any]:
+        try:
+            file_size = svo_file.stat().st_size
+        except OSError:
+            file_size = 0
+        payload = {
+            'schema_version': '1.0',
+            'state': state,
+            'session_id': session_id,
+            'output_dir': str(out_dir),
+            'svo_file': str(svo_file),
+            'svo_frame_count': frames,
+            'capture_duration_sec': round(max(0.0, elapsed), 3),
+            'camera_resolution': opts.get('camera_resolution'),
+            'camera_fps': int(opts.get('camera_fps') or 0),
+            'file_size_bytes': file_size,
+            'parameters': opts,
+        }
+        if message:
+            payload['message'] = message
+        return payload
+
+    def publish_status(payload: Dict[str, Any]) -> None:
+        write_json(status_file, payload)
+        if status_callback is not None:
+            status_callback(dict(payload))
+
+    publish_status(status_payload('recording', 0, 0.0))
 
     camera = sl.Camera()
     previous_handlers = {}
@@ -195,6 +241,8 @@ def capture_svo(
             pass
     frames = 0
     state = 'succeeded'
+    error_message = ''
+    capture_start = 0.0
     try:
         init_params = sl.InitParameters()
         set_enum(sl.RESOLUTION, init_params, 'camera_resolution', str(opts['camera_resolution']))
@@ -210,14 +258,24 @@ def capture_svo(
         set_enum(sl.SVO_COMPRESSION_MODE, rec_params, 'compression_mode', str(opts['compression_mode']))
         check_success(sl, camera.enable_recording(rec_params), 'Camera.enable_recording')
 
-        start = monotonic()
+        capture_start = monotonic()
+        last_status_at = capture_start
         duration = float(opts['duration_sec'])
-        while duration <= 0 or monotonic() - start < duration:
+        while duration <= 0 or monotonic() - capture_start < duration:
             if _STOP_REQUESTED or (stop_requested is not None and stop_requested()):
-                state = 'stopped'
+                state = final_state_on_stop
                 break
             if camera.grab() == sl.ERROR_CODE.SUCCESS:
                 frames += 1
+            current = monotonic()
+            if status_period_sec > 0 and current - last_status_at >= status_period_sec:
+                publish_status(status_payload('recording', frames, current - capture_start))
+                last_status_at = current
+    except Exception as exc:
+        state = 'failed'
+        error_message = str(exc)
+        publish_status(status_payload('failed', frames, 0.0 if not capture_start else monotonic() - capture_start, error_message))
+        raise
     finally:
         if hasattr(camera, 'disable_recording'):
             camera.disable_recording()
@@ -243,8 +301,16 @@ def capture_svo(
         'finished_at': finished_at,
         'capture_duration_sec': max(0.0, finished_at - started_at),
         'svo_frame_count': frames,
+        'camera_resolution': opts.get('camera_resolution'),
+        'camera_fps': int(opts.get('camera_fps') or 0),
         'parameters': opts,
     }
+    try:
+        metadata['file_size_bytes'] = svo_file.stat().st_size
+    except OSError:
+        metadata['file_size_bytes'] = 0
+    if error_message:
+        metadata['message'] = error_message
     write_json(metadata_file, metadata)
     write_json(status_file, metadata)
     update_index_json(output_root, metadata)
