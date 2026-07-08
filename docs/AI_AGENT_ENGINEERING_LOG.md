@@ -19,6 +19,17 @@ UI / voice_session_node
 -> /inspection_ai/say_text
 ```
 
+## 与 mini-agent-core 的关系
+
+`mini-agent-core` 是作者独立维护的轻量 Agent Core / SDK 模板，面向
+OpenAI-compatible tool calling、AgentSpec、ToolPack、工具安全分级和 ROS2-ready
+任务编排。本项目没有把它作为 pip 包或外部运行时依赖，而是在 `ylhb_llm` 中实现了
+本地化的 mini-agent-core 风格运行时。
+
+这里的 Agent 只负责语音/UI 意图解析、任务级工具选择和受控执行编排。ROS 2 控制、
+急停、导航、巡逻、路线解析和基础运动技能仍保留在机器人项目内部，由
+system supervisor、patrol executor、RouteToolPack、SkillToolPack 和本地安全策略承接。
+
 ## 关键文件
 
 - `src/ylhb_llm/ylhb_llm/inspection_agent_node.py`
