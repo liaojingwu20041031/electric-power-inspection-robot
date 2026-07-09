@@ -67,8 +67,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--map", required=True, dest="map_yaml")
     parser.add_argument("--route", required=True)
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--name", required=True)
+    parser.add_argument("--output-dir", default="maps/keepout")
+    parser.add_argument("--name", default="keepout_mask_power_room_a")
     args = parser.parse_args()
 
     map_yaml_path = Path(args.map_yaml).expanduser()

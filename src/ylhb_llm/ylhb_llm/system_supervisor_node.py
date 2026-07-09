@@ -61,6 +61,8 @@ STARTUP_STEP_LABELS = {
     'waiting_map': '等待地图',
     'waiting_initialpose_subscribers': '等待地图',
     'waiting_after_navigation': '导航启动后等待',
+    'generating_keepout_mask': '生成禁行区',
+    'waiting_keepout_active': '等待禁行区',
     'starting_executor': '发布初始位姿',
     'waiting_executor': '发布初始位姿',
     'waiting_route_file': '发布初始位姿',
@@ -87,6 +89,7 @@ READINESS_ERROR_MESSAGES = {
     'initialpose_subscribers': '等待 /initialpose 订阅者超时',
     'nav2_action': 'Nav2 动作服务未就绪',
     'nav2_active': 'Nav2 lifecycle 未激活',
+    'keepout_active': 'Keepout lifecycle 未激活',
     'executor': '巡逻执行器未就绪',
     'route_file': '未找到正式巡逻路线文件',
     'patrol_status': '等待 /patrol/status 发布者超时',
@@ -172,6 +175,9 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('mapping3d_capture_dir', '')
         self.declare_parameter('mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))
+        self.declare_parameter('enable_keepout_navigation', False)
+        self.declare_parameter('keepout_mask_path', workspace_path('maps', 'keepout', 'keepout_mask_power_room_a.yaml'))
+        self.declare_parameter('keepout_route_path', workspace_path('maps', 'route_patrol_001.json'))
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
         self.declare_parameter('embedded_task_layer', True)
         self.declare_parameter('enable_voice', False)
@@ -196,6 +202,9 @@ class SystemSupervisorNode(Node):
         self.mapping3d_output_dir = self.mapping3d_capture_dir
         self.mapping3d_reconstruct_dir = os.path.expanduser(str(self.get_parameter('mapping3d_reconstruct_dir').value))
         self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
+        self.enable_keepout_navigation = bool(self.get_parameter('enable_keepout_navigation').value)
+        self.keepout_mask_path = os.path.expanduser(str(self.get_parameter('keepout_mask_path').value))
+        self.keepout_route_path = os.path.expanduser(str(self.get_parameter('keepout_route_path').value))
         self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
         self.embedded_task_layer = bool(self.get_parameter('embedded_task_layer').value)
         self.enable_voice = bool(self.get_parameter('enable_voice').value)
@@ -244,7 +253,7 @@ class SystemSupervisorNode(Node):
             'mapping': ManagedProcess('mapping', 'ros2 launch ylhb_base mapping.launch.py'),
             'navigation': ManagedProcess(
                 'navigation',
-                f'ros2 launch ylhb_base navigation.launch.py map:={self.default_navigation_map}',
+                self.navigation_launch_command(),
             ),
             'zed': ManagedProcess('zed', 'ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i'),
             '3d_capture': ManagedProcess(
@@ -612,6 +621,11 @@ class SystemSupervisorNode(Node):
             self.start_process('perception')
 
         self.startup_step = 'starting_navigation'
+        if not self.prepare_keepout_navigation():
+            self.patrol_mode_state = 'failed'
+            self.startup_step = 'patrol_failed'
+            self.set_result('start_patrol_mode', False, '巡逻启动失败: ' + self.patrol_error)
+            return
         self.start_process('navigation')
         self.startup_step = 'waiting_after_navigation'
         time.sleep(PATROL_NAVIGATION_TO_EXECUTOR_DELAY_SEC)
@@ -628,6 +642,7 @@ class SystemSupervisorNode(Node):
         initial_pose_ok = self.wait_for_initial_pose_published(8.0)
         map_to_odom_ok = self.wait_for_map_to_odom(10.0)
         nav2_active_ok = self.wait_for_nav2_active_ready(25.0)
+        keepout_active_ok = self.wait_for_keepout_active_ready(12.0)
         self.log_patrol_start_readiness()
         gate_warnings = []
         if not initial_pose_ok:
@@ -636,6 +651,8 @@ class SystemSupervisorNode(Node):
             gate_warnings.append('未确认 map->odom TF')
         if not nav2_active_ok:
             gate_warnings.append('未确认 Nav2 lifecycle active')
+        if not keepout_active_ok:
+            gate_warnings.append('未确认 Keepout lifecycle active')
         if gate_warnings:
             self.patrol_mode_state = 'failed'
             self.startup_step = 'patrol_failed'
@@ -693,6 +710,47 @@ class SystemSupervisorNode(Node):
             payload['route_id'] = route_id
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.patrol_command_pub.publish(msg)
+
+    def navigation_launch_command(self) -> str:
+        default_map = getattr(self, 'default_navigation_map', workspace_path('maps', 'my_map.yaml'))
+        command = f'ros2 launch ylhb_base navigation.launch.py map:={default_map}'
+        if getattr(self, 'enable_keepout_navigation', False):
+            command += f' enable_keepout:=true keepout_mask:={self.keepout_mask_path}'
+        return command
+
+    def prepare_keepout_navigation(self) -> bool:
+        if getattr(self, 'processes', None) and 'navigation' in self.processes:
+            self.processes['navigation'].command = self.navigation_launch_command()
+        if not getattr(self, 'enable_keepout_navigation', False):
+            return True
+        self.startup_step = 'generating_keepout_mask'
+        if not self.generate_keepout_mask():
+            return False
+        if not os.path.exists(self.keepout_mask_path):
+            self.patrol_error = f'keepout mask missing: {self.keepout_mask_path}'
+            return False
+        return True
+
+    def generate_keepout_mask(self) -> bool:
+        output_dir = os.path.dirname(self.keepout_mask_path)
+        mask_name = os.path.splitext(os.path.basename(self.keepout_mask_path))[0]
+        command = [
+            'python3',
+            os.path.join(self.workspace_dir, 'scripts', 'generate_keepout_mask.py'),
+            '--map', self.default_navigation_map,
+            '--route', self.keepout_route_path,
+            '--output-dir', output_dir,
+            '--name', mask_name,
+        ]
+        try:
+            result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except Exception as exc:
+            self.patrol_error = f'keepout mask generation failed: {exc}'
+            return False
+        if result.returncode != 0:
+            self.patrol_error = f'keepout mask generation failed: {result.stdout.strip()}'
+            return False
+        return True
 
     def publish_3d_mapping_command(self, command: str) -> None:
         msg = String()
@@ -836,6 +894,7 @@ class SystemSupervisorNode(Node):
             'initialpose_subscribers': self.topic_has_subscribers('/initialpose'),
             'nav2_action': self.has_nav2_action(),
             'nav2_active': self.is_nav2_active(),
+            'keepout_active': self.is_keepout_active() if getattr(self, 'enable_keepout_navigation', False) else True,
             'patrol_status': self.topic_has_publishers('/patrol/status'),
             'initial_pose_published': self.has_initial_pose_published(),
         }
@@ -858,6 +917,7 @@ class SystemSupervisorNode(Node):
             'initialpose_subscribers': False,
             'nav2_action': False,
             'nav2_active': False,
+            'keepout_active': False,
             'patrol_status': False,
             'initial_pose_published': False,
         }
@@ -921,6 +981,15 @@ class SystemSupervisorNode(Node):
             ('nav2_active',),
             timeout_sec,
             error_prefix='Nav2 lifecycle 未激活',
+        )
+
+    def wait_for_keepout_active_ready(self, timeout_sec: float = 12.0) -> bool:
+        if not getattr(self, 'enable_keepout_navigation', False):
+            return True
+        return self.wait_for_readiness_keys(
+            ('keepout_active',),
+            timeout_sec,
+            error_prefix='Keepout lifecycle 未激活',
         )
 
     def wait_for_patrol_executor_ready(self, timeout_sec: float = 15.0) -> bool:
@@ -1042,6 +1111,10 @@ class SystemSupervisorNode(Node):
 
     def is_nav2_active(self) -> bool:
         required_nodes = ('/bt_navigator', '/planner_server', '/controller_server')
+        return all(self.lifecycle_node_is_active(name) for name in required_nodes)
+
+    def is_keepout_active(self) -> bool:
+        required_nodes = ('/keepout_filter_mask_server', '/costmap_filter_info_server')
         return all(self.lifecycle_node_is_active(name) for name in required_nodes)
 
     def lifecycle_node_is_active(self, node_name: str) -> bool:

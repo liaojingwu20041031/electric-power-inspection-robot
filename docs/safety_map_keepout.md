@@ -5,9 +5,7 @@ Keepout 不修改 `maps/my_map.pgm`。禁行区写在路线文件 `maps/route_pa
 ```bash
 python3 scripts/generate_keepout_mask.py \
   --map maps/my_map.yaml \
-  --route maps/route_patrol_001.json \
-  --output-dir /tmp \
-  --name keepout_mask_power_room_a
+  --route maps/route_patrol_001.json
 ```
 
 mask 语义固定：禁行区黑色 `0`，非禁行区白色 `254`。mask 的 `resolution`、尺寸、`origin x/y` 必须和原地图一致，`origin yaw` 固定为 `0`。
@@ -18,17 +16,17 @@ mask 语义固定：禁行区黑色 `0`，非禁行区白色 `254`。mask 的 `r
 python3 scripts/check_keepout_setup.py \
   --map maps/my_map.yaml \
   --route maps/route_patrol_001.json \
-  --mask /tmp/keepout_mask_power_room_a.yaml \
-  --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml
+  --mask maps/keepout/keepout_mask_power_room_a.yaml \
+  --nav2-params src/ylhb_base/config/nav2_params.yaml
 ```
 
 启动：
 
 ```bash
-./scripts/run_on_jetson.sh navigation_keepout enable_local_keepout:=false
+./scripts/run_on_jetson.sh navigation enable_keepout:=true keepout_mask:=maps/keepout/keepout_mask_power_room_a.yaml
 ```
 
-先只验证 global path 绕行；确认后再低速短距离测试 `enable_local_keepout:=true`。
+先只验证 global path 绕行；local keepout 仍默认关闭，确认后再单独开放低速验证。
 
 Keepout lifecycle 节点：
 

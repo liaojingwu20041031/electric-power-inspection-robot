@@ -259,9 +259,9 @@ ros2 topic echo /gps/rtk_status --once
 Keepout 禁行区入口：
 
 ```bash
-python3 scripts/generate_keepout_mask.py --map maps/my_map.yaml --route maps/route_patrol_001.json --output-dir /tmp --name keepout_mask_power_room_a
-python3 scripts/check_keepout_setup.py --map maps/my_map.yaml --route maps/route_patrol_001.json --mask /tmp/keepout_mask_power_room_a.yaml --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml
-./scripts/run_on_jetson.sh navigation_keepout enable_local_keepout:=false
+python3 scripts/generate_keepout_mask.py --map maps/my_map.yaml --route maps/route_patrol_001.json
+python3 scripts/check_keepout_setup.py --map maps/my_map.yaml --route maps/route_patrol_001.json --mask maps/keepout/keepout_mask_power_room_a.yaml --nav2-params src/ylhb_base/config/nav2_params.yaml
+./scripts/run_on_jetson.sh navigation enable_keepout:=true keepout_mask:=maps/keepout/keepout_mask_power_room_a.yaml
 ```
 
 路线安全检查：

@@ -31,6 +31,7 @@ class FakePublisher:
 def allow_patrol_start_gates(node):
     node.wait_for_map_to_odom = Mock(return_value=True)
     node.wait_for_nav2_active_ready = Mock(return_value=True)
+    node.wait_for_keepout_active_ready = Mock(return_value=True)
     node.log_patrol_start_readiness = Mock()
 
 
@@ -224,6 +225,77 @@ def test_start_patrol_mode_gates_start_on_nav2_lifecycle_not_action_server():
         'start_patrol_mode',
         True,
         '已按手动流程发送巡逻启动命令',
+    )
+
+
+def test_navigation_command_adds_keepout_only_when_enabled():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.default_navigation_map = '/ws/maps/my_map.yaml'
+    node.keepout_mask_path = '/ws/maps/keepout/keepout_mask_power_room_a.yaml'
+    node.enable_keepout_navigation = False
+
+    assert node.navigation_launch_command() == 'ros2 launch ylhb_base navigation.launch.py map:=/ws/maps/my_map.yaml'
+
+    node.enable_keepout_navigation = True
+    assert node.navigation_launch_command() == (
+        'ros2 launch ylhb_base navigation.launch.py map:=/ws/maps/my_map.yaml '
+        'enable_keepout:=true keepout_mask:=/ws/maps/keepout/keepout_mask_power_room_a.yaml'
+    )
+
+
+def test_start_patrol_keepout_generation_failure_blocks_navigation_start():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.enable_keepout_navigation = True
+    node.patrol_error = ''
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.generate_keepout_mask = Mock(return_value=False)
+    node.set_result = Mock()
+    node.log_info = Mock()
+
+    def fake_prepare():
+        node.patrol_error = 'keepout mask generation failed: bad route'
+        return False
+
+    node.prepare_keepout_navigation = Mock(side_effect=fake_prepare)
+
+    node.handle_command('start_patrol_mode', {})
+
+    assert [call.args[0] for call in node.start_process.call_args_list] == ['bringup']
+    node.publish_patrol_command.assert_not_called()
+    node.set_result.assert_called_with(
+        'start_patrol_mode',
+        False,
+        '巡逻启动失败: keepout mask generation failed: bad route',
+    )
+
+
+def test_start_patrol_keepout_lifecycle_failure_blocks_start_command():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.enable_keepout_navigation = True
+    node.start_process = Mock()
+    node.publish_patrol_command = Mock()
+    node.prepare_keepout_navigation = Mock(return_value=True)
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
+    node.wait_for_map_to_odom = Mock(return_value=True)
+    node.wait_for_nav2_active_ready = Mock(return_value=True)
+    node.wait_for_keepout_active_ready = Mock(return_value=False)
+    node.log_patrol_start_readiness = Mock()
+    node.last_patrol_status = {'state': 'idle'}
+    node.set_result = Mock()
+    node.log_info = Mock()
+
+    node.handle_command('start_patrol_mode', {})
+
+    node.publish_patrol_command.assert_not_called()
+    node.wait_for_keepout_active_ready.assert_called_once_with(12.0)
+    node.set_result.assert_called_with(
+        'start_patrol_mode',
+        False,
+        '巡逻启动门控失败: 未确认 Keepout lifecycle active',
     )
 
 

@@ -46,6 +46,7 @@ class RunOnJetsonTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('enable_display_ui:=true', result.stdout)
         self.assertIn('enable_system_supervisor:=true', result.stdout)
+        self.assertIn('enable_keepout_navigation:=true', result.stdout)
         self.assertIn('enable_voice:=true', result.stdout)
         self.assertIn('enable_voice_session:=true', result.stdout)
         self.assertIn('enable_tts:=true', result.stdout)
@@ -67,6 +68,7 @@ class RunOnJetsonTest(unittest.TestCase):
         self.assertNotIn('zed_3d_mapping', help_result.stdout)
         self.assertIn('zed_3d_capture', help_result.stdout)
         self.assertIn('zed_3d_reconstruct', help_result.stdout)
+        self.assertNotIn('navigation_keepout', help_result.stdout)
 
     def test_zed_3d_capture_and_reconstruct_routes(self):
         capture = self.run_script('zed_3d_capture', 'duration_sec:=1')

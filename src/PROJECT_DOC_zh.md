@@ -1778,9 +1778,9 @@ ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py --show-args
 # 安全地图 Keepout 与路线 v3
 
 - 禁行区源文件：`maps/route_patrol_001.json` 顶层 `keepout_zones`。
-- mask 生成：`scripts/generate_keepout_mask.py`，按需输出到 `/tmp/keepout_mask_power_room_a.pgm/yaml`。
+- mask 生成：`scripts/generate_keepout_mask.py`，默认输出到 `maps/keepout/keepout_mask_power_room_a.pgm/yaml`。
 - mask 黑白语义固定：`hard_keepout && enabled=true` 为黑色 `0`，其他区域白色 `254`；mask 的尺寸、resolution、origin x/y 与 `maps/my_map.yaml` 一致，origin yaw 固定 `0`。
-- Nav2 配置：`src/ylhb_base/config/nav2_params_keepout.yaml`。global costmap 默认启用 `keepout_filter`；local costmap 保留配置但默认 disabled，由 `navigation_keepout.launch.py enable_local_keepout:=true` 开启。
+- Nav2 配置：`src/ylhb_base/config/nav2_params.yaml`。global costmap 内置 `keepout_filter`，由 `navigation.launch.py enable_keepout:=true` 开启；local costmap 保留配置但默认 disabled。
 - Keepout lifecycle：`keepout_filter_mask_server`、`costmap_filter_info_server` 由 `lifecycle_manager_keepout` 管理；topic 为 `keepout_filter_mask` 和 `keepout_costmap_filter_info`。
 - 排障：先运行 `scripts/check_keepout_setup.py` 检查文件、尺寸、黑色像素和 Nav2 filter 配置；需要 ROS 在线检查时加 `--ros`。
 - 路线 v3：`targets[].pose` 是巡逻执行主字段，`targets[].location` 是扩展/调试字段。缺 `pose` 且 `location.type=="map_pose"` 时可回填；两者同时存在但 x/y/yaw 不一致则校验失败。

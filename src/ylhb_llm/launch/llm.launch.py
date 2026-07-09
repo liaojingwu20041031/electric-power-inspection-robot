@@ -15,6 +15,8 @@ def generate_launch_description():
     default_params = os.path.join(pkg_dir, 'config', 'llm.yaml')
     default_map_output_dir = os.path.join(workspace_dir, 'maps')
     default_perception_model = os.path.join(workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
+    default_keepout_mask = os.path.join(workspace_dir, 'maps', 'keepout', 'keepout_mask_power_room_a.yaml')
+    default_keepout_route = os.path.join(workspace_dir, 'maps', 'route_patrol_001.json')
 
     params_file = LaunchConfiguration('params_file')
     dashscope_base_url = LaunchConfiguration('dashscope_base_url')
@@ -44,6 +46,9 @@ def generate_launch_description():
     workspace_dir_arg = LaunchConfiguration('workspace_dir')
     map_output_dir = LaunchConfiguration('map_output_dir')
     perception_model_path = LaunchConfiguration('perception_model_path')
+    enable_keepout_navigation = LaunchConfiguration('enable_keepout_navigation')
+    keepout_mask_path = LaunchConfiguration('keepout_mask_path')
+    keepout_route_path = LaunchConfiguration('keepout_route_path')
     enable_llm_parse = LaunchConfiguration('enable_llm_parse')
     voice_energy_threshold = LaunchConfiguration('voice_energy_threshold')
     voice_command_vad_silence_sec = LaunchConfiguration('voice_command_vad_silence_sec')
@@ -76,6 +81,9 @@ def generate_launch_description():
         DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
         DeclareLaunchArgument('map_output_dir', default_value=default_map_output_dir),
         DeclareLaunchArgument('perception_model_path', default_value=default_perception_model),
+        DeclareLaunchArgument('enable_keepout_navigation', default_value='false'),
+        DeclareLaunchArgument('keepout_mask_path', default_value=default_keepout_mask),
+        DeclareLaunchArgument('keepout_route_path', default_value=default_keepout_route),
         DeclareLaunchArgument('initial_system_mode', default_value='ready'),
         DeclareLaunchArgument('fullscreen', default_value='true'),
         DeclareLaunchArgument('display', default_value=':0'),
@@ -176,7 +184,7 @@ def generate_launch_description():
             name='system_supervisor_node',
             output='screen',
             condition=IfCondition(enable_system_supervisor),
-            parameters=[params_file, {'workspace_dir': workspace_dir_arg, 'map_output_dir': map_output_dir, 'perception_model_path': perception_model_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'audio_device': audio_device, 'audio_input_device': audio_input_device, 'audio_output_device': audio_output_device, 'asr_model': asr_model, 'tts_model': tts_model, 'tts_voice': tts_voice, 'tts_language_type': tts_language_type, 'dashscope_base_url': dashscope_base_url}],
+            parameters=[params_file, {'workspace_dir': workspace_dir_arg, 'map_output_dir': map_output_dir, 'perception_model_path': perception_model_path, 'enable_keepout_navigation': ParameterValue(enable_keepout_navigation, value_type=bool), 'keepout_mask_path': keepout_mask_path, 'keepout_route_path': keepout_route_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'audio_device': audio_device, 'audio_input_device': audio_input_device, 'audio_output_device': audio_output_device, 'asr_model': asr_model, 'tts_model': tts_model, 'tts_voice': tts_voice, 'tts_language_type': tts_language_type, 'dashscope_base_url': dashscope_base_url}],
         ),
         Node(
             package='ylhb_llm',
