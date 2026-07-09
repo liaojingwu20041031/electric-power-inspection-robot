@@ -161,7 +161,7 @@ zed_3d_capture -> zed_3d_reconstruct
 | `ylhb_3d_mapping` | Python 节点、launch、配置 | ZED SDK Spatial Mapping 点云/网格采集与导出 | Nav2 地图、底盘控制、YOLO 检测 |
 | `ylhb_interfaces` | 消息定义 | 任务事件、任务状态、语音输出状态等自定义消息 | 运行节点 |
 | `ylhb_llm` | Python 任务/语音/UI 节点 | 文本任务解析、语音输入输出、显示 UI、system supervisor、短时基础运动命令 | 底盘闭环、Nav2 算法、本地路线巡逻状态机 |
-| `ylhb_mobile_bridge` | Python bridge 与巡逻执行器 | HTTP/WebSocket 调试入口、本地 Nav2 巡逻执行器、路线文件校验 | 感知算法、底盘驱动、Nav2 参数调优 |
+| `ylhb_mobile_bridge` | Python bridge 与巡逻执行器 | HTTP/WebSocket 调试入口、本地 Nav2 巡逻执行器、路线文件校验 | 感知算法、底盘驱动、Nav2 配置调优 |
 
 常见 launch 与节点归属：
 
@@ -231,7 +231,7 @@ UI /inspection_ai/system_command start_patrol_mode
 
 本地巡逻执行器属于 `ylhb_mobile_bridge` 包，但它不是 Web bridge。
 它读取地图坐标路线文件，按目标点顺序调用 Nav2，处理暂停、恢复、取消、返航、
-循环和失败策略。它不修改 Nav2 参数、不清 costmap、不接管底盘驱动。
+循环和失败策略。它不修改 Nav2 配置、不清 costmap、不接管底盘驱动。
 正式本体 UI 的“一键启动巡逻模式”不直接向 `/patrol/command` 发 `start`，
 而是发布 `/inspection_ai/system_command`，由 `system_supervisor_node`
 统一启动或复用依赖进程，再向巡逻执行器发送 `start`。
@@ -816,7 +816,7 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 ## 12. 本地巡逻 Patrol 调试
 
 本地巡逻功能位于 `ylhb_mobile_bridge` 包内，只通过标准 ROS 接口调用现有
-Nav2，不修改 `ylhb_base` 的 Nav2 参数、DWB、costmap、footprint、机器人模型
+Nav2，不修改 `ylhb_base` 的 Nav2 配置、DWB、costmap、footprint、机器人模型
 或底盘控制代码。它的核心输入是地图坐标路线文件，核心输出是
 `/patrol/status`、`/patrol/event` 和到点后的
 `/inspection_ai/text_command`。
@@ -1775,3 +1775,13 @@ ros2 launch ylhb_3d_mapping zed_spatial_mapping.launch.py --show-args
   调试入口或传入了关闭 UI 的 launch 参数。
 - 如果日志出现 `BYTE_ARRAY`/`STRING_ARRAY` 参数类型错误，优先检查语音词表参数声明；
   这属于 ROS 2 Humble 空字符串数组参数类型问题，不是 QML 显示问题。
+# 安全地图 Keepout 与路线 v3
+
+- 禁行区源文件：`maps/route_patrol_001.json` 顶层 `keepout_zones`。
+- mask 生成：`scripts/generate_keepout_mask.py`，按需输出到 `/tmp/keepout_mask_power_room_a.pgm/yaml`。
+- mask 黑白语义固定：`hard_keepout && enabled=true` 为黑色 `0`，其他区域白色 `254`；mask 的尺寸、resolution、origin x/y 与 `maps/my_map.yaml` 一致，origin yaw 固定 `0`。
+- Nav2 配置：`src/ylhb_base/config/nav2_params_keepout.yaml`。global costmap 默认启用 `keepout_filter`；local costmap 保留配置但默认 disabled，由 `navigation_keepout.launch.py enable_local_keepout:=true` 开启。
+- Keepout lifecycle：`keepout_filter_mask_server`、`costmap_filter_info_server` 由 `lifecycle_manager_keepout` 管理；topic 为 `keepout_filter_mask` 和 `keepout_costmap_filter_info`。
+- 排障：先运行 `scripts/check_keepout_setup.py` 检查文件、尺寸、黑色像素和 Nav2 filter 配置；需要 ROS 在线检查时加 `--ros`。
+- 路线 v3：`targets[].pose` 是巡逻执行主字段，`targets[].location` 是扩展/调试字段。缺 `pose` 且 `location.type=="map_pose"` 时可回填；两者同时存在但 x/y/yaw 不一致则校验失败。
+- PC 标注工具正式位置：`tools/route_map_tool/route_map_tool.html`。

@@ -8,6 +8,7 @@ import yaml
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 WORKSPACE_DIR = PACKAGE_DIR.parents[1]
 NAV2_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params.yaml"
+NAV2_KEEP_OUT_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params_keepout.yaml"
 NAV2_BT_PATH = PACKAGE_DIR / "config" / "nav2_no_recovery.xml"
 CMAKE_PATH = PACKAGE_DIR / "CMakeLists.txt"
 MAP_YAML_PATH = WORKSPACE_DIR / "maps" / "my_map.yaml"
@@ -17,6 +18,10 @@ EXPECTED_FOOTPRINT_POINTS = 16
 
 def load_nav2_params():
     return yaml.safe_load(NAV2_CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def load_nav2_keepout_params():
+    return yaml.safe_load(NAV2_KEEP_OUT_CONFIG_PATH.read_text(encoding="utf-8"))
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -40,6 +45,23 @@ UniqueKeyLoader.add_constructor(
 
 def test_nav2_params_yaml_has_no_duplicate_keys():
     yaml.load(NAV2_CONFIG_PATH.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+    yaml.load(NAV2_KEEP_OUT_CONFIG_PATH.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+
+
+def test_keepout_params_wire_global_first_and_local_opt_in():
+    config = load_nav2_keepout_params()
+    global_map = config["global_costmap"]["global_costmap"]["ros__parameters"]
+    local = config["local_costmap"]["local_costmap"]["ros__parameters"]
+
+    assert "keepout_filter" in global_map["filters"]
+    assert global_map["keepout_filter"]["plugin"] == "nav2_costmap_2d::KeepoutFilter"
+    assert global_map["keepout_filter"]["enabled"] is True
+    assert global_map["keepout_filter"]["filter_info_topic"] == "keepout_costmap_filter_info"
+
+    assert "keepout_filter" in local["filters"]
+    assert local["keepout_filter"]["plugin"] == "nav2_costmap_2d::KeepoutFilter"
+    assert local["keepout_filter"]["enabled"] is False
+    assert local["keepout_filter"]["filter_info_topic"] == "keepout_costmap_filter_info"
 
 
 def load_nav2_behavior_tree():

@@ -1,0 +1,1865 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智能电网机器人巡检路线标注工具</title>
+  <style>
+    :root {
+      --bg: #f5f7f9;
+      --panel: #ffffff;
+      --line: #d8dee6;
+      --text: #18212f;
+      --muted: #667085;
+      --accent: #0f766e;
+      --accent-strong: #115e59;
+      --danger: #b42318;
+      --warn: #b54708;
+      --blue: #2563eb;
+      --shadow: 0 12px 28px rgba(16, 24, 40, 0.10);
+      font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 6px;
+      min-height: 34px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #98a2b3;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button.primary:hover {
+      background: var(--accent-strong);
+    }
+
+    button.danger {
+      color: var(--danger);
+      border-color: #fecdca;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: #fff;
+      color: var(--text);
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      min-height: 18px;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(520px, 1fr) 430px;
+      gap: 12px;
+      height: 100vh;
+      padding: 12px;
+    }
+
+    .workspace,
+    .sidebar {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      min-height: 0;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      overflow: hidden;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .file-control {
+      display: grid;
+      gap: 3px;
+      font-size: 12px;
+      color: var(--muted);
+      min-width: 158px;
+    }
+
+    .file-control input {
+      font-size: 12px;
+      padding: 5px;
+    }
+
+    .mode-group {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      overflow: hidden;
+      background: #fff;
+      margin-left: auto;
+    }
+
+    .mode-group button {
+      border: 0;
+      border-radius: 0;
+      min-width: 70px;
+    }
+
+    .mode-group button.active {
+      background: #e6fffb;
+      color: var(--accent-strong);
+      font-weight: 700;
+    }
+
+    .map-wrap {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(45deg, #e8edf2 25%, transparent 25%),
+        linear-gradient(-45deg, #e8edf2 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #e8edf2 75%),
+        linear-gradient(-45deg, transparent 75%, #e8edf2 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      background: #fbfcfd;
+    }
+
+    .sidebar {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      overflow: hidden;
+    }
+
+    .side-head {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .side-head h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.3;
+    }
+
+    .side-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .side-scroll {
+      overflow: auto;
+      padding: 12px;
+    }
+
+    .section {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+      margin-bottom: 14px;
+    }
+
+    .section:last-child {
+      border-bottom: 0;
+      margin-bottom: 0;
+    }
+
+    .section h2 {
+      margin: 0 0 10px;
+      font-size: 14px;
+    }
+
+    .grid-2,
+    .grid-3 {
+      display: grid;
+      gap: 8px;
+    }
+
+    .grid-2 {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .grid-3 {
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .check-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      font-size: 13px;
+      margin: 8px 0;
+    }
+
+    .target-row {
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      margin-bottom: 8px;
+      background: #fff;
+    }
+
+    .target-row.selected {
+      outline: 2px solid rgba(15, 118, 110, 0.25);
+      border-color: var(--accent);
+    }
+
+    .badge {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--blue);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .target-meta {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      word-break: break-all;
+    }
+
+    .target-name {
+      font-size: 13px;
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .row-actions {
+      display: flex;
+      gap: 5px;
+    }
+
+    .footer {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .footer button {
+      min-height: 38px;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .status.warn {
+      color: var(--warn);
+    }
+
+    .status.error {
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    .json-preview {
+      width: 100%;
+      height: 180px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      background: #0f172a;
+      color: #dbeafe;
+    }
+
+    @media (max-width: 980px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 58vh auto;
+        height: auto;
+        min-height: 100vh;
+      }
+
+      .sidebar {
+        min-height: 680px;
+      }
+
+      .mode-group {
+        margin-left: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="workspace">
+      <div class="toolbar">
+        <label class="file-control">
+          YAML 地图配置
+          <input id="yamlInput" type="file" accept=".yaml,.yml,text/yaml">
+        </label>
+        <label class="file-control">
+          PGM 地图图像
+          <input id="pgmInput" type="file" accept=".pgm,image/x-portable-graymap">
+        </label>
+        <label class="file-control">
+          导入路线 JSON
+          <input id="jsonInput" type="file" accept=".json,application/json">
+        </label>
+        <button id="fitBtn" title="适配窗口">适配</button>
+        <button id="zoomInBtn" title="放大">放大</button>
+        <button id="zoomOutBtn" title="缩小">缩小</button>
+        <div class="mode-group" aria-label="标注模式">
+          <button id="modeStartBtn" class="active" type="button">起点</button>
+          <button id="modeTargetBtn" type="button">巡检点</button>
+          <button id="modeYawBtn" type="button">方向</button>
+          <button id="modeKeepoutBtn" type="button">禁行区</button>
+          <button id="modePanBtn" type="button">拖动</button>
+        </div>
+      </div>
+
+      <div id="mapWrap" class="map-wrap">
+        <canvas id="mapCanvas"></canvas>
+      </div>
+
+      <div class="hud">
+        <span id="mapInfo">等待加载地图</span>
+        <span id="cursorInfo">map: -, -</span>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="side-head">
+        <h1>巡检路线标注工具</h1>
+        <p>点击地图设置起点或追加巡检点；选择“方向”后点选一个点，再点击或拖拽确定朝向。</p>
+      </div>
+
+      <div class="side-scroll">
+        <section class="section">
+          <h2>起点</h2>
+          <label>
+            名称
+            <input id="startName" value="初始起点">
+          </label>
+          <div class="grid-3" style="margin-top: 8px;">
+            <label>x<input id="startX" type="number" step="0.001" value="0"></label>
+            <label>y<input id="startY" type="number" step="0.001" value="0"></label>
+            <label>yaw(rad)<input id="startYaw" type="number" step="0.001" value="0"></label>
+          </div>
+          <label class="check-line">
+            <input id="publishInitialPose" type="checkbox" checked>
+            发布 /initialpose
+          </label>
+          <div class="grid-3">
+            <label>cov x<input id="covX" type="number" step="0.0001" value="0.25"></label>
+            <label>cov y<input id="covY" type="number" step="0.0001" value="0.25"></label>
+            <label>cov yaw<input id="covYaw" type="number" step="0.0001" value="0.0685"></label>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>路线</h2>
+          <label style="margin-bottom: 8px;">导出版本
+            <select id="routeVersion">
+              <option value="3" selected>v3</option>
+              <option value="2">v2</option>
+            </select>
+          </label>
+          <div class="grid-2">
+            <label>路线 ID<input id="routeId" value="route_patrol_001"></label>
+            <label>默认路线<input id="activeRouteId" value="route_patrol_001"></label>
+          </div>
+          <label style="margin-top: 8px;">路线名称<input id="routeName" value="本地巡逻路线"></label>
+          <div class="grid-2" style="margin-top: 8px;">
+            <label>导航超时(s)<input id="goalTimeout" type="number" step="1" value="120"></label>
+            <label>失败重试<input id="maxRetries" type="number" step="1" value="1"></label>
+          </div>
+          <div class="grid-2" style="margin-top: 8px;">
+            <label>失败策略
+              <select id="failurePolicy">
+                <option value="abort_and_return_home">abort_and_return_home</option>
+                <option value="abort">abort</option>
+              </select>
+            </label>
+            <label>循环等待(s)<input id="loopWait" type="number" step="1" value="600"></label>
+          </div>
+          <div class="grid-2" style="margin-top: 8px;">
+            <label class="check-line"><input id="returnToStart" type="checkbox" checked>返航</label>
+            <label class="check-line"><input id="loopEnabled" type="checkbox">循环</label>
+          </div>
+          <label>循环次数，0 表示一直循环<input id="maxCycles" type="number" step="1" value="0"></label>
+        </section>
+
+        <section class="section">
+          <h2>车体模型</h2>
+          <label class="check-line"><input id="showFootprint" type="checkbox" checked>显示模型</label>
+          <label class="check-line"><input id="showFootprintPadding" type="checkbox" checked>显示安全边界</label>
+          <p id="footprintStatus" class="status">使用 ros2_DL Nav2 footprint: 偏心圆柱 16 边形, padding 0.01m。</p>
+        </section>
+
+        <section class="section">
+          <h2>禁行区</h2>
+          <div class="grid-2" style="margin-bottom: 8px;">
+            <button id="addZoneBtn" type="button">新增禁区</button>
+            <button id="deleteZoneBtn" class="danger" type="button">删除禁区</button>
+          </div>
+          <div id="zonesList"></div>
+          <div id="zoneEditor" style="display: none;">
+            <label>名称<input id="zoneName" data-zone-field="name"></label>
+            <div class="grid-2" style="margin-top: 8px;">
+              <label>ID<input id="zoneId" data-zone-field="id"></label>
+              <label>类型<input id="zoneType" data-zone-field="type" value="hard_keepout"></label>
+            </div>
+            <label class="check-line"><input id="zoneEnabled" type="checkbox" data-zone-field="enabled" checked>启用</label>
+            <div class="grid-2" style="margin-bottom: 8px;">
+              <button id="deleteZonePointBtn" type="button">删除最后顶点</button>
+              <button id="clearZonePointsBtn" class="danger" type="button">清空 polygon</button>
+            </div>
+            <div id="zonePointsList"></div>
+          </div>
+          <p id="zonesStatus" class="status">无禁行区。选择“禁行区”模式后点击地图追加 polygon 顶点。</p>
+        </section>
+
+        <section class="section">
+          <h2>巡检点</h2>
+          <div class="grid-2" style="margin-bottom: 8px;">
+            <button id="addTargetBtn" type="button">追加中心点</button>
+            <button id="clearTargetsBtn" class="danger" type="button">清空巡检点</button>
+          </div>
+          <div id="targetsList"></div>
+          <p id="targetStatus" class="status">还没有巡检点。</p>
+        </section>
+
+        <section class="section">
+          <h2>JSON 预览</h2>
+          <textarea id="jsonPreview" class="json-preview" readonly></textarea>
+        </section>
+      </div>
+
+      <div class="footer">
+        <button id="copyBtn" type="button">复制 JSON</button>
+        <button id="downloadBtn" class="primary" type="button">下载 route.json</button>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const state = {
+      map: {
+        width: 0,
+        height: 0,
+        pixels: null,
+        imageData: null,
+        yamlName: "",
+        pgmName: "",
+        image: "my_map.pgm",
+        resolution: 0.05,
+        origin: [-2.89, -6.37, 0],
+        negate: 0,
+        occupiedThresh: 0.65,
+        freeThresh: 0.25
+      },
+      zones: [],
+      activeZoneId: null,
+      footprint: null,
+      footprintPadding: 0.01,
+      view: { scale: 1, offsetX: 0, offsetY: 0 },
+      mode: "start",
+      targets: [],
+      selectedTargetId: null,
+      yawTarget: { kind: "start", id: null },
+      yawPreview: null,
+      hoverPixel: null,
+      drag: null,
+      nextTargetNo: 1
+    };
+
+    const els = {
+      yamlInput: document.getElementById("yamlInput"),
+      pgmInput: document.getElementById("pgmInput"),
+      jsonInput: document.getElementById("jsonInput"),
+      canvas: document.getElementById("mapCanvas"),
+      wrap: document.getElementById("mapWrap"),
+      mapInfo: document.getElementById("mapInfo"),
+      cursorInfo: document.getElementById("cursorInfo"),
+      startName: document.getElementById("startName"),
+      startX: document.getElementById("startX"),
+      startY: document.getElementById("startY"),
+      startYaw: document.getElementById("startYaw"),
+      publishInitialPose: document.getElementById("publishInitialPose"),
+      covX: document.getElementById("covX"),
+      covY: document.getElementById("covY"),
+      covYaw: document.getElementById("covYaw"),
+      routeId: document.getElementById("routeId"),
+      routeVersion: document.getElementById("routeVersion"),
+      activeRouteId: document.getElementById("activeRouteId"),
+      routeName: document.getElementById("routeName"),
+      goalTimeout: document.getElementById("goalTimeout"),
+      maxRetries: document.getElementById("maxRetries"),
+      failurePolicy: document.getElementById("failurePolicy"),
+      returnToStart: document.getElementById("returnToStart"),
+      loopEnabled: document.getElementById("loopEnabled"),
+      loopWait: document.getElementById("loopWait"),
+      maxCycles: document.getElementById("maxCycles"),
+      showFootprint: document.getElementById("showFootprint"),
+      showFootprintPadding: document.getElementById("showFootprintPadding"),
+      footprintStatus: document.getElementById("footprintStatus"),
+      zonesList: document.getElementById("zonesList"),
+      zoneEditor: document.getElementById("zoneEditor"),
+      zoneName: document.getElementById("zoneName"),
+      zoneId: document.getElementById("zoneId"),
+      zoneType: document.getElementById("zoneType"),
+      zoneEnabled: document.getElementById("zoneEnabled"),
+      zonePointsList: document.getElementById("zonePointsList"),
+      zonesStatus: document.getElementById("zonesStatus"),
+      targetsList: document.getElementById("targetsList"),
+      targetStatus: document.getElementById("targetStatus"),
+      jsonPreview: document.getElementById("jsonPreview")
+    };
+
+    const ctx = els.canvas.getContext("2d");
+    const mapBitmapCanvas = document.createElement("canvas");
+    const mapBitmapCtx = mapBitmapCanvas.getContext("2d");
+    const ROBOT_FOOTPRINT = [
+      { x: 0.18650, y: 0.00000 },
+      { x: 0.16543, y: 0.10591 },
+      { x: 0.10544, y: 0.19569 },
+      { x: 0.01566, y: 0.25568 },
+      { x: -0.09025, y: 0.27675 },
+      { x: -0.19616, y: 0.25568 },
+      { x: -0.28594, y: 0.19569 },
+      { x: -0.34593, y: 0.10591 },
+      { x: -0.36700, y: 0.00000 },
+      { x: -0.34593, y: -0.10591 },
+      { x: -0.28594, y: -0.19569 },
+      { x: -0.19616, y: -0.25568 },
+      { x: -0.09025, y: -0.27675 },
+      { x: 0.01566, y: -0.25568 },
+      { x: 0.10544, y: -0.19569 },
+      { x: 0.16543, y: -0.10591 }
+    ];
+    const FOOTPRINT_PADDING = 0.01;
+
+    function robotFootprint() {
+      return state.footprint || ROBOT_FOOTPRINT;
+    }
+
+    function footprintPadding() {
+      return Number.isFinite(state.footprintPadding) ? state.footprintPadding : FOOTPRINT_PADDING;
+    }
+
+    function round3(value) {
+      return Math.round(Number(value) * 1000) / 1000;
+    }
+
+    function numberValue(el, fallback) {
+      const value = Number(el.value);
+      return Number.isFinite(value) ? value : fallback;
+    }
+
+    function parseYaml(text) {
+      function parseScalar(rawValue) {
+        let value = rawValue.trim();
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+          return value.slice(1, -1);
+        }
+        if (value.startsWith("[") && value.endsWith("]")) {
+          return value.slice(1, -1).split(",").map((part) => Number(part.trim()));
+        }
+        if (/^-?\d+(\.\d+)?$/.test(value)) {
+          return Number(value);
+        }
+        return value;
+      }
+
+      const config = {};
+      const lines = text.split(/\r?\n/);
+      for (let index = 0; index < lines.length; index += 1) {
+        const rawLine = lines[index];
+        const line = rawLine.split("#")[0].trim();
+        if (!line) continue;
+        const match = line.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+        if (!match) continue;
+        const key = match[1];
+        const value = match[2].trim();
+        if (value === "") {
+          const items = [];
+          let next = index + 1;
+          while (next < lines.length) {
+            const itemLine = lines[next].split("#")[0].trim();
+            if (!itemLine) {
+              next += 1;
+              continue;
+            }
+            const itemMatch = itemLine.match(/^-\s*(.+)$/);
+            if (!itemMatch) break;
+            items.push(parseScalar(itemMatch[1]));
+            next += 1;
+          }
+          if (items.length) {
+            config[key] = items;
+            index = next - 1;
+          }
+        } else {
+          config[key] = parseScalar(value);
+        }
+      }
+      if (typeof config.resolution !== "number" || !Number.isFinite(config.resolution) || config.resolution <= 0) {
+        throw new Error("地图 YAML 缺少有效 resolution，已停止加载，避免沿用旧地图参数。");
+      }
+      if (!Array.isArray(config.origin) || config.origin.length < 3 || !config.origin.slice(0, 3).every((value) => typeof value === "number" && Number.isFinite(value))) {
+        throw new Error("地图 YAML 缺少有效 origin，支持 origin: [x, y, yaw] 或 origin 后接三行 - x/- y/- yaw。");
+      }
+      state.map.resolution = config.resolution;
+      state.map.origin = config.origin.slice(0, 3);
+      if (typeof config.negate === "number") state.map.negate = config.negate;
+      if (typeof config.image === "string") state.map.image = config.image;
+      if (typeof config.occupied_thresh === "number") state.map.occupiedThresh = config.occupied_thresh;
+      if (typeof config.free_thresh === "number") state.map.freeThresh = config.free_thresh;
+      if (state.map.pixels) rebuildMapBitmap();
+      renderAll();
+    }
+
+    function normalizeKeepoutZones(zones) {
+      return Array.isArray(zones) ? zones.map((zone, index) => ({
+        id: zone.id || `keepout_${String(index + 1).padStart(3, "0")}`,
+        name: zone.name || zone.id || `禁行区${index + 1}`,
+        type: zone.type || "hard_keepout",
+        enabled: zone.enabled !== false,
+        polygon: Array.isArray(zone.polygon)
+          ? zone.polygon.map((point) => ({ x: Number(point.x), y: Number(point.y) })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+          : []
+      })) : [];
+    }
+
+    function readAsciiToken(bytes, indexRef) {
+      while (indexRef.index < bytes.length) {
+        const ch = bytes[indexRef.index];
+        if (ch === 35) {
+          while (indexRef.index < bytes.length && bytes[indexRef.index] !== 10) indexRef.index += 1;
+        } else if (ch <= 32) {
+          indexRef.index += 1;
+        } else {
+          break;
+        }
+      }
+      let token = "";
+      while (indexRef.index < bytes.length && bytes[indexRef.index] > 32) {
+        token += String.fromCharCode(bytes[indexRef.index]);
+        indexRef.index += 1;
+      }
+      return token;
+    }
+
+    function rebuildMapBitmap() {
+      if (!state.map.pixels || !state.map.width || !state.map.height) return;
+      const expected = state.map.width * state.map.height;
+      mapBitmapCanvas.width = state.map.width;
+      mapBitmapCanvas.height = state.map.height;
+      const img = mapBitmapCtx.createImageData(state.map.width, state.map.height);
+      for (let i = 0; i < expected; i += 1) {
+        const gray = state.map.negate ? 255 - state.map.pixels[i] : state.map.pixels[i];
+        const offset = i * 4;
+        img.data[offset] = gray;
+        img.data[offset + 1] = gray;
+        img.data[offset + 2] = gray;
+        img.data[offset + 3] = 255;
+      }
+      state.map.imageData = img;
+      mapBitmapCtx.putImageData(img, 0, 0);
+    }
+
+    function parsePgm(buffer) {
+      const bytes = new Uint8Array(buffer);
+      const indexRef = { index: 0 };
+      const magic = readAsciiToken(bytes, indexRef);
+      const width = Number(readAsciiToken(bytes, indexRef));
+      const height = Number(readAsciiToken(bytes, indexRef));
+      const maxVal = Number(readAsciiToken(bytes, indexRef));
+      while (indexRef.index < bytes.length && bytes[indexRef.index] <= 32) indexRef.index += 1;
+      if (magic !== "P5" || !width || !height || maxVal <= 0 || maxVal > 255) {
+        throw new Error("只支持 8-bit P5 PGM 地图。");
+      }
+      const expected = width * height;
+      const pixels = bytes.slice(indexRef.index, indexRef.index + expected);
+      if (pixels.length !== expected) {
+        throw new Error("PGM 像素数据长度不完整。");
+      }
+      state.map.width = width;
+      state.map.height = height;
+      state.map.pixels = pixels;
+      rebuildMapBitmap();
+      fitToScreen();
+    }
+
+    function mapToPixel(x, y) {
+      const ox = state.map.origin[0];
+      const oy = state.map.origin[1];
+      const res = state.map.resolution;
+      return {
+        x: (x - ox) / res,
+        y: state.map.height - (y - oy) / res
+      };
+    }
+
+    function pixelToMap(px, py) {
+      const ox = state.map.origin[0];
+      const oy = state.map.origin[1];
+      const res = state.map.resolution;
+      return {
+        x: round3(ox + px * res),
+        y: round3(oy + (state.map.height - py) * res)
+      };
+    }
+
+    function isMapCoordinateInside(x, y) {
+      if (!state.map.width || !state.map.height) return true;
+      const p = mapToPixel(x, y);
+      return p.x >= 0 && p.x < state.map.width && p.y >= 0 && p.y < state.map.height;
+    }
+
+    function classifyMapCoordinate(x, y) {
+      if (!state.map.width || !state.map.height || !state.map.pixels) return "unloaded";
+      const p = mapToPixel(x, y);
+      const px = Math.floor(p.x);
+      const py = Math.floor(p.y);
+      if (px < 0 || px >= state.map.width || py < 0 || py >= state.map.height) return "outside";
+      const raw = state.map.pixels[py * state.map.width + px];
+      const color = state.map.negate ? 255 - raw : raw;
+      const occupancy = (255 - color) / 255;
+      if (occupancy > state.map.occupiedThresh) return "occupied";
+      if (occupancy < state.map.freeThresh) return "free";
+      return "unknown";
+    }
+
+    function describeMapClass(kind) {
+      if (kind === "outside") return "越界";
+      if (kind === "occupied") return "障碍区";
+      if (kind === "unknown") return "未知区";
+      if (kind === "unloaded") return "地图未加载";
+      if (kind === "keepout") return "禁行区";
+      return "空闲区";
+    }
+
+    function paddedFootprint() {
+      const footprint = robotFootprint();
+      const padding = footprintPadding();
+      const center = footprint.reduce((sum, point) => ({
+        x: sum.x + point.x / footprint.length,
+        y: sum.y + point.y / footprint.length
+      }), { x: 0, y: 0 });
+      return footprint.map((point) => ({
+        x: point.x + ((point.x - center.x) / Math.hypot(point.x - center.x, point.y - center.y)) * padding,
+        y: point.y + ((point.y - center.y) / Math.hypot(point.x - center.x, point.y - center.y)) * padding
+      }));
+    }
+
+    function transformFootprint(pose, footprint = robotFootprint()) {
+      const cos = Math.cos(pose.yaw || 0);
+      const sin = Math.sin(pose.yaw || 0);
+      return footprint.map((point) => ({
+        x: pose.x + point.x * cos - point.y * sin,
+        y: pose.y + point.x * sin + point.y * cos
+      }));
+    }
+
+    function pointInPolygon(point, polygon) {
+      let inside = false;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+        const a = polygon[i];
+        const b = polygon[j];
+        const crosses = (a.y > point.y) !== (b.y > point.y);
+        if (crosses && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+      }
+      return inside;
+    }
+
+    function segmentsIntersect(a, b, c, d) {
+      function orient(p, q, r) {
+        return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+      }
+      return orient(a, b, c) * orient(a, b, d) <= 0 && orient(c, d, a) * orient(c, d, b) <= 0;
+    }
+
+    function polygonsIntersect(a, b) {
+      if (a.some((point) => pointInPolygon(point, b))) return true;
+      if (b.some((point) => pointInPolygon(point, a))) return true;
+      for (let i = 0; i < a.length; i += 1) {
+        for (let j = 0; j < b.length; j += 1) {
+          if (segmentsIntersect(a[i], a[(i + 1) % a.length], b[j], b[(j + 1) % b.length])) return true;
+        }
+      }
+      return false;
+    }
+
+    function hardKeepoutZones() {
+      return state.zones.filter((zone) => zone.enabled !== false && zone.type === "hard_keepout" && zone.polygon.length >= 3);
+    }
+
+    function worstMapClass(classes) {
+      if (classes.includes("outside")) return "outside";
+      if (classes.includes("occupied")) return "occupied";
+      if (classes.includes("unknown")) return "unknown";
+      if (classes.includes("unloaded")) return "unloaded";
+      return "free";
+    }
+
+    function classifyFootprint(pose) {
+      if (!state.map.width || !state.map.height || !state.map.pixels) return "unloaded";
+      const worldFootprint = transformFootprint(pose, paddedFootprint());
+      if (hardKeepoutZones().some((zone) => pointInPolygon(pose, zone.polygon) || polygonsIntersect(worldFootprint, zone.polygon))) {
+        return "keepout";
+      }
+      const polygon = transformFootprint(pose, paddedFootprint()).map((point) => mapToPixel(point.x, point.y));
+      const xs = polygon.map((point) => point.x);
+      const ys = polygon.map((point) => point.y);
+      const minX = Math.floor(Math.min(...xs));
+      const maxX = Math.ceil(Math.max(...xs));
+      const minY = Math.floor(Math.min(...ys));
+      const maxY = Math.ceil(Math.max(...ys));
+      const seen = [];
+      for (const point of transformFootprint(pose, paddedFootprint())) {
+        const kind = classifyMapCoordinate(point.x, point.y);
+        if (kind !== "free" && !seen.includes(kind)) seen.push(kind);
+      }
+      const centerKind = classifyMapCoordinate(pose.x, pose.y);
+      if (centerKind !== "free" && !seen.includes(centerKind)) seen.push(centerKind);
+      for (let py = minY; py <= maxY; py += 1) {
+        for (let px = minX; px <= maxX; px += 1) {
+          if (!pointInPolygon({ x: px + 0.5, y: py + 0.5 }, polygon)) continue;
+          const map = pixelToMap(px + 0.5, py + 0.5);
+          const kind = classifyMapCoordinate(map.x, map.y);
+          if (kind !== "free" && !seen.includes(kind)) seen.push(kind);
+        }
+      }
+      return worstMapClass(seen);
+    }
+
+    function collectRoutePointProblems() {
+      const points = [
+        { label: "起点", x: numberValue(els.startX, 0), y: numberValue(els.startY, 0), yaw: numberValue(els.startYaw, 0) },
+        ...state.targets.map((target, index) => ({
+          label: `#${index + 1} ${target.name || target.id}`,
+          x: target.x,
+          y: target.y,
+          yaw: target.yaw || 0
+        }))
+      ];
+      return points
+        .map((point) => ({ ...point, kind: classifyFootprint(point) }))
+        .filter((point) => point.kind !== "free")
+        .map((point) => `${point.label} footprint(${round3(point.x)}, ${round3(point.y)})=${describeMapClass(point.kind)}`);
+    }
+
+    function validateRouteForExport() {
+      if (!state.map.width || !state.map.height || !state.map.pixels) {
+        return ["请先加载对应的 PGM 地图后再导出。"];
+      }
+      return collectRoutePointProblems();
+    }
+
+    function getSelectedYawHit() {
+      if (!state.yawTarget || state.yawTarget.kind === "start") return { kind: "start" };
+      const target = state.targets.find((item) => item.id === state.yawTarget.id);
+      return target ? { kind: "target", id: target.id } : { kind: "start" };
+    }
+
+    function getPointLabel(hit) {
+      if (!hit || hit.kind === "start") return "起点";
+      const index = state.targets.findIndex((item) => item.id === hit.id);
+      return index >= 0 ? `#${index + 1} ${state.targets[index].name}` : "巡检点";
+    }
+
+    function canvasToPixel(clientX, clientY) {
+      const rect = els.canvas.getBoundingClientRect();
+      const x = (clientX - rect.left - state.view.offsetX) / state.view.scale;
+      const y = (clientY - rect.top - state.view.offsetY) / state.view.scale;
+      return { x, y };
+    }
+
+    function resizeCanvas() {
+      const rect = els.wrap.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      els.canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      els.canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      draw();
+    }
+
+    function fitToScreen() {
+      if (!state.map.width || !state.map.height) {
+        resizeCanvas();
+        return;
+      }
+      const rect = els.wrap.getBoundingClientRect();
+      const scaleX = rect.width / state.map.width;
+      const scaleY = rect.height / state.map.height;
+      state.view.scale = Math.max(0.05, Math.min(scaleX, scaleY) * 0.96);
+      state.view.offsetX = (rect.width - state.map.width * state.view.scale) / 2;
+      state.view.offsetY = (rect.height - state.map.height * state.view.scale) / 2;
+      draw();
+    }
+
+    function drawArrow(x, y, yaw, color) {
+      const len = 24;
+      const angle = -yaw;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 2 / state.view.scale;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(len / state.view.scale, 0);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(len / state.view.scale, 0);
+      ctx.lineTo((len - 7) / state.view.scale, -5 / state.view.scale);
+      ctx.lineTo((len - 7) / state.view.scale, 5 / state.view.scale);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function colorWithAlpha(hex, alpha) {
+      const value = Number.parseInt(hex.slice(1), 16);
+      const r = (value >> 16) & 255;
+      const g = (value >> 8) & 255;
+      const b = value & 255;
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    function drawFootprint(pose, options = {}) {
+      const status = classifyFootprint(pose);
+      const blocked = status === "outside" || status === "occupied" || status === "keepout";
+      const unknown = status === "unknown";
+      const baseColor = blocked ? "#b42318" : (unknown ? "#b54708" : options.color || "#0f766e");
+      const body = transformFootprint(pose).map((point) => mapToPixel(point.x, point.y));
+      const safe = transformFootprint(pose, paddedFootprint()).map((point) => mapToPixel(point.x, point.y));
+
+      function path(points) {
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+        ctx.closePath();
+      }
+
+      if (els.showFootprintPadding.checked) {
+        path(safe);
+        ctx.strokeStyle = baseColor;
+        ctx.lineWidth = 1.5 / state.view.scale;
+        ctx.setLineDash([5 / state.view.scale, 4 / state.view.scale]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      if (!els.showFootprint.checked) return status;
+      path(body);
+      ctx.fillStyle = colorWithAlpha(baseColor, options.alpha ?? 0.18);
+      ctx.strokeStyle = baseColor;
+      ctx.lineWidth = 2 / state.view.scale;
+      ctx.fill();
+      ctx.stroke();
+
+      const nosePoint = transformFootprint(pose, [{ x: 0.18650, y: 0 }])[0];
+      const nose = mapToPixel(nosePoint.x, nosePoint.y);
+      const center = mapToPixel(pose.x, pose.y);
+      ctx.strokeStyle = baseColor;
+      ctx.lineWidth = 2 / state.view.scale;
+      ctx.beginPath();
+      ctx.moveTo(center.x, center.y);
+      ctx.lineTo(nose.x, nose.y);
+      ctx.stroke();
+      return status;
+    }
+
+    function draw() {
+      const rect = els.canvas.getBoundingClientRect();
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      ctx.save();
+      ctx.translate(state.view.offsetX, state.view.offsetY);
+      ctx.scale(state.view.scale, state.view.scale);
+
+      if (state.map.imageData) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(mapBitmapCanvas, 0, 0);
+      } else {
+        ctx.fillStyle = "#f8fafc";
+        ctx.fillRect(0, 0, Math.max(1, rect.width), Math.max(1, rect.height));
+      }
+
+      const allPoints = [
+        { kind: "start", x: numberValue(els.startX, 0), y: numberValue(els.startY, 0), yaw: numberValue(els.startYaw, 0) },
+        ...state.targets.map((target, index) => ({ kind: "target", order: index + 1, ...target }))
+      ];
+
+      for (const zone of state.zones) {
+        if (!zone.polygon.length) continue;
+        const points = zone.polygon.map((point) => mapToPixel(point.x, point.y));
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+        if (points.length >= 3) ctx.closePath();
+        const active = zone.id === state.activeZoneId;
+        ctx.fillStyle = zone.enabled === false ? "rgba(102, 112, 133, 0.16)" : "rgba(180, 35, 24, 0.22)";
+        ctx.strokeStyle = active ? "#b42318" : (zone.enabled === false ? "#667085" : "#d92d20");
+        ctx.lineWidth = (active ? 3 : 2) / state.view.scale;
+        if (points.length >= 3) ctx.fill();
+        ctx.stroke();
+        for (let index = 0; index < points.length; index += 1) {
+          const point = points[index];
+          ctx.fillStyle = active ? "#b42318" : "#d92d20";
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 4 / state.view.scale, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#111827";
+          ctx.font = `${11 / state.view.scale}px Microsoft YaHei, sans-serif`;
+          ctx.fillText(String(index + 1), point.x + 5 / state.view.scale, point.y - 5 / state.view.scale);
+        }
+        if (points[0]) {
+          ctx.fillStyle = "#111827";
+          ctx.font = `700 ${12 / state.view.scale}px Microsoft YaHei, sans-serif`;
+          ctx.fillText(zone.name || zone.id, points[0].x + 10 / state.view.scale, points[0].y + 14 / state.view.scale);
+        }
+      }
+
+      if (state.targets.length > 0) {
+        ctx.strokeStyle = "#2563eb";
+        ctx.lineWidth = 2 / state.view.scale;
+        ctx.setLineDash([7 / state.view.scale, 5 / state.view.scale]);
+        ctx.beginPath();
+        const startPx = mapToPixel(numberValue(els.startX, 0), numberValue(els.startY, 0));
+        ctx.moveTo(startPx.x, startPx.y);
+        for (const target of state.targets) {
+          const p = mapToPixel(target.x, target.y);
+          ctx.lineTo(p.x, p.y);
+        }
+        if (els.returnToStart.checked) ctx.lineTo(startPx.x, startPx.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      for (const point of allPoints) {
+        const p = mapToPixel(point.x, point.y);
+        const isStart = point.kind === "start";
+        const selectedForYaw = state.yawTarget && state.yawTarget.kind === point.kind && (isStart || state.yawTarget.id === point.id);
+        const selectedTarget = !isStart && state.selectedTargetId === point.id;
+        const footprintKind = drawFootprint(point, { color: isStart ? "#0f766e" : "#2563eb" });
+        const blocked = footprintKind === "outside" || footprintKind === "occupied" || footprintKind === "keepout";
+        const unknown = footprintKind === "unknown";
+        const color = blocked ? "#b42318" : (unknown ? "#b54708" : (isStart ? "#0f766e" : "#2563eb"));
+        const radius = isStart ? 8 / state.view.scale : 7 / state.view.scale;
+        if (selectedForYaw || selectedTarget) {
+          ctx.strokeStyle = selectedForYaw ? "#f59e0b" : "#0f766e";
+          ctx.lineWidth = 3 / state.view.scale;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, radius + 5 / state.view.scale, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.fillStyle = color;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2.5 / state.view.scale;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        drawArrow(p.x, p.y, point.yaw || 0, color);
+        if (!isStart) {
+          ctx.fillStyle = "#ffffff";
+          ctx.font = `700 ${10 / state.view.scale}px Microsoft YaHei, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(String(point.order), p.x, p.y);
+          ctx.textAlign = "left";
+          ctx.textBaseline = "alphabetic";
+        }
+        ctx.fillStyle = blocked ? "#b42318" : (unknown ? "#b54708" : "#111827");
+        ctx.font = `${12 / state.view.scale}px Microsoft YaHei, sans-serif`;
+        const label = isStart ? "起点" : `#${point.order} ${point.name}`;
+        ctx.fillText(label, p.x + 10 / state.view.scale, p.y - 8 / state.view.scale);
+      }
+
+      if ((state.mode === "start" || state.mode === "target") && state.hoverPixel && !state.drag) {
+        const map = pixelToMap(state.hoverPixel.x, state.hoverPixel.y);
+        drawFootprint({
+          x: map.x,
+          y: map.y,
+          yaw: state.mode === "start" ? numberValue(els.startYaw, 0) : 0
+        }, { color: state.mode === "start" ? "#0f766e" : "#2563eb", alpha: 0.10 });
+      }
+
+      if (state.mode === "yaw" && state.yawPreview) {
+        const hit = getSelectedYawHit();
+        let origin;
+        let pose;
+        if (hit.kind === "start") {
+          origin = mapToPixel(numberValue(els.startX, 0), numberValue(els.startY, 0));
+          pose = { x: numberValue(els.startX, 0), y: numberValue(els.startY, 0), yaw: numberValue(els.startYaw, 0) };
+        } else {
+          const target = state.targets.find((item) => item.id === hit.id);
+          if (target) {
+            origin = mapToPixel(target.x, target.y);
+            pose = { x: target.x, y: target.y, yaw: target.yaw || 0 };
+          }
+        }
+        if (origin) {
+          pose.yaw = round3(-Math.atan2(state.yawPreview.y - origin.y, state.yawPreview.x - origin.x));
+          drawFootprint(pose, { color: "#f59e0b", alpha: 0.10 });
+          ctx.strokeStyle = "#f59e0b";
+          ctx.lineWidth = 2 / state.view.scale;
+          ctx.setLineDash([6 / state.view.scale, 4 / state.view.scale]);
+          ctx.beginPath();
+          ctx.moveTo(origin.x, origin.y);
+          ctx.lineTo(state.yawPreview.x, state.yawPreview.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
+      ctx.restore();
+      updateMapInfo();
+    }
+
+    function updateMapInfo() {
+      if (!state.map.width) {
+        els.mapInfo.textContent = "请选择或拖入 my_map.yaml 和 my_map.pgm";
+        return;
+      }
+      const wMeters = (state.map.width * state.map.resolution).toFixed(2);
+      const hMeters = (state.map.height * state.map.resolution).toFixed(2);
+      const minX = state.map.origin[0];
+      const maxX = state.map.origin[0] + state.map.width * state.map.resolution;
+      const minY = state.map.origin[1];
+      const maxY = state.map.origin[1] + state.map.height * state.map.resolution;
+      els.mapInfo.textContent = `${state.map.pgmName || state.map.image} | ${state.map.width}x${state.map.height}px | ${wMeters}m x ${hMeters}m | origin=[${state.map.origin.join(", ")}] | res=${state.map.resolution} | x=${minX.toFixed(2)}..${maxX.toFixed(2)}, y=${minY.toFixed(2)}..${maxY.toFixed(2)}`;
+    }
+
+    function setMode(mode) {
+      state.mode = mode;
+      state.yawPreview = null;
+      state.hoverPixel = null;
+      document.getElementById("modeStartBtn").classList.toggle("active", mode === "start");
+      document.getElementById("modeTargetBtn").classList.toggle("active", mode === "target");
+      document.getElementById("modeYawBtn").classList.toggle("active", mode === "yaw");
+      document.getElementById("modeKeepoutBtn").classList.toggle("active", mode === "keepout");
+      document.getElementById("modePanBtn").classList.toggle("active", mode === "pan");
+      draw();
+    }
+
+    function getPointHit(px, py) {
+      const threshold = 12 / state.view.scale;
+      const startP = mapToPixel(numberValue(els.startX, 0), numberValue(els.startY, 0));
+      if (Math.hypot(px - startP.x, py - startP.y) <= threshold) return { kind: "start" };
+      for (const target of state.targets) {
+        const p = mapToPixel(target.x, target.y);
+        if (Math.hypot(px - p.x, py - p.y) <= threshold) return { kind: "target", id: target.id };
+      }
+      return null;
+    }
+
+    function setStartFromPixel(px, py) {
+      const map = pixelToMap(px, py);
+      els.startX.value = map.x;
+      els.startY.value = map.y;
+      renderAll();
+    }
+
+    function addTargetFromPixel(px, py) {
+      const map = pixelToMap(px, py);
+      const no = state.nextTargetNo;
+      state.nextTargetNo += 1;
+      const id = `target_${String(no).padStart(3, "0")}`;
+      state.targets.push({
+        id,
+        name: `巡检点${no}`,
+        x: map.x,
+        y: map.y,
+        yaw: 0,
+        taskDuration: 5
+      });
+      state.selectedTargetId = id;
+      state.yawTarget = { kind: "target", id };
+      renderAll();
+    }
+
+    function addZonePointFromPixel(px, py) {
+      if (!state.activeZoneId) {
+        const id = `keepout_${String(state.zones.length + 1).padStart(3, "0")}`;
+        state.zones.push({ id, name: `禁行区${state.zones.length + 1}`, type: "hard_keepout", enabled: true, polygon: [] });
+        state.activeZoneId = id;
+      }
+      const zone = state.zones.find((item) => item.id === state.activeZoneId);
+      if (!zone) return;
+      zone.polygon.push(pixelToMap(px, py));
+      renderAll();
+    }
+
+    function setYawFromPointer(hit, px, py) {
+      let origin;
+      if (hit.kind === "start") {
+        origin = mapToPixel(numberValue(els.startX, 0), numberValue(els.startY, 0));
+        state.yawTarget = { kind: "start", id: null };
+      } else {
+        const target = state.targets.find((item) => item.id === hit.id);
+        if (!target) return;
+        origin = mapToPixel(target.x, target.y);
+        state.selectedTargetId = target.id;
+        state.yawTarget = { kind: "target", id: target.id };
+      }
+      const yaw = round3(-Math.atan2(py - origin.y, px - origin.x));
+      if (hit.kind === "start") {
+        els.startYaw.value = yaw;
+      } else {
+        const target = state.targets.find((item) => item.id === hit.id);
+        if (target) target.yaw = yaw;
+      }
+      renderAll();
+    }
+
+    function activeZone() {
+      return state.zones.find((zone) => zone.id === state.activeZoneId) || null;
+    }
+
+    function renderZones() {
+      els.zonesList.innerHTML = "";
+      for (const zone of state.zones) {
+        const row = document.createElement("div");
+        row.className = `target-row${zone.id === state.activeZoneId ? " selected" : ""}`;
+        row.innerHTML = `
+          <div class="badge">${zone.polygon.length}</div>
+          <div>
+            <div class="target-name">${escapeHtml(zone.name || zone.id)}</div>
+            <div class="target-meta">${escapeHtml(zone.id)} | ${escapeHtml(zone.type || "hard_keepout")} | ${zone.enabled === false ? "disabled" : "enabled"} | ${zone.polygon.length} 顶点</div>
+          </div>
+          <div class="row-actions">
+            <button data-action="select-zone" data-id="${escapeHtml(zone.id)}" title="选择">✓</button>
+          </div>
+        `;
+        row.addEventListener("click", () => {
+          state.activeZoneId = zone.id;
+          setMode("keepout");
+          renderAll();
+        });
+        els.zonesList.appendChild(row);
+      }
+
+      const zone = activeZone();
+      els.zoneEditor.style.display = zone ? "" : "none";
+      if (zone) {
+        els.zoneName.value = zone.name || "";
+        els.zoneId.value = zone.id || "";
+        els.zoneType.value = zone.type || "hard_keepout";
+        els.zoneEnabled.checked = zone.enabled !== false;
+      }
+      els.zonePointsList.innerHTML = "";
+      if (zone) {
+        for (let index = 0; index < zone.polygon.length; index += 1) {
+          const point = zone.polygon[index];
+          const row = document.createElement("div");
+          row.className = "grid-3";
+          row.style.marginBottom = "6px";
+          row.innerHTML = `
+            <label>#<input value="${index + 1}" readonly></label>
+            <label>x<input data-zone-point="${index}" data-axis="x" type="number" step="0.001" value="${point.x}"></label>
+            <label>y<input data-zone-point="${index}" data-axis="y" type="number" step="0.001" value="${point.y}"></label>
+          `;
+          els.zonePointsList.appendChild(row);
+        }
+      }
+      els.zonesStatus.textContent = state.zones.length
+        ? `共 ${state.zones.length} 个禁行区，当前 ${state.activeZoneId || "无"}。`
+        : "无禁行区。选择“禁行区”模式后点击地图追加 polygon 顶点。";
+    }
+
+    function renderTargets() {
+      els.targetsList.innerHTML = "";
+      for (let index = 0; index < state.targets.length; index += 1) {
+        const target = state.targets[index];
+        const row = document.createElement("div");
+        row.className = `target-row${state.selectedTargetId === target.id ? " selected" : ""}`;
+        row.innerHTML = `
+          <div class="badge">${index + 1}</div>
+          <div>
+            <input data-field="name" data-id="${target.id}" value="${escapeHtml(target.name)}" aria-label="巡检点名称">
+            <div class="grid-2" style="margin-top: 6px;">
+              <input data-field="x" data-id="${target.id}" type="number" step="0.001" value="${target.x}" aria-label="x">
+              <input data-field="y" data-id="${target.id}" type="number" step="0.001" value="${target.y}" aria-label="y">
+            </div>
+            <div class="grid-2" style="margin-top: 6px;">
+              <input data-field="yaw" data-id="${target.id}" type="number" step="0.001" value="${target.yaw}" aria-label="yaw">
+              <input data-field="taskDuration" data-id="${target.id}" type="number" step="0.1" value="${target.taskDuration}" aria-label="停留秒数">
+            </div>
+            <div class="target-meta">${target.id} | yaw(rad) / task_duration_sec</div>
+          </div>
+          <div class="row-actions">
+            <button data-action="orient" data-id="${target.id}" title="设置方向">↗</button>
+            <button data-action="up" data-id="${target.id}" title="上移">↑</button>
+            <button data-action="down" data-id="${target.id}" title="下移">↓</button>
+            <button data-action="delete" data-id="${target.id}" class="danger" title="删除">×</button>
+          </div>
+        `;
+        row.addEventListener("click", (event) => {
+          if (event.target.closest("input, button")) return;
+          state.selectedTargetId = target.id;
+          state.yawTarget = { kind: "target", id: target.id };
+          renderAll();
+        });
+        els.targetsList.appendChild(row);
+      }
+      const problems = state.map.width && state.map.height && state.map.pixels ? collectRoutePointProblems() : [];
+      els.targetStatus.className = problems.length ? "status error" : "status";
+      if (problems.length) {
+        els.targetStatus.textContent = `导出阻止：${problems.join("；")}。请换回对应地图或重新标定到空闲区。`;
+      } else {
+        els.targetStatus.textContent = state.targets.length ? `共 ${state.targets.length} 个巡检点，顺序即导航顺序。当前方向点：${getPointLabel(getSelectedYawHit())}。` : `还没有巡检点。当前方向点：${getPointLabel(getSelectedYawHit())}。`;
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function loadRouteJson(route) {
+      if (!route || ![2, 3].includes(route.version) || route.frame_id !== "map") {
+        throw new Error("路线 JSON 必须是 version=2/3 且 frame_id=map。" );
+      }
+      els.routeVersion.value = String(route.version);
+      if (route.start_pose) {
+        els.startName.value = route.start_pose.name || "初始起点";
+        els.startX.value = route.start_pose.pose?.x ?? 0;
+        els.startY.value = route.start_pose.pose?.y ?? 0;
+        els.startYaw.value = route.start_pose.pose?.yaw ?? 0;
+        els.publishInitialPose.checked = route.start_pose.publish_initial_pose !== false;
+        els.covX.value = route.start_pose.covariance?.x ?? 0.25;
+        els.covY.value = route.start_pose.covariance?.y ?? 0.25;
+        els.covYaw.value = route.start_pose.covariance?.yaw ?? 0.0685;
+      }
+      const firstRoute = Array.isArray(route.routes) ? route.routes[0] : null;
+      if (firstRoute) {
+        els.routeId.value = firstRoute.id || "route_patrol_001";
+        els.activeRouteId.value = route.active_route_id || firstRoute.id || "route_patrol_001";
+        els.activeRouteId.dataset.synced = els.activeRouteId.value === els.routeId.value ? "true" : "false";
+        els.routeName.value = firstRoute.name || "本地巡逻路线";
+        els.returnToStart.checked = firstRoute.return_to_start !== false;
+        els.loopEnabled.checked = Boolean(firstRoute.loop?.enabled);
+        els.loopWait.value = firstRoute.loop?.wait_sec ?? 600;
+        els.maxCycles.value = firstRoute.loop?.max_cycles ?? 0;
+        els.goalTimeout.value = firstRoute.goal_timeout_sec ?? 120;
+        els.maxRetries.value = firstRoute.max_retries_per_checkpoint ?? 1;
+        els.failurePolicy.value = firstRoute.failure_policy === "abort" ? "abort" : "abort_and_return_home";
+      }
+      const byId = new Map((route.targets || []).map((target) => [target.id, target]));
+      const orderedIds = firstRoute?.target_ids?.length ? firstRoute.target_ids : (route.targets || []).map((target) => target.id);
+      state.targets = orderedIds
+        .map((id) => byId.get(id))
+        .filter(Boolean)
+        .map((target, index) => ({
+          id: target.id || `target_${String(index + 1).padStart(3, "0")}`,
+          name: target.name || `巡检点${index + 1}`,
+          x: Number((target.pose || target.location)?.x ?? 0),
+          y: Number((target.pose || target.location)?.y ?? 0),
+          yaw: Number((target.pose || target.location)?.yaw ?? 0),
+          taskDuration: Number(target.task_duration_sec ?? 5)
+        }));
+      const maxNo = state.targets.reduce((max, target) => {
+        const match = String(target.id).match(/target_(\d+)/);
+        return Math.max(max, match ? Number(match[1]) : 0);
+      }, state.targets.length);
+      state.nextTargetNo = maxNo + 1;
+      state.selectedTargetId = state.targets[0]?.id || null;
+      state.yawTarget = state.selectedTargetId ? { kind: "target", id: state.selectedTargetId } : { kind: "start", id: null };
+      state.zones = normalizeKeepoutZones(route.keepout_zones);
+      state.activeZoneId = state.zones[0]?.id || null;
+      renderAll();
+    }
+
+    function buildRouteJson() {
+      const routeId = els.routeId.value.trim() || "route_patrol_001";
+      const version = Number(els.routeVersion.value) || 3;
+      return {
+        version,
+        frame_id: "map",
+        active_route_id: els.activeRouteId.value.trim() || routeId,
+        start_pose: {
+          name: els.startName.value.trim() || "初始起点",
+          pose: {
+            x: round3(numberValue(els.startX, 0)),
+            y: round3(numberValue(els.startY, 0)),
+            yaw: round3(numberValue(els.startYaw, 0))
+          },
+          publish_initial_pose: els.publishInitialPose.checked,
+          covariance: {
+            x: numberValue(els.covX, 0.25),
+            y: numberValue(els.covY, 0.25),
+            yaw: numberValue(els.covYaw, 0.0685)
+          }
+        },
+        targets: state.targets.map((target) => {
+          const pose = {
+            x: round3(target.x),
+            y: round3(target.y),
+            yaw: round3(target.yaw || 0)
+          };
+          return {
+            id: target.id,
+            name: target.name || target.id,
+            pose,
+            ...(version === 3 ? {
+              location: {
+                type: "map_pose",
+                frame_id: "map",
+                ...pose
+              },
+              safety: {
+                validation_status: "pending",
+                min_keepout_distance_m: null,
+                warnings: []
+              }
+            } : {}),
+            task_duration_sec: numberValue({ value: target.taskDuration }, 5)
+          };
+        }),
+        routes: [
+          {
+            id: routeId,
+            name: els.routeName.value.trim() || "本地巡逻路线",
+            target_ids: state.targets.map((target) => target.id),
+            return_to_start: els.returnToStart.checked,
+            loop: {
+              enabled: els.loopEnabled.checked,
+              wait_sec: numberValue(els.loopWait, 600),
+              max_cycles: Math.max(0, Math.floor(numberValue(els.maxCycles, 0)))
+            },
+            goal_timeout_sec: numberValue(els.goalTimeout, 120),
+            max_retries_per_checkpoint: Math.max(0, Math.floor(numberValue(els.maxRetries, 1))),
+            failure_policy: els.failurePolicy.value
+          }
+        ],
+        keepout_zones: state.zones.map((zone) => ({
+          id: zone.id,
+          name: zone.name,
+          type: zone.type || "hard_keepout",
+          enabled: zone.enabled !== false,
+          polygon: zone.polygon.map((point) => ({ x: round3(point.x), y: round3(point.y) }))
+        })),
+        schedules: []
+      };
+    }
+
+    function updateJsonPreview() {
+      els.jsonPreview.value = JSON.stringify(buildRouteJson(), null, 2);
+    }
+
+    function renderAll() {
+      if (els.activeRouteId.value.trim() === "" || els.activeRouteId.dataset.synced === "true") {
+        els.activeRouteId.value = els.routeId.value;
+        els.activeRouteId.dataset.synced = "true";
+      }
+      renderTargets();
+      renderZones();
+      updateJsonPreview();
+      draw();
+    }
+
+    function moveTarget(id, delta) {
+      const index = state.targets.findIndex((target) => target.id === id);
+      const next = index + delta;
+      if (index < 0 || next < 0 || next >= state.targets.length) return;
+      const [item] = state.targets.splice(index, 1);
+      state.targets.splice(next, 0, item);
+      renderAll();
+    }
+
+    els.yamlInput.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      state.map.yamlName = file.name;
+      try {
+        parseYaml(await file.text());
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    els.pgmInput.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      state.map.pgmName = file.name;
+      try {
+        parsePgm(await file.arrayBuffer());
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    els.jsonInput.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        loadRouteJson(JSON.parse(await file.text()));
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    els.canvas.addEventListener("mousedown", (event) => {
+      const p = canvasToPixel(event.clientX, event.clientY);
+      const hit = getPointHit(p.x, p.y);
+      if (event.button === 2) {
+        setYawFromPointer(hit || getSelectedYawHit(), p.x, p.y);
+        return;
+      }
+      if (state.mode === "yaw") {
+        state.yawPreview = p;
+        const yawHit = hit || getSelectedYawHit();
+        if (hit && hit.kind === "target") state.selectedTargetId = hit.id;
+        if (hit) {
+          state.yawTarget = { kind: hit.kind, id: hit.id || null };
+          state.drag = { type: "yaw", hit: yawHit, moved: false };
+          renderAll();
+        } else {
+          setYawFromPointer(yawHit, p.x, p.y);
+          state.drag = { type: "yaw", hit: yawHit, moved: true };
+        }
+        return;
+      }
+      if (hit && state.mode !== "pan" && state.mode !== "keepout") {
+        state.drag = { type: hit.kind, id: hit.id || null };
+        if (hit.kind === "target") {
+          state.selectedTargetId = hit.id;
+          state.yawTarget = { kind: "target", id: hit.id };
+        } else {
+          state.yawTarget = { kind: "start", id: null };
+        }
+        return;
+      }
+      if (state.mode === "pan") {
+        state.drag = { type: "pan", startX: event.clientX, startY: event.clientY, ox: state.view.offsetX, oy: state.view.offsetY };
+      } else if (state.mode === "start") {
+        setStartFromPixel(p.x, p.y);
+      } else if (state.mode === "target") {
+        addTargetFromPixel(p.x, p.y);
+      } else if (state.mode === "keepout") {
+        addZonePointFromPixel(p.x, p.y);
+      }
+    });
+
+    window.addEventListener("mousemove", (event) => {
+      const p = canvasToPixel(event.clientX, event.clientY);
+      state.hoverPixel = p;
+      if (state.map.width) {
+        const map = pixelToMap(p.x, p.y);
+        const pose = { x: map.x, y: map.y, yaw: state.mode === "start" ? numberValue(els.startYaw, 0) : 0 };
+        const kind = (state.mode === "start" || state.mode === "target") ? classifyFootprint(pose) : classifyMapCoordinate(map.x, map.y);
+        els.cursorInfo.textContent = `map: x=${map.x}, y=${map.y} | ${describeMapClass(kind)}`;
+      }
+      if (state.mode === "yaw" || state.mode === "start" || state.mode === "target") {
+        state.yawPreview = p;
+        draw();
+      }
+      if (!state.drag) return;
+      if (state.drag.type === "pan") {
+        state.view.offsetX = state.drag.ox + event.clientX - state.drag.startX;
+        state.view.offsetY = state.drag.oy + event.clientY - state.drag.startY;
+        draw();
+      } else if (state.drag.type === "start") {
+        setStartFromPixel(p.x, p.y);
+      } else if (state.drag.type === "target") {
+        const target = state.targets.find((item) => item.id === state.drag.id);
+        if (!target) return;
+        const map = pixelToMap(p.x, p.y);
+        target.x = map.x;
+        target.y = map.y;
+        renderAll();
+      } else if (state.drag.type === "yaw") {
+        state.drag.moved = true;
+        setYawFromPointer(state.drag.hit, p.x, p.y);
+      }
+    });
+
+    window.addEventListener("mouseup", () => {
+      state.drag = null;
+      state.yawPreview = null;
+      draw();
+    });
+
+    els.canvas.addEventListener("mouseleave", () => {
+      state.hoverPixel = null;
+      draw();
+    });
+
+    els.canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const rect = els.canvas.getBoundingClientRect();
+      const before = canvasToPixel(event.clientX, event.clientY);
+      const factor = event.deltaY < 0 ? 1.15 : 0.87;
+      state.view.scale = Math.min(20, Math.max(0.04, state.view.scale * factor));
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      state.view.offsetX = cx - before.x * state.view.scale;
+      state.view.offsetY = cy - before.y * state.view.scale;
+      draw();
+    }, { passive: false });
+
+    els.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+    els.targetsList.addEventListener("input", (event) => {
+      const input = event.target;
+      const target = state.targets.find((item) => item.id === input.dataset.id);
+      if (!target) return;
+      const field = input.dataset.field;
+      if (field === "name") target.name = input.value;
+      else target[field] = Number(input.value);
+      updateJsonPreview();
+      draw();
+    });
+
+    els.targetsList.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      event.stopPropagation();
+      const id = button.dataset.id;
+      if (button.dataset.action === "delete") {
+        state.targets = state.targets.filter((target) => target.id !== id);
+        if (state.selectedTargetId === id) state.selectedTargetId = state.targets[0]?.id || null;
+        if (state.yawTarget?.id === id) state.yawTarget = state.selectedTargetId ? { kind: "target", id: state.selectedTargetId } : { kind: "start", id: null };
+      } else if (button.dataset.action === "orient") {
+        state.selectedTargetId = id;
+        state.yawTarget = { kind: "target", id };
+        setMode("yaw");
+        return;
+      } else if (button.dataset.action === "up") {
+        moveTarget(id, -1);
+        return;
+      } else if (button.dataset.action === "down") {
+        moveTarget(id, 1);
+        return;
+      }
+      renderAll();
+    });
+
+    document.querySelectorAll("input, select").forEach((input) => {
+      if (input.type === "file") return;
+      if (input.dataset.zoneField || input.dataset.zonePoint) return;
+      input.addEventListener("input", () => {
+        if (input.id === "activeRouteId") input.dataset.synced = "false";
+        if (input.id === "routeId" && els.activeRouteId.dataset.synced !== "false") {
+          els.activeRouteId.value = input.value;
+          els.activeRouteId.dataset.synced = "true";
+        }
+        renderAll();
+      });
+    });
+
+    document.getElementById("modeStartBtn").addEventListener("click", () => setMode("start"));
+    document.getElementById("modeTargetBtn").addEventListener("click", () => setMode("target"));
+    document.getElementById("modeYawBtn").addEventListener("click", () => setMode("yaw"));
+    document.getElementById("modeKeepoutBtn").addEventListener("click", () => setMode("keepout"));
+    document.getElementById("modePanBtn").addEventListener("click", () => setMode("pan"));
+    document.getElementById("addZoneBtn").addEventListener("click", () => {
+      const id = `keepout_${String(state.zones.length + 1).padStart(3, "0")}`;
+      state.zones.push({ id, name: `禁行区${state.zones.length + 1}`, type: "hard_keepout", enabled: true, polygon: [] });
+      state.activeZoneId = id;
+      setMode("keepout");
+      renderAll();
+    });
+    document.getElementById("deleteZoneBtn").addEventListener("click", () => {
+      const id = state.activeZoneId;
+      if (!id) return;
+      state.zones = state.zones.filter((zone) => zone.id !== id);
+      state.activeZoneId = state.zones[0]?.id || null;
+      renderAll();
+    });
+    els.zoneEditor.addEventListener("input", (event) => {
+      const zone = activeZone();
+      if (!zone) return;
+      const input = event.target;
+      if (input.dataset.zoneField) {
+        const oldId = zone.id;
+        const field = input.dataset.zoneField;
+        if (field === "enabled") zone.enabled = input.checked;
+        else zone[field] = input.value.trim();
+        if (field === "id" && state.activeZoneId === oldId) state.activeZoneId = zone.id;
+      } else if (input.dataset.zonePoint) {
+        const point = zone.polygon[Number(input.dataset.zonePoint)];
+        if (point) point[input.dataset.axis] = Number(input.value);
+      }
+      updateJsonPreview();
+      draw();
+      renderZones();
+    });
+    document.getElementById("deleteZonePointBtn").addEventListener("click", () => {
+      const zone = activeZone();
+      if (!zone) return;
+      zone.polygon.pop();
+      renderAll();
+    });
+    document.getElementById("clearZonePointsBtn").addEventListener("click", () => {
+      const zone = activeZone();
+      if (!zone) return;
+      zone.polygon = [];
+      renderAll();
+    });
+    document.getElementById("fitBtn").addEventListener("click", fitToScreen);
+    document.getElementById("zoomInBtn").addEventListener("click", () => { state.view.scale *= 1.2; draw(); });
+    document.getElementById("zoomOutBtn").addEventListener("click", () => { state.view.scale /= 1.2; draw(); });
+    document.getElementById("addTargetBtn").addEventListener("click", () => {
+      const rect = els.wrap.getBoundingClientRect();
+      const px = (rect.width / 2 - state.view.offsetX) / state.view.scale;
+      const py = (rect.height / 2 - state.view.offsetY) / state.view.scale;
+      addTargetFromPixel(px, py);
+    });
+    document.getElementById("clearTargetsBtn").addEventListener("click", () => {
+      if (state.targets.length && confirm("确定清空全部巡检点？")) {
+        state.targets = [];
+        state.selectedTargetId = null;
+        renderAll();
+      }
+    });
+    document.getElementById("copyBtn").addEventListener("click", async () => {
+      const problems = validateRouteForExport();
+      if (problems.length) {
+        alert(`不能复制路线：\n${problems.join("\n")}`);
+        renderTargets();
+        return;
+      }
+      await navigator.clipboard.writeText(els.jsonPreview.value);
+    });
+    document.getElementById("downloadBtn").addEventListener("click", () => {
+      const problems = validateRouteForExport();
+      if (problems.length) {
+        alert(`不能导出路线：\n${problems.join("\n")}`);
+        renderTargets();
+        return;
+      }
+      const blob = new Blob([els.jsonPreview.value], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${els.routeId.value.trim() || "route_patrol_001"}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    });
+
+    ["dragenter", "dragover"].forEach((name) => {
+      document.addEventListener(name, (event) => {
+        event.preventDefault();
+      });
+    });
+
+    document.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      for (const file of event.dataTransfer.files) {
+        if (/\.ya?ml$/i.test(file.name)) {
+          state.map.yamlName = file.name;
+          try {
+            parseYaml(await file.text());
+          } catch (error) {
+            alert(error.message);
+          }
+        } else if (/\.pgm$/i.test(file.name)) {
+          state.map.pgmName = file.name;
+          parsePgm(await file.arrayBuffer());
+        } else if (/\.json$/i.test(file.name)) {
+          loadRouteJson(JSON.parse(await file.text()));
+        }
+      }
+    });
+
+    window.addEventListener("resize", resizeCanvas);
+    els.activeRouteId.dataset.synced = "true";
+    resizeCanvas();
+    renderAll();
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+

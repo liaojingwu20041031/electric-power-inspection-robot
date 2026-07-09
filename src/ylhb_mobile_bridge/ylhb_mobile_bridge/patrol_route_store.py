@@ -72,6 +72,34 @@ def _validate_pose(value: Any, field: str) -> Dict[str, float]:
     }
 
 
+def _validate_v3_location_pose(
+    pose: Union[Dict[str, float], None],
+    location: Any,
+    field: str,
+) -> Dict[str, float]:
+    if location is None:
+        if pose is None:
+            raise ValueError(f"{field}.pose must be present")
+        return pose
+    location_dict = _require_dict(location, f"{field}.location")
+    if location_dict.get("type") != "map_pose":
+        if pose is None:
+            raise ValueError(f"{field}.pose must be present")
+        return pose
+    if location_dict.get("frame_id", "map") != "map":
+        raise ValueError(f"{field}.location.frame_id must be map")
+    location_pose = {
+        axis: _require_number(location_dict.get(axis), f"{field}.location.{axis}")
+        for axis in ("x", "y", "yaw")
+    }
+    if pose is None:
+        return location_pose
+    for axis in ("x", "y", "yaw"):
+        if abs(pose[axis] - location_pose[axis]) > 1e-6:
+            raise ValueError(f"{field}.pose and location disagree on {axis}")
+    return pose
+
+
 def _validate_nonnegative(value: Any, field: str) -> float:
     number = _require_number(value, field)
     if number < 0.0:
@@ -201,6 +229,13 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
         name = target.get("name", target_id)
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"{field}.name must be a non-empty string")
+        pose = _validate_v3_location_pose(
+            _validate_pose(target.get("pose"), f"{field}.pose")
+            if target.get("pose") is not None
+            else None,
+            target.get("location"),
+            field,
+        ) if version == 3 else _validate_pose(target.get("pose"), f"{field}.pose")
         normalized_targets.append(
             {
                 **target,
@@ -218,10 +253,7 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
                     target.get("inspection_items", []),
                     f"{field}.inspection_items",
                 ),
-                "pose": _validate_pose(
-                    target.get("pose"),
-                    f"{field}.pose",
-                ),
+                "pose": pose,
                 "task_duration_sec": _validate_nonnegative(
                     target.get("task_duration_sec", 0.0),
                     f"{field}.task_duration_sec",

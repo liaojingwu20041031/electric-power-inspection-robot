@@ -69,6 +69,37 @@ def test_valid_v3_optional_business_fields_are_preserved():
     assert normalized["routes"][0]["description"] == "本地巡逻"
 
 
+def test_v3_location_map_pose_can_backfill_missing_pose():
+    data = valid_route_data()
+    data["version"] = 3
+    del data["targets"][0]["pose"]
+    data["targets"][0]["location"] = {
+        "type": "map_pose",
+        "frame_id": "map",
+        "x": 1.0,
+        "y": 2.0,
+        "yaw": 0.5,
+    }
+
+    normalized = validate_route_file(data)
+
+    assert normalized["targets"][0]["pose"] == {"x": 1.0, "y": 2.0, "yaw": 0.5}
+
+
+def test_v3_pose_and_location_mismatch_fails():
+    data = valid_route_data()
+    data["version"] = 3
+    data["targets"][0]["location"] = {
+        "type": "map_pose",
+        "frame_id": "map",
+        "x": data["targets"][0]["pose"]["x"] + 0.01,
+        "y": data["targets"][0]["pose"]["y"],
+        "yaw": data["targets"][0]["pose"]["yaw"],
+    }
+
+    expect_validation_error(data, "pose and location disagree")
+
+
 def test_load_route_file_reads_and_validates_json():
     loaded = load_route_file(str(TEST_ROUTE_PATH))
 

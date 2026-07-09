@@ -254,3 +254,29 @@ ros2 topic echo /gps/rtk_status --once
 
 本仓库用于机器人研发、联调与实验验证。启动底盘前应架空驱动轮或确保周围无人员和障碍物；
 修改轮径、轮距、CAN 映射、URDF 或 Nav2 footprint 后，应重新执行包测试并进行低速实车验证。
+# 安全地图、路线工具与 UI 自启动
+
+Keepout 禁行区入口：
+
+```bash
+python3 scripts/generate_keepout_mask.py --map maps/my_map.yaml --route maps/route_patrol_001.json --output-dir /tmp --name keepout_mask_power_room_a
+python3 scripts/check_keepout_setup.py --map maps/my_map.yaml --route maps/route_patrol_001.json --mask /tmp/keepout_mask_power_room_a.yaml --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml
+./scripts/run_on_jetson.sh navigation_keepout enable_local_keepout:=false
+```
+
+路线安全检查：
+
+```bash
+python3 scripts/validate_route_safety.py --route maps/route_patrol_001.json --nav2-params src/ylhb_base/config/nav2_params.yaml
+```
+
+PC 标注工具在 `tools/route_map_tool/route_map_tool.html`，禁行区直接保存在 route JSON 的 `keepout_zones`，默认导出 v3 路线。
+
+UI 自启动：
+
+```bash
+./scripts/install_ui_autostart.sh
+./scripts/uninstall_ui_autostart.sh
+```
+
+更多细节见 `docs/safety_map_keepout.md` 和 `docs/robot_display_ui.md`。

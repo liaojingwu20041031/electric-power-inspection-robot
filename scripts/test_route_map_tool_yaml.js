@@ -3,7 +3,7 @@ const fs = require("fs");
 const vm = require("vm");
 
 const toolPath =
-  "/home/nvidia/PC_WJ/巡检路线标注工具/route_map_tool.html";
+  "tools/route_map_tool/route_map_tool.html";
 const html = fs.readFileSync(toolPath, "utf8");
 
 function extractFunction(name) {
@@ -37,6 +37,51 @@ function loadParseYaml() {
   return context;
 }
 
+function loadRouteJsonContext() {
+  const inputs = {
+    routeVersion: { value: "3" },
+    startName: { value: "" },
+    startX: { value: "0" },
+    startY: { value: "0" },
+    startYaw: { value: "0" },
+    publishInitialPose: { checked: true },
+    covX: { value: "0.25" },
+    covY: { value: "0.25" },
+    covYaw: { value: "0.0685" },
+    routeId: { value: "route_patrol_001" },
+    activeRouteId: { value: "route_patrol_001", dataset: {} },
+    routeName: { value: "本地巡逻路线" },
+    returnToStart: { checked: true },
+    loopEnabled: { checked: false },
+    loopWait: { value: "600" },
+    maxCycles: { value: "0" },
+    goalTimeout: { value: "120" },
+    maxRetries: { value: "1" },
+    failurePolicy: { value: "abort_and_return_home" },
+  };
+  const context = {
+    state: {
+      zones: [],
+      activeZoneId: null,
+      targets: [],
+      selectedTargetId: null,
+      yawTarget: null,
+      nextTargetNo: 1,
+    },
+    els: inputs,
+    Number,
+    Math,
+  };
+  context.renderAll = function renderAll() {};
+  vm.createContext(context);
+  vm.runInContext(extractFunction("round3"), context);
+  vm.runInContext(extractFunction("numberValue"), context);
+  vm.runInContext(extractFunction("normalizeKeepoutZones"), context);
+  vm.runInContext(extractFunction("loadRouteJson"), context);
+  vm.runInContext(extractFunction("buildRouteJson"), context);
+  return context;
+}
+
 function testBlockOrigin() {
   const context = loadParseYaml();
   context.parseYaml(`image: my_map.pgm
@@ -63,5 +108,78 @@ function testInlineOrigin() {
   assert.deepStrictEqual(Array.from(context.state.map.origin), [-5.89, -13.3, 0]);
 }
 
+function testRemovedOldInputs() {
+  assert(!html.includes("Nav2 " + "参数"));
+  assert(!html.includes("禁行区 " + "JSON"));
+  assert(!html.includes("download" + "ZonesBtn"));
+  assert(!html.includes("function parse" + "Nav2Params"));
+  assert(!html.includes("function load" + "ZonesJson"));
+  assert(!html.includes("function build" + "ZonesJson"));
+}
+
+function testRouteKeepoutZonesRoundTrip() {
+  const context = loadRouteJsonContext();
+  context.state.zones = [
+    {
+      id: "keepout_001",
+      name: "禁行区1",
+      type: "hard_keepout",
+      enabled: true,
+      polygon: [{ x: 1.2345, y: -2.3456 }],
+    },
+  ];
+
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(context.buildRouteJson().keepout_zones)), [
+    {
+      id: "keepout_001",
+      name: "禁行区1",
+      type: "hard_keepout",
+      enabled: true,
+      polygon: [{ x: 1.235, y: -2.346 }],
+    },
+  ]);
+
+  context.loadRouteJson({
+    version: 3,
+    frame_id: "map",
+    keepout_zones: [
+      {
+        id: "keepout_002",
+        name: "禁区2",
+        type: "hard_keepout",
+        enabled: false,
+        polygon: [{ x: "1.2", y: "-2.2" }],
+      },
+    ],
+    targets: [],
+    routes: [{ id: "route_patrol_001", target_ids: [] }],
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(context.state.zones)), [
+    {
+      id: "keepout_002",
+      name: "禁区2",
+      type: "hard_keepout",
+      enabled: false,
+      polygon: [{ x: 1.2, y: -2.2 }],
+    },
+  ]);
+  assert.strictEqual(context.state.activeZoneId, "keepout_002");
+}
+
+function testOldRouteWithoutKeepoutZones() {
+  const context = loadRouteJsonContext();
+  context.loadRouteJson({
+    version: 2,
+    frame_id: "map",
+    targets: [],
+    routes: [{ id: "route_patrol_001", target_ids: [] }],
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(context.state.zones)), []);
+  assert.strictEqual(context.state.activeZoneId, null);
+}
+
 testBlockOrigin();
 testInlineOrigin();
+testRemovedOldInputs();
+testRouteKeepoutZonesRoundTrip();
+testOldRouteWithoutKeepoutZones();

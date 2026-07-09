@@ -79,5 +79,31 @@
       "failure_policy": "abort_and_return_home"
     }
   ],
+  "keepout_zones": [
+    {
+      "id": "keepout_001",
+      "name": "电力间 A 禁行区",
+      "type": "hard_keepout",
+      "enabled": true,
+      "polygon": [
+        {
+          "x": 1.2,
+          "y": -2.2
+        },
+        {
+          "x": 2.2,
+          "y": -2.2
+        },
+        {
+          "x": 2.2,
+          "y": -1.2
+        },
+        {
+          "x": 1.2,
+          "y": -1.2
+        }
+      ]
+    }
+  ],
   "schedules": []
 }

@@ -87,3 +87,20 @@ ros2 topic echo /patrol/event
 ros2 topic info /patrol/command -v
 ros2 topic echo /inspection_ai/system_status
 ```
+# UI 自启动
+
+用户态自启动使用 wrapper，不直接裸跑主 launch：
+
+```bash
+./scripts/install_ui_autostart.sh
+./scripts/start_inspection_ui_autostart.sh
+./scripts/uninstall_ui_autostart.sh
+```
+
+wrapper 会设置 `WS_DIR` 并调用：
+
+```bash
+scripts/run_on_jetson.sh inspection fullscreen:=true
+```
+
+日志写入 `runs/ui_autostart/inspection_ui_YYYYmmdd_HHMMSS.log`。DISPLAY 异常时先看日志里的 `DISPLAY`、`XAUTHORITY`，再手动执行 wrapper 复现。
