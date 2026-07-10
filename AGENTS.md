@@ -1,5 +1,9 @@
 # Agent Preferences
 
 - 默认使用中文回复用户，除非用户明确要求英文或其他语言。
-- 修改本仓库代码或测试前，遵守 `docs/GOOD_TESTING_GUIDE.md`。
-- 需要新增、调整或审查测试时，使用 `skills/good-testing/SKILL.md`。
+- 修改本仓库代码或测试前，必须遵守 `docs/GOOD_TESTING_GUIDE.md`。
+- 涉及新增、调整、删除、审查或运行测试时，必须使用 `skills/good-testing/SKILL.md`。
+- 默认不新增测试文件；只有安全关键、核心契约或已复现回归满足测试硬门槛时才允许新增。
+- 默认只构建受影响包、运行受影响测试文件或单个用例，不得在每次修改后自动运行全仓库 `colcon test`。
+- Nav2 动态、SLAM 质量、传感器噪声、电机方向、视觉精度和真实时延等问题，必须给出实机、仿真或 rosbag 验收步骤，不得用复杂 mock 宣称已经验证。
+- 普通 UI 文案、布局、日志、帮助文本和 Nav2/SLAM 调参不新增自动化测试。
