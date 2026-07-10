@@ -146,7 +146,7 @@
         "max_cycles": 0
       },
       "goal_timeout_sec": 600,
-      "max_retries_per_checkpoint": 3,
+      "max_retries_per_checkpoint": 1,
       "failure_policy": "abort_and_return_home"
     }
   ],
@@ -156,6 +156,7 @@
       "name": "禁行区1",
       "type": "hard_keepout",
       "enabled": true,
+      "mask_padding_m": 0.1,
       "polygon": [
         {
           "x": -1.468,

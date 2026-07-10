@@ -265,6 +265,7 @@ class SystemSupervisorNode(Node):
         self.mobile_bridge_http = 'stopped'
         self.patrol_mode_state = 'idle'
         self.patrol_error = ''
+        self.patrol_warning = ''
         self.startup_step = ''
         self.last_patrol_status: Dict[str, Any] = {}
         self.last_patrol_status_received_at = 0.0
@@ -712,6 +713,7 @@ class SystemSupervisorNode(Node):
         self.patrol_mode_state = 'idle'
         self.startup_step = ''
         self.patrol_error = ''
+        self.patrol_warning = ''
 
     def reload_patrol_route(self) -> None:
         if self.patrol_mode_state in ('running', 'paused', 'returning_home') or self.startup_step == 'returning_home':
@@ -777,6 +779,7 @@ class SystemSupervisorNode(Node):
     def _start_patrol_transaction(self, profile: str, route_id: str, generation: int) -> None:
         self.patrol_mode_state = 'starting'
         self.patrol_error = ''
+        self.patrol_warning = ''
         self.log_info('start_patrol_mode: 按手动流程启动巡逻')
 
         def gate(ok: bool, error: str, *, stop_navigation: bool = True) -> bool:
@@ -953,12 +956,17 @@ class SystemSupervisorNode(Node):
         return self.check_keepout_setup()
 
     def run_route_safety_check(self) -> str:
+        nav2_params_name = (
+            'nav2_params_keepout.yaml'
+            if self.enable_keepout_navigation
+            else 'nav2_params.yaml'
+        )
         command = [
             'python3', os.path.join(self.workspace_dir, 'scripts', 'validate_route_safety.py'),
             '--map', self.default_navigation_map,
             '--route', self.patrol_route_path,
-            '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', 'nav2_params.yaml'),
-            '--warn-distance', '0.20', '--report',
+            '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', nav2_params_name),
+            '--min-keepout-clearance', '0.15', '--warn-distance', '0.20', '--report',
         ]
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
@@ -972,8 +980,11 @@ class SystemSupervisorNode(Node):
             self.patrol_error = f'route safety validation failed: {result.stdout.strip()}'
             return 'error'
         if report.get('status') == 'warning':
-            self.patrol_error = 'warning: ' + '；'.join(report.get('warnings') or [])
+            self.patrol_warning = 'warning: ' + '；'.join(report.get('warnings') or [])
+            self.patrol_error = self.patrol_warning
+            self.log_info(self.patrol_warning)
             return 'warning'
+        self.patrol_warning = ''
         return 'ok'
 
     def generate_keepout_mask(self) -> bool:
@@ -1582,20 +1593,22 @@ class SystemSupervisorNode(Node):
         return (
             self.topic_has_publishers('/keepout_costmap_filter_info')
             and self.topic_has_publishers('/keepout_filter_mask')
-            and self.global_costmap_subscribes('/keepout_costmap_filter_info')
-            and self.global_costmap_subscribes('/keepout_filter_mask')
+            and self.costmap_subscribes('/keepout_costmap_filter_info', 'global_costmap')
+            and self.costmap_subscribes('/keepout_filter_mask', 'global_costmap')
+            and self.costmap_subscribes('/keepout_costmap_filter_info', 'local_costmap')
+            and self.costmap_subscribes('/keepout_filter_mask', 'local_costmap')
         )
 
-    def global_costmap_subscribes(self, topic: str) -> bool:
+    def costmap_subscribes(self, topic: str, costmap_name: str) -> bool:
         try:
-            subs = self.get_subscriptions_info_by_topic(topic)
+            subscriptions = self.get_subscriptions_info_by_topic(topic)
         except Exception:
             return False
-        for sub in subs:
-            node_name = str(getattr(sub, 'node_name', '') or '')
-            node_ns = str(getattr(sub, 'node_namespace', '') or '')
-            full = f'{node_ns}/{node_name}'
-            if 'global_costmap' in full:
+        for subscription in subscriptions:
+            node_name = str(getattr(subscription, 'node_name', '') or '')
+            node_namespace = str(getattr(subscription, 'node_namespace', '') or '')
+            full_name = f'{node_namespace}/{node_name}'
+            if costmap_name in full_name:
                 return True
         return False
 
@@ -1614,12 +1627,11 @@ class SystemSupervisorNode(Node):
 
             self.startup_step = 'waiting_keepout_active'
             self.patrol_error = (
-                '等待 /keepout_costmap_filter_info 和 '
-                '/keepout_filter_mask 与 global costmap 建立连接'
+                '等待 global/local costmap 接收禁行区数据'
             )
             time.sleep(0.25)
 
-        self.patrol_error = '禁行区数据未送达 global costmap'
+        self.patrol_error = '禁行区数据未送达 global/local costmap'
         return False
 
     def log_patrol_start_readiness(self) -> None:
@@ -1789,6 +1801,7 @@ class SystemSupervisorNode(Node):
             'patrol_mode_state': patrol_state,
             'patrol_readiness': patrol_readiness,
             'patrol_error': getattr(self, 'patrol_error', ''),
+            'patrol_warning': getattr(self, 'patrol_warning', ''),
             'startup_step': getattr(self, 'startup_step', ''),
             'startup_step_label': STARTUP_STEP_LABELS.get(
                 getattr(self, 'startup_step', ''),

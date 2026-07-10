@@ -93,8 +93,11 @@ def main():
         args.map_yaml,
     )
     require(route["version"] == 3, "keepout setup requires a v3 route with map binding")
-    require(any(z.get("enabled") and z.get("type") == "hard_keepout" for z in route.get("keepout_zones", [])),
-            "route has no enabled hard_keepout keepout_zones")
+    hard_zones = [
+        zone for zone in route.get("keepout_zones", [])
+        if zone.get("enabled") and zone.get("type") == "hard_keepout"
+    ]
+    require(hard_zones, "route has no enabled hard_keepout keepout_zones")
 
     map_width, map_height, _ = read_pgm(image_path(args.map_yaml, map_meta))
     mask_width, mask_height, mask_pixels = read_pgm(image_path(args.mask_yaml, mask_meta))
@@ -109,38 +112,37 @@ def main():
     require((generated["width"], generated["height"]) == (mask_width, mask_height), "metadata size differs")
     require(generated["resolution"] == mask_meta["resolution"], "metadata resolution differs")
     require(generated["origin"][:2] == mask_meta["origin"][:2], "metadata origin differs")
+    expected_padding = {
+        zone["id"]: float(zone.get("mask_padding_m", 0.10))
+        for zone in hard_zones
+    }
+    require(
+        generated.get("keepout_mask_padding_m") == expected_padding,
+        "metadata keepout mask padding differs; regenerate mask",
+    )
+    require(
+        expected_padding.get("keepout_001") == 0.10,
+        "keepout_001 mask_padding_m must be 0.10",
+    )
 
     params = yaml.safe_load(Path(args.nav2_params).read_text(encoding="utf-8"))
 
     global_params = params["global_costmap"]["global_costmap"]["ros__parameters"]
     global_filters = global_params.get("filters") or []
-    keepout = global_params.get("keepout_filter") or {}
-
-    require(
-        "keepout_filter" in global_filters,
-        "global keepout_filter missing from filters",
-    )
-    require(
-        keepout.get("plugin") == "nav2_costmap_2d::KeepoutFilter",
-        "wrong keepout plugin",
-    )
-    require(
-        keepout.get("filter_info_topic") == "/keepout_costmap_filter_info",
-        "wrong global keepout filter info topic",
-    )
-
     local_params = params["local_costmap"]["local_costmap"]["ros__parameters"]
-    local_filters = local_params.get("filters")
-
-    require(
-        local_filters is None
-        or "keepout_filter" not in local_filters,
-        "local costmap must not load keepout_filter",
-    )
-    require(
-        "keepout_filter" not in local_params,
-        "local costmap contains stale keepout_filter configuration",
-    )
+    local_filters = local_params.get("filters") or []
+    require("keepout_filter" in global_filters, "global costmap must load keepout_filter")
+    require("keepout_filter" in local_filters, "local costmap must load keepout_filter")
+    for name, costmap_params in (("global", global_params), ("local", local_params)):
+        keepout = costmap_params.get("keepout_filter") or {}
+        require(
+            keepout.get("plugin") == "nav2_costmap_2d::KeepoutFilter",
+            f"{name} keepout plugin is invalid",
+        )
+        require(
+            keepout.get("filter_info_topic") == "/keepout_costmap_filter_info",
+            f"{name} keepout filter info topic is invalid",
+        )
 
     if args.ros:
         check_ros()

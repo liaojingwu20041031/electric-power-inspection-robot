@@ -1,0 +1,14 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="1" name="KeepoutSafeNavigation">
+      <PipelineSequence name="NavigateWithoutCostmapClear">
+        <NormalizeGoal input_goal="{goal}" output_goal="{map_goal}" global_frame="map"/>
+        <RateController hz="1.0">
+          <ComputePathToPose goal="{map_goal}" path="{path}" planner_id="GridBased"/>
+        </RateController>
+        <FollowPath path="{path}" controller_id="FollowPath"/>
+      </PipelineSequence>
+      <Wait wait_duration="0.5"/>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

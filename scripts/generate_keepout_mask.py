@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -57,13 +58,38 @@ def point_in_polygon(x, y, polygon):
     return inside
 
 
+def point_segment_distance(x, y, first, second):
+    dx = float(second["x"]) - float(first["x"])
+    dy = float(second["y"]) - float(first["y"])
+    length_sq = dx * dx + dy * dy
+
+    if length_sq <= 1e-12:
+        return math.hypot(x - float(first["x"]), y - float(first["y"]))
+
+    ratio = (
+        (x - float(first["x"])) * dx + (y - float(first["y"])) * dy
+    ) / length_sq
+    ratio = max(0.0, min(1.0, ratio))
+
+    nearest_x = float(first["x"]) + ratio * dx
+    nearest_y = float(first["y"]) + ratio * dy
+    return math.hypot(x - nearest_x, y - nearest_y)
+
+
+def distance_to_polygon(x, y, polygon):
+    return min(
+        point_segment_distance(x, y, polygon[index], polygon[(index + 1) % len(polygon)])
+        for index in range(len(polygon))
+    )
+
+
 def active_hard_zones(route):
     for zone in route.get("keepout_zones", []):
         if zone.get("enabled") is True and zone.get("type") == "hard_keepout":
             polygon = zone.get("polygon")
             if not isinstance(polygon, list) or len(polygon) < 3:
                 raise ValueError(f"zone {zone.get('id', '<unknown>')} needs >=3 polygon points")
-            yield polygon
+            yield zone
 
 
 def sha256(path):
@@ -113,8 +139,15 @@ def main():
         y = origin[1] + (height - (py + 0.5)) * resolution
         for px in range(width):
             x = origin[0] + (px + 0.5) * resolution
-            if any(point_in_polygon(x, y, polygon) for polygon in hard_zones):
-                pixels[py * width + px] = 0
+            for zone in hard_zones:
+                polygon = zone["polygon"]
+                padding = float(zone.get("mask_padding_m", 0.10))
+                if (
+                    point_in_polygon(x, y, polygon)
+                    or distance_to_polygon(x, y, polygon) <= padding + resolution * 0.25
+                ):
+                    pixels[py * width + px] = 0
+                    break
 
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +171,10 @@ def main():
         "height": height,
         "resolution": resolution,
         "origin": [float(origin[0]), float(origin[1]), 0.0],
+        "keepout_mask_padding_m": {
+            zone["id"]: float(zone.get("mask_padding_m", 0.10))
+            for zone in hard_zones
+        },
         "generated_at": __import__("time").time(),
     }
     staged = [

@@ -97,8 +97,18 @@ def polygon_distance(first, second):
     if polygons_intersect(first, second):
         return 0.0
     return min(
-        point_segment_distance(point, other, second[(index + 1) % len(second)])
-        for point in first for index, other in enumerate(second)
+        min(
+            point_segment_distance(point, other, second[(index + 1) % len(second)])
+            for index, other in enumerate(second)
+        )
+        for point in first
+    ) if first else math.inf
+
+
+def polygon_clearance(first, second):
+    return min(
+        polygon_distance(first, second),
+        polygon_distance(second, first),
     )
 
 
@@ -137,7 +147,13 @@ def footprint_map_failures(polygon, metadata, width, height, pixels):
     return failures
 
 
-def validate_route(map_yaml_path, route_path, nav2_path, warn_distance):
+def validate_route(
+    map_yaml_path,
+    route_path,
+    nav2_path,
+    min_keepout_clearance,
+    warn_distance,
+):
     route_raw = json.loads(Path(route_path).read_text(encoding="utf-8"))
     route = validate_route_map_binding(route_raw, map_yaml_path)
     metadata = yaml.safe_load(Path(map_yaml_path).read_text(encoding="utf-8"))
@@ -149,25 +165,38 @@ def validate_route(map_yaml_path, route_path, nav2_path, warn_distance):
     active_route = route_by_id[route.get("active_route_id") or next(iter(route_by_id), "")]
     targets = {item["id"]: item for item in route["targets"]}
     checks = [("start_pose", route["start_pose"]["pose"])] + [(target_id, targets[target_id]["pose"]) for target_id in active_route["target_ids"]]
-    zones = [zone for zone in route["keepout_zones"] if zone["enabled"]]
+    zones = [
+        zone for zone in route["keepout_zones"]
+        if zone["enabled"] and zone["type"] == "hard_keepout"
+    ]
     failures, warnings, distances, target_safety = [], [], [], {}
     for name, pose in checks:
         polygon = transform_footprint(pose, footprint)
         item_failures = footprint_map_failures(polygon, metadata, width, height, pixels)
+        item_distances = []
         for zone in zones:
-            if point_in_polygon(pose, zone["polygon"]):
-                item_failures.append(f"center inside {zone['id']}")
             if polygons_intersect(polygon, zone["polygon"]):
                 item_failures.append(f"footprint intersects {zone['id']}")
-            distance = polygon_distance(polygon, zone["polygon"])
+                distance = 0.0
+            else:
+                distance = polygon_clearance(polygon, zone["polygon"])
+                epsilon = 1e-6
+                if distance + epsilon < min_keepout_clearance:
+                    item_failures.append(
+                        f"footprint clearance to {zone['id']} is {distance:.3f}m, "
+                        f"required {min_keepout_clearance:.3f}m"
+                    )
+                elif distance < warn_distance:
+                    warnings.append(
+                        f"{name} footprint clearance to {zone['id']} is {distance:.3f}m"
+                    )
             distances.append(distance)
-            if distance < warn_distance and not item_failures:
-                warnings.append(f"{name} footprint is closer than {warn_distance:.2f}m to {zone['id']}")
+            item_distances.append(distance)
         failures.extend(f"{name} {failure}" for failure in item_failures)
         if name in targets:
             target_safety[name] = {
                 "validation_status": "unsafe" if item_failures else "warning" if any(warning.startswith(f"{name} ") for warning in warnings) else "ok",
-                "min_keepout_distance_m": min(distances[-len(zones):]) if zones else None,
+                "min_keepout_distance_m": min(item_distances) if item_distances else None,
                 "warnings": [warning for warning in warnings if warning.startswith(f"{name} ")],
             }
     status = "unsafe" if failures else "warning" if warnings else "ok"
@@ -193,12 +222,19 @@ def main():
     parser.add_argument("--map", required=True, dest="map_yaml")
     parser.add_argument("--route", required=True)
     parser.add_argument("--nav2-params", required=True)
+    parser.add_argument("--min-keepout-clearance", type=float, default=0.15)
     parser.add_argument("--warn-distance", type=float, default=0.20)
     parser.add_argument("--write-back", action="store_true")
     parser.add_argument("--report", action="store_true")
     args = parser.parse_args()
     try:
-        route, status, failures, warnings = validate_route(args.map_yaml, args.route, args.nav2_params, args.warn_distance)
+        route, status, failures, warnings = validate_route(
+            args.map_yaml,
+            args.route,
+            args.nav2_params,
+            args.min_keepout_clearance,
+            args.warn_distance,
+        )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
