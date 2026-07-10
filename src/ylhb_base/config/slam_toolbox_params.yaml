@@ -25,7 +25,7 @@ slam_toolbox:
     throttle_scans: 1 # 降采样接收到的激光雷达扫描数据，如设为2则每收到两次处理一次
     transform_publish_period: 0.02 # Publish 50Hz TF，发布 map 到 odom 坐标变换的周期(秒)
     map_update_interval: 1.0 # 加快地图更新频率，发布地图更新显示的周期(秒)
-    resolution: 0.05 # 地图分辨率，即每个像素代表0.05米
+    resolution: 0.025 # 地图分辨率，即每个像素代表2.5cm
     min_laser_range: 0.20 # 基于 RPLIDAR A2M8 规格书，最小有效测距 0.2m，避免扫到自身结构
     max_laser_range: 12.0 # 基于 RPLIDAR A2M8 规格书，最大有效测距 12.0m，超出直接忽略
     minimum_time_interval: 0.1 # 允许更高频的数据处理（雷达是10Hz），两次处理激光雷达扫描间的最小时间间隔(秒)
@@ -37,9 +37,9 @@ slam_toolbox:
     # General Parameters
     use_scan_matching: true # 是否使用激光扫描匹配以优化里程计，true能提高精度
     use_scan_barycenter: true # 扫描匹配中是否使用扫描重心计算
-    minimum_travel_distance: 0.10 # 小车移动10cm即加入关键帧，避免地图长时间不更新
-    minimum_travel_heading: 0.10 # 小车旋转约5.7度即加入关键帧，改善原地转向建图
-    scan_buffer_size: 10 # 缓存的激光扫描帧数，用于回环检测
+    minimum_travel_distance: 0.05 # 小车移动5cm即加入关键帧，避免地图长时间不更新
+    minimum_travel_heading: 0.05 # 小车旋转约2.9度即加入关键帧，改善原地转向建图
+    scan_buffer_size: 20 # 缓存20帧激光扫描，用于回环检测
     scan_buffer_maximum_scan_distance: 12.0 # 缓存中激光扫描的最大距离
     link_match_minimum_response_fine: 0.1 # 建立相邻节点连接时的最小匹配响应值
     link_scan_maximum_distance: 1.5 # 连接节点时激光扫描数据之间的最大距离
@@ -57,7 +57,7 @@ slam_toolbox:
 
     # Correlation Parameters - Loop Closure Parameters
     loop_search_space_dimension: 8.0 # 闭环检测的搜索窗口大小
-    loop_search_space_resolution: 0.05 # 闭环检测搜索空间的分辨率
+    loop_search_space_resolution: 0.025 # 闭环检测搜索空间的分辨率，即2.5cm
     loop_search_space_smear_deviation: 0.03 # 闭环检测搜索空间的模糊偏差
 
     # Scan Matcher Parameters
@@ -66,7 +66,7 @@ slam_toolbox:
 
     fine_search_angle_offset: 0.00349 # 精细搜索的角度范围(弧度)
     coarse_search_angle_offset: 0.349 # 粗略搜索的角度范围(弧度)
-    coarse_angle_resolution: 0.0349 # 粗略搜索的角度分辨率(弧度)
+    coarse_angle_resolution: 0.01745 # 粗略搜索的角度分辨率(弧度)，约1度
     minimum_angle_penalty: 0.9 # 相关性匹配计算的角度偏差惩罚系数
     minimum_distance_penalty: 0.5 # 相关性匹配计算的位移偏差惩罚系数
     use_response_expansion: true # 在匹配中增加一倍的分辨率来寻找响应峰值

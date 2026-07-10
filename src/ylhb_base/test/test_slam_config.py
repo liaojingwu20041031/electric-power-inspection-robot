@@ -19,5 +19,15 @@ def test_slam_adds_keyframes_for_small_robot_motion():
     config = yaml.safe_load(SLAM_CONFIG_PATH.read_text(encoding="utf-8"))
     params = config["slam_toolbox"]["ros__parameters"]
 
-    assert params["minimum_travel_distance"] <= 0.10
-    assert params["minimum_travel_heading"] <= 0.10
+    assert params["resolution"] == 0.025
+    assert params["minimum_travel_distance"] == 0.05
+    assert params["minimum_travel_heading"] == 0.05
+    assert params["scan_buffer_size"] == 20
+    assert params["loop_search_space_resolution"] == 0.025
+    assert params["coarse_angle_resolution"] == 0.01745
+
+    assert params["throttle_scans"] == 1
+    assert params["minimum_time_interval"] == 0.1
+    assert params["correlation_search_space_resolution"] == 0.01
+    assert params["use_scan_matching"] is True
+    assert params["do_loop_closing"] is True
