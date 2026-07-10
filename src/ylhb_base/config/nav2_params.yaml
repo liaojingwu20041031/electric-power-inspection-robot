@@ -231,13 +231,8 @@ local_costmap:
       footprint: "[ [0.18650, 0.00000], [0.16543, 0.10591], [0.10544, 0.19569], [0.01566, 0.25568], [-0.09025, 0.27675], [-0.19616, 0.25568], [-0.28594, 0.19569], [-0.34593, 0.10591], [-0.36700, 0.00000], [-0.34593, -0.10591], [-0.28594, -0.19569], [-0.19616, -0.25568], [-0.09025, -0.27675], [0.01566, -0.25568], [0.10544, -0.19569], [0.16543, -0.10591] ]"
       # 给实车圆柱外廓保留 10mm 参数边界；居中避障主要交给膨胀层软代价。
       footprint_padding: 0.01
-      # 局部 keepout 先保留配置，实机低速验证后再单独开启。
-      filters: ["keepout_filter"]
-      keepout_filter:
-        plugin: "nav2_costmap_2d::KeepoutFilter"
-        enabled: False
-        filter_info_topic: "keepout_costmap_filter_info"
-        transform_tolerance: 0.1
+      # 当前版本只让 global costmap 使用禁行区。
+      filters: []
       # 局部地图只使用障碍层和膨胀层。
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -282,8 +277,7 @@ global_costmap:
       filters: ["keepout_filter"]
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
-        enabled: False
-        filter_info_topic: "keepout_costmap_filter_info"
+        filter_info_topic: "/keepout_costmap_filter_info"
         transform_tolerance: 0.1
       # 全局地图使用静态地图、激光障碍层和膨胀层，让全局规划可绕开临时障碍。
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]

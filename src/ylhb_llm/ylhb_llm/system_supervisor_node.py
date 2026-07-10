@@ -724,8 +724,8 @@ class SystemSupervisorNode(Node):
             if not self.start_process_raw('navigation'):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
-            if not self.wait_for_nav2_active_ready(25.0) or not self.wait_for_keepout_active_ready(12.0):
-                self.set_result('reload_patrol_route', False, '路线刷新失败: Nav2/Keepout lifecycle 未激活')
+            if not self.wait_for_keepout_runtime_ready(12.0):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
         self.publish_patrol_command('reload')
         self.set_result('reload_patrol_route', True, '路线与禁行区已整体刷新')
@@ -837,11 +837,10 @@ class SystemSupervisorNode(Node):
         if gate_warnings:
             self.fail_patrol_start('；'.join(gate_warnings), generation=generation)
             return
-        if not gate(self.wait_for_nav2_active_ready(self.patrol_timeout('patrol_nav2_timeout_sec', 25.0)), '未确认 Nav2 lifecycle active'):
-            return
-        if not gate(self.wait_for_keepout_active_ready(12.0), '未确认 Keepout lifecycle active'):
-            return
-        if not gate(self.wait_for_nav2_action_ready(self.patrol_timeout('patrol_nav2_timeout_sec', 25.0)), 'Nav2 动作服务未就绪'):
+        if not gate(
+            self.wait_for_keepout_runtime_ready(12.0),
+            '禁行区数据未送达 global costmap',
+        ):
             return
         self.startup_step = 'executor_ready'
         request_id = f"{self.startup_id}_command"
@@ -1125,7 +1124,6 @@ class SystemSupervisorNode(Node):
         processes = getattr(self, 'processes', {})
         bringup = processes.get('bringup')
         navigation = processes.get('navigation')
-        executor = processes.get('patrol_executor')
         readiness = {
             'bringup': bool(bringup and bringup.is_running()),
             'navigation': bool(navigation and navigation.is_running()),
@@ -1137,10 +1135,13 @@ class SystemSupervisorNode(Node):
             'map': self.topic_has_publishers('/map'),
             'map_to_odom': self.has_map_to_odom(),
             'initialpose_subscribers': self.topic_has_subscribers('/initialpose'),
-            'localization_active': self.is_localization_active(),
+
+            # 使用真实功能信号，不再调用 lifecycle service
+            'localization_active': self.has_map_to_odom(),
             'nav2_action': self.has_nav2_action(),
-            'nav2_active': self.is_nav2_active(),
-            'keepout_active': self.is_keepout_active() if getattr(self, 'enable_keepout_navigation', False) else True,
+            'nav2_active': self.has_nav2_action(),
+            'keepout_active': self.has_keepout_runtime_ready(),
+
             'patrol_status': self.topic_has_publishers('/patrol/status'),
             'initial_pose_published': self.has_initial_pose_published(),
         }
@@ -1509,6 +1510,38 @@ class SystemSupervisorNode(Node):
             self.topic_has_publishers(topic) or self.topic_has_subscribers(topic)
             for topic in action_topics
         )
+
+    def has_keepout_runtime_ready(self) -> bool:
+        if not getattr(self, 'enable_keepout_navigation', False):
+            return True
+
+        return (
+            self.topic_has_publishers('/keepout_costmap_filter_info')
+            and self.topic_has_subscribers('/keepout_costmap_filter_info')
+            and self.topic_has_publishers('/keepout_filter_mask')
+            and self.topic_has_subscribers('/keepout_filter_mask')
+        )
+
+    def wait_for_keepout_runtime_ready(
+        self,
+        timeout_sec: float = 12.0,
+    ) -> bool:
+        deadline = time.monotonic() + timeout_sec
+
+        while time.monotonic() < deadline:
+            if self.has_keepout_runtime_ready():
+                self.patrol_error = ''
+                return True
+
+            self.startup_step = 'waiting_keepout_active'
+            self.patrol_error = (
+                '等待 /keepout_costmap_filter_info 和 '
+                '/keepout_filter_mask 与 global costmap 建立连接'
+            )
+            time.sleep(0.25)
+
+        self.patrol_error = '禁行区数据未送达 global costmap'
+        return False
 
     def log_patrol_start_readiness(self) -> None:
         try:

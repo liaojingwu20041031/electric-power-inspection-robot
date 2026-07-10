@@ -124,7 +124,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'yaml_filename': keepout_mask,
-            'topic_name': 'keepout_filter_mask',
+            'topic_name': '/keepout_filter_mask',
         }],
     ))
     ld.add_action(LifecycleNode(
@@ -136,9 +136,9 @@ def generate_launch_description():
         condition=IfCondition(enable_keepout),
         parameters=[{
             'use_sim_time': use_sim_time,
-            'filter_info_topic': 'keepout_costmap_filter_info',
+            'filter_info_topic': '/keepout_costmap_filter_info',
             'type': 0,
-            'mask_topic': 'keepout_filter_mask',
+            'mask_topic': '/keepout_filter_mask',
             'base': 0.0,
             'multiplier': 1.0,
         }],
