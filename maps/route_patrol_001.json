@@ -141,12 +141,12 @@
       ],
       "return_to_start": true,
       "loop": {
-        "enabled": false,
-        "wait_sec": 600,
+        "enabled": true,
+        "wait_sec": 60,
         "max_cycles": 0
       },
-      "goal_timeout_sec": 120,
-      "max_retries_per_checkpoint": 1,
+      "goal_timeout_sec": 600,
+      "max_retries_per_checkpoint": 3,
       "failure_policy": "abort_and_return_home"
     }
   ],
