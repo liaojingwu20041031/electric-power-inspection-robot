@@ -1263,6 +1263,8 @@ class SystemSupervisorNode(Node):
         if not getattr(self, 'enable_keepout_navigation', False):
             return True
         if self.check_keepout_setup():
+            self._log_keepout_zone_status()
+            self.patrol_error = ''
             return True
         error = self.patrol_error
         config_error_keywords = ('keepout_filter', 'keepout plugin', 'filter info topic')
@@ -1278,7 +1280,26 @@ class SystemSupervisorNode(Node):
         ):
             self.patrol_error = self.patrol_error or 'global/local keepout mask missing'
             return False
-        return self.check_keepout_setup()
+        if not self.check_keepout_setup():
+            return False
+        self._log_keepout_zone_status()
+        self.patrol_error = ''
+        return True
+
+    def _log_keepout_zone_status(self) -> None:
+        try:
+            route = load_route_file(self.patrol_route_path)
+            zones = [
+                zone for zone in route.get('keepout_zones', [])
+                if zone.get('enabled') is True and zone.get('type') == 'hard_keepout'
+            ]
+        except Exception:
+            return
+        if not zones:
+            self.log_info(
+                'keepout route contains no enabled zones; '
+                'using all-free global/local masks'
+            )
 
     def run_route_safety_check(self) -> str:
         nav2_params_name = (
@@ -1333,6 +1354,7 @@ class SystemSupervisorNode(Node):
         if result.returncode != 0:
             self.patrol_error = f'keepout mask generation failed: {result.stdout.strip()}'
             return False
+        self.patrol_error = ''
         return True
 
     def check_keepout_setup(self) -> bool:
@@ -1347,6 +1369,7 @@ class SystemSupervisorNode(Node):
         if result.returncode != 0:
             self.patrol_error = f'keepout setup failed: {result.stdout.strip()}'
             return False
+        self.patrol_error = ''
         return True
 
     def publish_3d_mapping_command(self, command: str) -> None:

@@ -139,8 +139,6 @@ def main():
         zone for zone in route.get("keepout_zones", [])
         if zone.get("enabled") is True and zone.get("type") == "hard_keepout"
     ]
-    if not zones:
-        raise ValueError("route has no enabled hard_keepout zones")
 
     nav2 = yaml.safe_load(nav2_path.read_text(encoding="utf-8"))
     global_params = nav2["global_costmap"]["global_costmap"]["ros__parameters"]
@@ -192,6 +190,8 @@ def main():
             for zone in zones
         },
     }
+    metadata["keepout_mode"] = "active" if zones else "all_free"
+    metadata["enabled_hard_keepout_count"] = len(zones)
     global_pixels = make_pixels(width, height, resolution, origin, zones, global_padding)
     local_pixels = make_pixels(width, height, resolution, origin, zones, local_padding)
     staged = [
@@ -210,12 +210,17 @@ def main():
 
     print(f"circumscribed radius: {radius:.3f} m")
     print(f"footprint padding: {footprint_padding:.3f} m")
-    for zone in zones:
-        zone_id = zone["id"]
-        print(
-            f"{zone_id}: local={local_padding[zone_id]:.3f} m, "
-            f"global={global_padding[zone_id]:.3f} m"
-        )
+    print(f"keepout mode: {metadata['keepout_mode']}")
+    print(f"enabled hard keepout zones: {metadata['enabled_hard_keepout_count']}")
+    if zones:
+        for zone in zones:
+            zone_id = zone["id"]
+            print(
+                f"{zone_id}: local={local_padding[zone_id]:.3f} m, "
+                f"global={global_padding[zone_id]:.3f} m"
+            )
+    else:
+        print("no enabled hard_keepout zones; generated all-free global/local masks")
     print(outputs["global_yaml"])
     print(outputs["local_yaml"])
 

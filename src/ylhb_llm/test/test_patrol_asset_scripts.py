@@ -35,7 +35,8 @@ def test_keepout_metadata_rejects_changed_route(tmp_path):
     output = tmp_path / "keepout"
     generated = subprocess.run(
         [sys.executable, SCRIPTS / "generate_keepout_mask.py", "--map", map_yaml,
-         "--route", route, "--output-dir", output, "--name", "mask"],
+         "--route", route, "--output-dir", output,
+         "--nav2-params", ROOT / "src/ylhb_base/config/nav2_params_keepout.yaml"],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     assert generated.returncode == 0, generated.stdout
@@ -43,9 +44,9 @@ def test_keepout_metadata_rejects_changed_route(tmp_path):
 
     checked = subprocess.run(
         [sys.executable, SCRIPTS / "check_keepout_setup.py", "--map", map_yaml,
-         "--route", route, "--mask", output / "mask.yaml",
-         "--nav2-params", ROOT / "src/ylhb_base/config/nav2_params.yaml"],
+         "--route", route, "--output-dir", output,
+         "--nav2-params", ROOT / "src/ylhb_base/config/nav2_params_keepout.yaml"],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     assert checked.returncode != 0
-    assert "route hash differs" in checked.stdout
+    assert "route metadata is stale" in checked.stdout

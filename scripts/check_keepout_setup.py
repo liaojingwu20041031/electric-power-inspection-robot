@@ -28,7 +28,7 @@ def image_path(yaml_path, metadata):
     return image if image.is_absolute() else Path(yaml_path).parent / image
 
 
-def pgm_size(path):
+def read_pgm(path):
     data = Path(path).read_bytes()
     index = 0
 
@@ -49,7 +49,11 @@ def pgm_size(path):
 
     magic, width, height, maximum = token(), int(token()), int(token()), int(token())
     require(magic == "P5" and maximum == 255, f"invalid PGM: {path}")
-    return width, height
+    while index < len(data) and chr(data[index]).isspace():
+        index += 1
+    pixels = data[index:]
+    require(len(pixels) == width * height, f"invalid PGM pixel count: {path}")
+    return width, height, pixels
 
 
 def main():
@@ -81,20 +85,35 @@ def main():
         zone for zone in route.get("keepout_zones", [])
         if zone.get("enabled") and zone.get("type") == "hard_keepout"
     ]
-    require(zones, "route has no enabled hard_keepout zones")
-    map_size = pgm_size(image_path(map_path, map_meta))
+    map_width, map_height, _ = read_pgm(image_path(map_path, map_meta))
+    mask_pixels: dict = {}
     for name, yaml_path, meta in (
         ("global", global_yaml_path, global_meta),
         ("local", local_yaml_path, local_meta),
     ):
-        require(pgm_size(image_path(yaml_path, meta)) == map_size, f"{name} mask size differs")
+        width, height, pixels = read_pgm(image_path(yaml_path, meta))
+        require((width, height) == (map_width, map_height), f"{name} mask size differs")
         require(float(meta["resolution"]) == float(map_meta["resolution"]), f"{name} mask resolution differs")
         require(meta["origin"][:2] == map_meta["origin"][:2], f"{name} mask origin differs")
+        mask_pixels[name] = pixels
 
     require(generated["map_yaml_sha256"] == sha256(map_path), "map metadata is stale")
     require(generated["map_pgm_sha256"] == sha256(image_path(map_path, map_meta)), "map image metadata is stale")
     require(generated["route_sha256"] == sha256(route_path), "route metadata is stale")
     require(generated["nav2_params_sha256"] == sha256(nav2_path), "Nav2 metadata is stale")
+
+    expected_zone_ids = {str(zone["id"]) for zone in zones}
+    actual_zone_ids = set((generated.get("zones") or {}).keys())
+    require(actual_zone_ids == expected_zone_ids, "metadata zones differ from route")
+    require(
+        generated.get("enabled_hard_keepout_count") == len(zones),
+        "metadata keepout zone count differs",
+    )
+    expected_mode = "active" if zones else "all_free"
+    require(
+        generated.get("keepout_mode") == expected_mode,
+        "metadata keepout mode differs",
+    )
 
     params = yaml.safe_load(nav2_path.read_text(encoding="utf-8"))
     global_params = params["global_costmap"]["global_costmap"]["ros__parameters"]
@@ -111,6 +130,15 @@ def main():
         zone_meta = generated["zones"][zone["id"]]
         require(math.isclose(zone_meta["local_padding_m"], padding), f"{zone['id']} local padding differs")
         require(math.isclose(zone_meta["global_padding_m"], radius + footprint_padding + padding + resolution), f"{zone['id']} global padding differs")
+
+    global_pixels = mask_pixels["global"]
+    local_pixels = mask_pixels["local"]
+    if zones:
+        require(0 in global_pixels, "global mask contains no keepout pixels")
+        require(0 in local_pixels, "local mask contains no keepout pixels")
+    else:
+        require(set(global_pixels) == {254}, "global mask is not all-free for zoneless route")
+        require(set(local_pixels) == {254}, "local mask is not all-free for zoneless route")
 
     expected_topics = {
         "global": "/keepout_global_filter_info",
