@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from PyQt5.QtCore import QUrl
+from PyQt5.QtCore import QTimer, QUrl
 from PyQt5.QtGui import QGuiApplication
 from rclpy.executors import SingleThreadedExecutor
 
@@ -42,6 +42,9 @@ def main(args: Optional[List[str]] = None) -> None:
     app = QGuiApplication(sys.argv[:1])
     signal.signal(signal.SIGINT, lambda *_args: app.quit())
     signal.signal(signal.SIGTERM, lambda *_args: app.quit())
+    signal_timer = QTimer(app)
+    signal_timer.timeout.connect(lambda: None)
+    signal_timer.start(100)
     signals = UiSignals()
     bridge = InspectionDisplayRosBridge(signals)
     backend = UiBackend(bridge, UiState())

@@ -2,8 +2,10 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -57,6 +59,16 @@ def generate_launch_description():
     voice_wait_wake_threshold_multiplier = LaunchConfiguration('voice_wait_wake_threshold_multiplier')
     voice_tts_tail_pause_sec = LaunchConfiguration('voice_tts_tail_pause_sec')
     voice_debug_save_asr_audio = LaunchConfiguration('voice_debug_save_asr_audio')
+
+    display_ui = Node(
+        package='ylhb_llm',
+        executable='inspection_display_ui_node',
+        name='inspection_display_ui_node',
+        output='screen',
+        condition=IfCondition(enable_display_ui),
+        additional_env={'DISPLAY': display, 'XAUTHORITY': xauthority},
+        parameters=[params_file, {'initial_system_mode': initial_system_mode, 'fullscreen': ParameterValue(fullscreen, value_type=bool), 'display': display, 'force_local_display': ParameterValue(force_local_display, value_type=bool)}],
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument('params_file', default_value=default_params),
@@ -188,13 +200,12 @@ def generate_launch_description():
             condition=IfCondition(enable_system_supervisor),
             parameters=[params_file, {'workspace_dir': workspace_dir_arg, 'map_output_dir': map_output_dir, 'perception_model_path': perception_model_path, 'enable_keepout_navigation': ParameterValue(enable_keepout_navigation, value_type=bool), 'keepout_mask_path': keepout_mask_path, 'patrol_route_path': patrol_route_path, 'keepout_route_path': keepout_route_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'audio_device': audio_device, 'audio_input_device': audio_input_device, 'audio_output_device': audio_output_device, 'asr_model': asr_model, 'tts_model': tts_model, 'tts_voice': tts_voice, 'tts_language_type': tts_language_type, 'dashscope_base_url': dashscope_base_url}],
         ),
-        Node(
-            package='ylhb_llm',
-            executable='inspection_display_ui_node',
-            name='inspection_display_ui_node',
-            output='screen',
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=display_ui,
+                on_exit=[EmitEvent(event=Shutdown(reason='inspection display UI exited'))],
+            ),
             condition=IfCondition(enable_display_ui),
-            additional_env={'DISPLAY': display, 'XAUTHORITY': xauthority},
-            parameters=[params_file, {'initial_system_mode': initial_system_mode, 'fullscreen': ParameterValue(fullscreen, value_type=bool), 'display': display, 'force_local_display': ParameterValue(force_local_display, value_type=bool)}],
         ),
+        display_ui,
     ])

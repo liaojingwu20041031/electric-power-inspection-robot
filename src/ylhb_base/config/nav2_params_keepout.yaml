@@ -246,7 +246,7 @@ local_costmap:
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
         enabled: True
-        filter_info_topic: "/keepout_costmap_filter_info"
+        filter_info_topic: "/keepout_local_filter_info"
         transform_tolerance: 0.2
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -292,7 +292,7 @@ global_costmap:
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
         enabled: True
-        filter_info_topic: "/keepout_costmap_filter_info"
+        filter_info_topic: "/keepout_global_filter_info"
         transform_tolerance: 0.1
       # 全局地图使用静态地图、激光障碍层和膨胀层，让全局规划可绕开临时障碍。
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import ast
 import hashlib
 import json
-import subprocess
+import math
 import sys
 from pathlib import Path
 
@@ -13,7 +14,21 @@ sys.path.insert(0, str(ROOT / "src" / "ylhb_mobile_bridge"))
 from ylhb_mobile_bridge.patrol_route_store import validate_route_map_binding  # noqa: E402
 
 
-def read_pgm(path):
+def require(condition, message):
+    if not condition:
+        raise SystemExit(f"ERROR: {message}")
+
+
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def image_path(yaml_path, metadata):
+    image = Path(metadata["image"])
+    return image if image.is_absolute() else Path(yaml_path).parent / image
+
+
+def pgm_size(path):
     data = Path(path).read_bytes()
     index = 0
 
@@ -32,120 +47,80 @@ def read_pgm(path):
             index += 1
         return data[start:index].decode("ascii")
 
-    magic = token()
-    width = int(token())
-    height = int(token())
-    max_value = int(token())
-    while index < len(data) and chr(data[index]).isspace():
-        index += 1
-    pixels = data[index:]
-    if magic != "P5" or max_value != 255 or len(pixels) != width * height:
-        raise ValueError(f"invalid PGM: {path}")
-    return width, height, pixels
-
-
-def image_path(yaml_path, metadata):
-    image = Path(metadata["image"])
-    return image if image.is_absolute() else Path(yaml_path).parent / image
-
-
-def require(condition, message):
-    if not condition:
-        raise SystemExit(f"ERROR: {message}")
-
-
-def sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def check_ros():
-    commands = [
-        ["ros2", "topic", "info", "/keepout_costmap_filter_info", "--no-daemon"],
-        ["ros2", "topic", "info", "/keepout_filter_mask", "--no-daemon"],
-        ["ros2", "lifecycle", "get", "/keepout_filter_mask_server"],
-        ["ros2", "lifecycle", "get", "/costmap_filter_info_server"],
-    ]
-    for command in commands:
-        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        require(result.returncode == 0, f"{' '.join(command)} failed:\n{result.stdout}")
+    magic, width, height, maximum = token(), int(token()), int(token()), int(token())
+    require(magic == "P5" and maximum == 255, f"invalid PGM: {path}")
+    return width, height
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--map", required=True, dest="map_yaml")
     parser.add_argument("--route", required=True)
-    parser.add_argument("--mask", required=True, dest="mask_yaml")
     parser.add_argument("--nav2-params", required=True)
-    parser.add_argument("--metadata", default="")
-    parser.add_argument("--ros", action="store_true")
+    parser.add_argument("--output-dir", default="maps/keepout")
     args = parser.parse_args()
 
-    for path in (args.map_yaml, args.route, args.mask_yaml, args.nav2_params):
-        require(Path(path).expanduser().exists(), f"missing {path}")
+    map_path = Path(args.map_yaml).expanduser()
+    route_path = Path(args.route).expanduser()
+    nav2_path = Path(args.nav2_params).expanduser()
+    output_dir = Path(args.output_dir).expanduser()
+    global_yaml_path = output_dir / "keepout_global_mask.yaml"
+    local_yaml_path = output_dir / "keepout_local_mask.yaml"
+    metadata_path = output_dir / "keepout_masks.metadata.json"
+    for path in (map_path, route_path, nav2_path, global_yaml_path, local_yaml_path, metadata_path):
+        require(path.exists(), f"missing {path}")
 
-    map_meta = yaml.safe_load(Path(args.map_yaml).read_text(encoding="utf-8"))
-    mask_meta = yaml.safe_load(Path(args.mask_yaml).read_text(encoding="utf-8"))
-    metadata_path = Path(args.metadata).expanduser() if args.metadata else Path(args.mask_yaml).with_suffix('.metadata.json')
-    require(metadata_path.exists(), f"missing {metadata_path}")
+    map_meta = yaml.safe_load(map_path.read_text(encoding="utf-8"))
+    global_meta = yaml.safe_load(global_yaml_path.read_text(encoding="utf-8"))
+    local_meta = yaml.safe_load(local_yaml_path.read_text(encoding="utf-8"))
     generated = json.loads(metadata_path.read_text(encoding="utf-8"))
     route = validate_route_map_binding(
-        json.loads(Path(args.route).read_text(encoding="utf-8")),
-        args.map_yaml,
+        json.loads(route_path.read_text(encoding="utf-8")), map_path
     )
-    require(route["version"] == 3, "keepout setup requires a v3 route with map binding")
-    hard_zones = [
+    zones = [
         zone for zone in route.get("keepout_zones", [])
         if zone.get("enabled") and zone.get("type") == "hard_keepout"
     ]
-    require(hard_zones, "route has no enabled hard_keepout keepout_zones")
+    require(zones, "route has no enabled hard_keepout zones")
+    map_size = pgm_size(image_path(map_path, map_meta))
+    for name, yaml_path, meta in (
+        ("global", global_yaml_path, global_meta),
+        ("local", local_yaml_path, local_meta),
+    ):
+        require(pgm_size(image_path(yaml_path, meta)) == map_size, f"{name} mask size differs")
+        require(float(meta["resolution"]) == float(map_meta["resolution"]), f"{name} mask resolution differs")
+        require(meta["origin"][:2] == map_meta["origin"][:2], f"{name} mask origin differs")
 
-    map_width, map_height, _ = read_pgm(image_path(args.map_yaml, map_meta))
-    mask_width, mask_height, mask_pixels = read_pgm(image_path(args.mask_yaml, mask_meta))
-    require((mask_width, mask_height) == (map_width, map_height), "mask size differs from map")
-    require(mask_meta["resolution"] == map_meta["resolution"], "mask resolution differs from map")
-    require(mask_meta["origin"][:2] == map_meta["origin"][:2] and mask_meta["origin"][2] == 0,
-            "mask origin x/y must match map and yaw must be 0")
-    require(0 in mask_pixels, "mask contains no black keepout pixels")
-    require(generated["map_yaml_sha256"] == sha256(args.map_yaml), "metadata map yaml hash differs")
-    require(generated["map_pgm_sha256"] == sha256(image_path(args.map_yaml, map_meta)), "metadata map pgm hash differs")
-    require(generated["route_sha256"] == sha256(args.route), "metadata route hash differs")
-    require((generated["width"], generated["height"]) == (mask_width, mask_height), "metadata size differs")
-    require(generated["resolution"] == mask_meta["resolution"], "metadata resolution differs")
-    require(generated["origin"][:2] == mask_meta["origin"][:2], "metadata origin differs")
-    expected_padding = {
-        zone["id"]: float(zone.get("mask_padding_m", 0.05))
-        for zone in hard_zones
-    }
-    require(
-        all(padding > 0.0 for padding in expected_padding.values()),
-        "hard_keepout mask padding must be positive",
-    )
-    require(
-        generated.get("keepout_mask_padding_m") == expected_padding,
-        "metadata keepout mask padding differs; regenerate mask",
-    )
+    require(generated["map_yaml_sha256"] == sha256(map_path), "map metadata is stale")
+    require(generated["map_pgm_sha256"] == sha256(image_path(map_path, map_meta)), "map image metadata is stale")
+    require(generated["route_sha256"] == sha256(route_path), "route metadata is stale")
+    require(generated["nav2_params_sha256"] == sha256(nav2_path), "Nav2 metadata is stale")
 
-    params = yaml.safe_load(Path(args.nav2_params).read_text(encoding="utf-8"))
-
+    params = yaml.safe_load(nav2_path.read_text(encoding="utf-8"))
     global_params = params["global_costmap"]["global_costmap"]["ros__parameters"]
-    global_filters = global_params.get("filters") or []
     local_params = params["local_costmap"]["local_costmap"]["ros__parameters"]
-    local_filters = local_params.get("filters") or []
-    require("keepout_filter" in global_filters, "global costmap must load keepout_filter")
-    require("keepout_filter" in local_filters, "local costmap must load keepout_filter")
-    for name, costmap_params in (("global", global_params), ("local", local_params)):
-        keepout = costmap_params.get("keepout_filter") or {}
-        require(
-            keepout.get("plugin") == "nav2_costmap_2d::KeepoutFilter",
-            f"{name} keepout plugin is invalid",
-        )
-        require(
-            keepout.get("filter_info_topic") == "/keepout_costmap_filter_info",
-            f"{name} keepout filter info topic is invalid",
-        )
+    footprint = ast.literal_eval(global_params["footprint"])
+    require(footprint == ast.literal_eval(local_params["footprint"]), "global/local footprint differs")
+    footprint_padding = float(global_params.get("footprint_padding", 0.0))
+    require(footprint_padding == float(local_params.get("footprint_padding", 0.0)), "global/local footprint padding differs")
+    radius = max(math.hypot(float(x), float(y)) for x, y in footprint)
+    require(math.isclose(generated["circumscribed_radius_m"], radius), "footprint radius metadata is stale")
+    resolution = float(map_meta["resolution"])
+    for zone in zones:
+        padding = float(zone.get("mask_padding_m", 0.05))
+        zone_meta = generated["zones"][zone["id"]]
+        require(math.isclose(zone_meta["local_padding_m"], padding), f"{zone['id']} local padding differs")
+        require(math.isclose(zone_meta["global_padding_m"], radius + footprint_padding + padding + resolution), f"{zone['id']} global padding differs")
 
-    if args.ros:
-        check_ros()
+    expected_topics = {
+        "global": "/keepout_global_filter_info",
+        "local": "/keepout_local_filter_info",
+    }
+    for name, costmap in (("global", global_params), ("local", local_params)):
+        require("keepout_filter" in (costmap.get("filters") or []), f"{name} keepout filter missing")
+        require(costmap["keepout_filter"]["filter_info_topic"] == expected_topics[name], f"{name} keepout topic differs")
+        require(float(costmap["inflation_layer"]["cost_scaling_factor"]) == 6.0, f"{name} inflation scaling changed")
+        require(float(costmap["inflation_layer"]["inflation_radius"]) == 0.20, f"{name} inflation radius changed")
     print("keepout setup OK")
 
 

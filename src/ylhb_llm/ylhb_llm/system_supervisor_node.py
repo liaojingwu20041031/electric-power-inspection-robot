@@ -120,8 +120,10 @@ NAVIGATION_LIFECYCLE_NODES = (
     '/velocity_smoother',
 )
 KEEPOUT_LIFECYCLE_NODES = (
-    '/keepout_filter_mask_server',
-    '/costmap_filter_info_server',
+    '/keepout_global_mask_server',
+    '/keepout_global_filter_info_server',
+    '/keepout_local_mask_server',
+    '/keepout_local_filter_info_server',
 )
 LIFECYCLE_MANAGER_LOCALIZATION = '/lifecycle_manager_localization/manage_nodes'
 LIFECYCLE_MANAGER_NAVIGATION = '/lifecycle_manager_navigation/manage_nodes'
@@ -133,6 +135,13 @@ SHUTDOWN_ORDER = (
     'mapping',
     'bringup',
     'mobile_bridge',
+)
+PATROL_SHUTDOWN_ORDER = (
+    'patrol_executor',
+    'navigation',
+    'perception',
+    'zed',
+    'bringup',
 )
 
 
@@ -195,6 +204,7 @@ class ManagedProcess:
         self.name = name
         self.command = command
         self.process: Optional[subprocess.Popen] = None
+        self.pgid: Optional[int] = None
         self.last_message = ''
         self.last_exit_code: Optional[int] = None
         self.last_started_at = 0.0
@@ -266,6 +276,13 @@ class SystemSupervisorNode(Node):
         self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
         self.enable_keepout_navigation = bool(self.get_parameter('enable_keepout_navigation').value)
         self.keepout_mask_path = os.path.expanduser(str(self.get_parameter('keepout_mask_path').value))
+        keepout_output_dir = os.path.dirname(self.keepout_mask_path)
+        self.keepout_global_mask_path = os.path.join(
+            keepout_output_dir, 'keepout_global_mask.yaml'
+        )
+        self.keepout_local_mask_path = os.path.join(
+            keepout_output_dir, 'keepout_local_mask.yaml'
+        )
         patrol_route_path = str(self.get_parameter('patrol_route_path').value).strip()
         keepout_route_path = str(self.get_parameter('keepout_route_path').value).strip()
         self.patrol_route_path = os.path.abspath(os.path.expanduser(patrol_route_path or keepout_route_path or os.path.join(self.workspace_dir, 'maps', 'route_patrol_001.json')))
@@ -542,12 +559,10 @@ class SystemSupervisorNode(Node):
             self.publish_patrol_command('cancel')
             self.publish_zero_velocity()
             time.sleep(0.2)
-            self.stop_process('patrol_executor')
-            self.stop_process('navigation')
-            self.stop_process('bringup')
+            self.cleanup_patrol_stack()
             self.reset_patrol_mode_state()
             self.publish_mode('ready')
-            self.set_result(command, True, '巡逻、导航与底盘已停止')
+            self.set_result(command, True, '巡逻、导航、感知与底盘已停止')
             return
         if command == 'start_3d_mapping':
             self.start_3d_mapping()
@@ -632,6 +647,12 @@ class SystemSupervisorNode(Node):
             if proc.is_running():
                 self.set_result_locked(f'start_{name}', True, f'{START_PROCESS_MESSAGES.get(name, name)}，已在运行')
                 return True
+        if proc.pgid is not None and self.process_group_alive(proc.pgid):
+            success, message = self.terminate_process_group(proc)
+            if not success:
+                self.set_result(f'start_{name}', False, message)
+                return False
+        with self.lock:
             cmd = self.wrap_command(proc.command)
             proc.last_command = proc.command
             try:
@@ -642,6 +663,7 @@ class SystemSupervisorNode(Node):
                     cwd=self.workspace_dir,
                     preexec_fn=os.setsid,
                 )
+                proc.pgid = proc.process.pid
             except Exception as exc:
                 proc.last_error = f'failed to start: {exc}'
                 proc.last_message = proc.last_error
@@ -668,25 +690,32 @@ class SystemSupervisorNode(Node):
             return False
         return self.start_process_raw('navigation')
 
-    def stop_process(self, name: str) -> None:
+    def stop_process(
+        self,
+        name: str,
+        *,
+        ros_cleanup: bool = True,
+        report: bool = True,
+    ) -> None:
         if name in ('bringup', 'navigation', 'patrol_executor'):
             self.cancel_patrol_start()
         if name == 'llm' and self.embedded_task_layer:
-            self.set_result(
-                'stop_llm',
-                True,
-                'AI task layer is embedded in inspection launch; keep it running with UI and voice.',
-            )
+            if report and self.ros_context_valid():
+                self.set_result(
+                    'stop_llm',
+                    True,
+                    'AI task layer is embedded in inspection launch; keep it running with UI and voice.',
+                )
             return
         proc = self.processes[name]
-        with self.lock:
-            if not proc.is_running():
-                self.set_result_locked(f'stop_{name}', True, f'{name} already stopped')
-                return
-            assert proc.process is not None
-            pid = proc.process.pid
-            process = proc.process
+        group_alive = proc.pgid is not None and self.process_group_alive(proc.pgid)
+        if ros_cleanup and group_alive and self.ros_context_valid():
+            self.cleanup_process_ros_interfaces(name)
+        success, message = self.terminate_process_group(proc)
+        if report and self.ros_context_valid():
+            self.set_result(f'stop_{name}', success, message)
 
+    def cleanup_process_ros_interfaces(self, name: str) -> None:
         if name == 'navigation':
             self.manage_lifecycle_nodes(
                 LIFECYCLE_MANAGER_NAVIGATION,
@@ -697,27 +726,71 @@ class SystemSupervisorNode(Node):
         if name == 'bringup':
             self.stop_lidar_motor()
 
-        try:
-            process_group = os.getpgid(pid)
-            os.killpg(process_group, signal.SIGINT)
-            try:
-                process.wait(timeout=6.0)
-            except subprocess.TimeoutExpired:
-                os.killpg(process_group, signal.SIGTERM)
-                try:
-                    process.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process_group, signal.SIGKILL)
-                    process.wait(timeout=2.0)
+    def terminate_process_group(self, proc: ManagedProcess) -> tuple[bool, str]:
+        with self.lock:
+            pgid = proc.pgid
+            process = proc.process
+        if process is not None:
+            process.poll()
+        if pgid is None or not self.process_group_alive(pgid):
             with self.lock:
+                proc.process = None
+                proc.pgid = None
                 proc.last_message = 'stopped'
-            self.set_result(f'stop_{name}', True, f'{name} stopped')
+            return True, f'{proc.name} already stopped'
+
+        try:
+            for sig, timeout_sec in (
+                (signal.SIGINT, 6.0),
+                (signal.SIGTERM, 2.0),
+                (signal.SIGKILL, 2.0),
+            ):
+                os.killpg(pgid, sig)
+                deadline = time.monotonic() + timeout_sec
+                while self.process_group_alive(pgid) and time.monotonic() < deadline:
+                    if process is not None:
+                        process.poll()
+                    time.sleep(0.05)
+                if not self.process_group_alive(pgid):
+                    break
+            if self.process_group_alive(pgid):
+                raise RuntimeError(f'process group {pgid} survived SIGKILL')
+            if process is not None:
+                process.poll()
+            with self.lock:
+                proc.process = None
+                proc.pgid = None
+                proc.last_message = 'stopped'
+            return True, f'{proc.name} stopped'
         except ProcessLookupError:
             with self.lock:
+                proc.process = None
+                proc.pgid = None
                 proc.last_message = 'stopped'
-            self.set_result(f'stop_{name}', True, f'{name} stopped')
+            return True, f'{proc.name} stopped'
         except Exception as exc:
-            self.set_result(f'stop_{name}', False, f'Failed to stop {name}: {exc}')
+            return False, f'Failed to stop {proc.name}: {exc}'
+
+    @staticmethod
+    def process_group_alive(pgid: int) -> bool:
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+    def cleanup_patrol_stack(self, *, ros_cleanup: bool = True) -> None:
+        for name in PATROL_SHUTDOWN_ORDER:
+            if name in self.processes:
+                self.stop_process(name, ros_cleanup=ros_cleanup, report=False)
+
+    def ros_context_valid(self) -> bool:
+        try:
+            return rclpy.ok(context=self.context)
+        except Exception:
+            return False
 
     def stop_lidar_motor(self) -> bool:
         try:
@@ -758,15 +831,7 @@ class SystemSupervisorNode(Node):
         self.cancel_patrol_start()
         self.publish_patrol_command('cancel')
         self.publish_zero_velocity()
-        names = ('patrol_executor', 'navigation', 'perception', 'zed', 'bringup')
-        if all(not self.processes[name].is_running() for name in names):
-            self.reset_patrol_mode_state()
-            self.publish_mode('ready')
-            self.set_result('stop_robot_stack', True, '巡检运动、导航和感知节点已停止，AI/UI 保持运行')
-            return
-        for name in names:
-            self.stop_process(name)
-            time.sleep(0.2)
+        self.cleanup_patrol_stack()
         self.reset_patrol_mode_state()
         self.publish_mode('ready')
         self.set_result('stop_robot_stack', True, '巡检运动、导航和感知节点已停止，AI/UI 保持运行')
@@ -844,25 +909,27 @@ class SystemSupervisorNode(Node):
         self.patrol_warning = ''
         self.log_info('start_patrol_mode: 按手动流程启动巡逻')
 
-        def gate(ok: bool, error: str, *, stop_navigation: bool = True) -> bool:
+        def gate(ok: bool, error: str) -> bool:
             if not self.is_current_patrol_start(generation):
                 return False
             if ok:
                 return True
-            self.fail_patrol_start(self.patrol_error or error, stop_navigation, generation)
+            self.fail_patrol_start(self.patrol_error or error, generation)
             return False
 
         self.startup_step = 'starting_bringup'
         if not self.start_process('bringup'):
-            self.fail_patrol_start('底盘与雷达启动失败', stop_navigation=False, generation=generation)
+            self.fail_patrol_start('底盘与雷达启动失败', generation=generation)
             return
-        if not gate(self.wait_for_core_sensors(self.patrol_timeout('patrol_bringup_timeout_sec', 25.0)), '底盘与传感器未就绪', stop_navigation=False):
+        if not gate(self.wait_for_core_sensors(self.patrol_timeout('patrol_bringup_timeout_sec', 25.0)), '底盘与传感器未就绪'):
             return
 
         if profile == 'inspection':
             self.startup_step = 'starting_inspection'
-            self.start_process('zed')
-            self.start_process('perception')
+            for name in ('zed', 'perception'):
+                if not self.start_process(name):
+                    self.fail_patrol_start(f'{name} 启动失败', generation=generation)
+                    return
 
         self.startup_step = 'starting_navigation'
         if not self.start_navigation_process():
@@ -986,17 +1053,17 @@ class SystemSupervisorNode(Node):
             self.startup_step = 'patrol_command_sent'
         self.set_result('start_patrol_mode', True, '巡逻启动命令已发送')
 
-    def fail_patrol_start(self, error: str, stop_navigation: bool = True, generation: Optional[int] = None) -> None:
+    def fail_patrol_start(self, error: str, generation: Optional[int] = None) -> None:
         if generation is not None and generation != getattr(self, 'startup_generation', generation):
             return
         self.patrol_mode_state = 'failed'
         self.startup_step = 'patrol_failed'
         self.patrol_error = error
         self.cancel_patrol_start()
-        if getattr(self, 'processes', {}).get('patrol_executor'):
-            self.stop_process('patrol_executor')
-        if stop_navigation and getattr(self, 'processes', {}).get('navigation'):
-            self.stop_process('navigation')
+        self.cleanup_patrol_stack()
+        self.patrol_mode_state = 'failed'
+        self.startup_step = 'patrol_failed'
+        self.patrol_error = error
         self.set_result('start_patrol_mode', False, '巡逻启动失败: ' + error)
 
     def publish_patrol_command(self, command: str, request_id: str = '', route_id: str = '') -> None:
@@ -1026,7 +1093,9 @@ class SystemSupervisorNode(Node):
         if getattr(self, 'enable_keepout_navigation', False):
             return (
                 f'ros2 launch ylhb_base navigation_keepout.launch.py '
-                f'map:={default_map} keepout_mask:={self.keepout_mask_path} '
+                f'map:={default_map} '
+                f'keepout_global_mask:={self.keepout_global_mask_path} '
+                f'keepout_local_mask:={self.keepout_local_mask_path} '
                 'autostart:=false'
             )
         return f'ros2 launch ylhb_base navigation.launch.py map:={default_map}'
@@ -1064,8 +1133,14 @@ class SystemSupervisorNode(Node):
         if any(kw in error for kw in config_error_keywords):
             return False
         self.startup_step = 'generating_keepout_mask'
-        if not self.generate_keepout_mask() or not os.path.exists(self.keepout_mask_path):
-            self.patrol_error = self.patrol_error or f'keepout mask missing: {self.keepout_mask_path}'
+        if not self.generate_keepout_mask() or not all(
+            os.path.exists(path)
+            for path in (
+                self.keepout_global_mask_path,
+                self.keepout_local_mask_path,
+            )
+        ):
+            self.patrol_error = self.patrol_error or 'global/local keepout mask missing'
             return False
         return self.check_keepout_setup()
 
@@ -1102,15 +1177,17 @@ class SystemSupervisorNode(Node):
         return 'ok'
 
     def generate_keepout_mask(self) -> bool:
-        output_dir = os.path.dirname(self.keepout_mask_path)
-        mask_name = os.path.splitext(os.path.basename(self.keepout_mask_path))[0]
+        output_dir = os.path.dirname(self.keepout_global_mask_path)
         command = [
             'python3',
             os.path.join(self.workspace_dir, 'scripts', 'generate_keepout_mask.py'),
             '--map', self.default_navigation_map,
             '--route', self.patrol_route_path,
+            '--nav2-params', os.path.join(
+                self.workspace_dir, 'src', 'ylhb_base', 'config',
+                'nav2_params_keepout.yaml',
+            ),
             '--output-dir', output_dir,
-            '--name', mask_name,
         ]
         try:
             result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -1127,8 +1204,8 @@ class SystemSupervisorNode(Node):
             'python3', os.path.join(self.workspace_dir, 'scripts', 'check_keepout_setup.py'),
             '--map', self.default_navigation_map,
             '--route', self.patrol_route_path,
-            '--mask', self.keepout_mask_path,
             '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', 'nav2_params_keepout.yaml'),
+            '--output-dir', os.path.dirname(self.keepout_global_mask_path),
         ]
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if result.returncode != 0:
@@ -1265,14 +1342,15 @@ class SystemSupervisorNode(Node):
         processes = getattr(self, 'processes', {})
         bringup = processes.get('bringup')
         navigation = processes.get('navigation')
+        sensors = self.core_sensor_status()
         readiness = {
             'bringup': bool(bringup and bringup.is_running()),
             'navigation': bool(navigation and navigation.is_running()),
             'executor': self.is_patrol_executor_ready(),
             'route_file': self.has_patrol_route_file(),
-            'odom': self.topic_has_publishers('/odom'),
-            'scan': self.topic_has_publishers('/scan'),
-            'tf': self.topic_has_publishers('/tf'),
+            'odom': sensors['odom_publisher'] and sensors['odom_fresh'],
+            'scan': sensors['scan_publisher'] and sensors['scan_fresh'],
+            'tf': sensors['odom_to_base'] and sensors['base_to_laser'],
             'map': self.topic_has_publishers('/map'),
             'map_to_odom': self.has_map_to_odom(),
             'initialpose_subscribers': self.topic_has_subscribers('/initialpose'),
@@ -1346,10 +1424,27 @@ class SystemSupervisorNode(Node):
     def wait_for_core_sensors(self, timeout_sec: float = 25.0) -> bool:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
-            if self.wait_for_readiness_keys(('bringup', 'odom', 'scan', 'tf'), 0.3, '') and self.has_fresh_core_sensors():
+            if self.process_exited_before_readiness('bringup'):
+                return False
+            sensors = self.core_sensor_status()
+            if all((
+                sensors['odom_publisher'],
+                sensors['odom_fresh'],
+                sensors['scan_publisher'],
+                sensors['scan_fresh'],
+                sensors['odom_to_base'],
+                sensors['base_to_laser'],
+            )):
+                self.patrol_error = ''
                 return True
-            self.startup_step = 'waiting_odom'
-            self.patrol_error = '等待 1 秒内的新 /odom、/scan 与基础 TF'
+            if not sensors['odom_publisher'] or not sensors['odom_fresh']:
+                self.startup_step = 'waiting_odom'
+            elif not sensors['scan_publisher'] or not sensors['scan_fresh']:
+                self.startup_step = 'waiting_scan'
+            else:
+                self.startup_step = 'waiting_tf'
+            self.patrol_error = self.core_sensor_wait_message(sensors)
+            time.sleep(0.25)
         return False
 
     def wait_for_navigation_ready(self, timeout_sec: float = 35.0) -> bool:
@@ -1703,12 +1798,49 @@ class SystemSupervisorNode(Node):
             return default
 
     def has_fresh_core_sensors(self) -> bool:
+        sensors = self.core_sensor_status()
+        return all((
+            sensors['odom_publisher'],
+            sensors['odom_fresh'],
+            sensors['scan_publisher'],
+            sensors['scan_fresh'],
+            sensors['odom_to_base'],
+            sensors['base_to_laser'],
+        ))
+
+    def core_sensor_status(self) -> Dict[str, Any]:
         freshness = self.patrol_timeout('patrol_sensor_freshness_sec', 1.0)
         now = time.time()
+        last_odom = getattr(self, 'last_odom_received_at', 0.0)
+        last_scan = getattr(self, 'last_scan_received_at', 0.0)
+        odom_age = now - last_odom if last_odom else None
+        scan_age = now - last_scan if last_scan else None
+        return {
+            'freshness_sec': freshness,
+            'odom_publisher': self.topic_has_publishers('/odom'),
+            'odom_age_sec': odom_age,
+            'odom_fresh': odom_age is not None and odom_age <= freshness,
+            'scan_publisher': self.topic_has_publishers('/scan'),
+            'scan_age_sec': scan_age,
+            'scan_fresh': scan_age is not None and scan_age <= freshness,
+            'odom_to_base': self.has_transform('odom', 'base_footprint'),
+            'base_to_laser': self.has_transform('base_footprint', 'laser_link'),
+        }
+
+    @staticmethod
+    def core_sensor_wait_message(status: Dict[str, Any]) -> str:
+        def age_text(value: Any) -> str:
+            return '未收到' if value is None else f'{float(value):.2f}s'
+
         return (
-            now - getattr(self, 'last_odom_received_at', 0.0) <= freshness
-            and now - getattr(self, 'last_scan_received_at', 0.0) <= freshness
-            and self.has_base_sensor_tf()
+            '传感器门控未就绪: '
+            f"/odom发布者={'有' if status['odom_publisher'] else '无'}, "
+            f"odom消息年龄={age_text(status['odom_age_sec'])}; "
+            f"/scan发布者={'有' if status['scan_publisher'] else '无'}, "
+            f"scan消息年龄={age_text(status['scan_age_sec'])}; "
+            f"odom→base_footprint={'有' if status['odom_to_base'] else '无'}; "
+            f"base_footprint→laser_link={'有' if status['base_to_laser'] else '无'}; "
+            f"新鲜度要求≤{float(status['freshness_sec']):.2f}s"
         )
 
     def has_base_sensor_tf(self) -> bool:
@@ -1855,22 +1987,26 @@ class SystemSupervisorNode(Node):
         return all(self.keepout_subscription_status().values())
 
     def keepout_subscription_status(self) -> Dict[str, bool]:
-        info_topic = '/keepout_costmap_filter_info'
-        mask_topic = '/keepout_filter_mask'
-        info_published = self.topic_has_publishers(info_topic)
-        mask_published = self.topic_has_publishers(mask_topic)
+        global_info = '/keepout_global_filter_info'
+        global_mask = '/keepout_global_mask'
+        local_info = '/keepout_local_filter_info'
+        local_mask = '/keepout_local_mask'
         return {
-            'global_info_subscribed': info_published and self.costmap_subscribes(
-                info_topic, 'global_costmap'
+            'global_info_subscribed': self.topic_has_publishers(global_info)
+            and self.costmap_subscribes(
+                global_info, 'global_costmap'
             ),
-            'global_mask_subscribed': mask_published and self.costmap_subscribes(
-                mask_topic, 'global_costmap'
+            'global_mask_subscribed': self.topic_has_publishers(global_mask)
+            and self.costmap_subscribes(
+                global_mask, 'global_costmap'
             ),
-            'local_info_subscribed': info_published and self.costmap_subscribes(
-                info_topic, 'local_costmap'
+            'local_info_subscribed': self.topic_has_publishers(local_info)
+            and self.costmap_subscribes(
+                local_info, 'local_costmap'
             ),
-            'local_mask_subscribed': mask_published and self.costmap_subscribes(
-                mask_topic, 'local_costmap'
+            'local_mask_subscribed': self.topic_has_publishers(local_mask)
+            and self.costmap_subscribes(
+                local_mask, 'local_costmap'
             ),
         }
 
@@ -2112,6 +2248,7 @@ class SystemSupervisorNode(Node):
                 'startup_id': getattr(self, 'startup_id', ''),
                 'startup_started_at': getattr(self, 'startup_started_at', 0.0),
                 'startup_generation': getattr(self, 'startup_generation', 0),
+                'sensor_gate': self.core_sensor_status(),
                 'odom_age_sec': max(0.0, time.time() - getattr(self, 'last_odom_received_at', 0.0)),
                 'scan_age_sec': max(0.0, time.time() - getattr(self, 'last_scan_received_at', 0.0)),
                 'amcl_age_sec': max(0.0, time.time() - getattr(self, 'last_amcl_received_at', 0.0)),
@@ -2142,8 +2279,13 @@ class SystemSupervisorNode(Node):
 
     def destroy_node(self) -> bool:
         self.cancel_patrol_start()
-        self.publish_patrol_command('cancel')
-        self.publish_zero_velocity()
+        ros_cleanup = self.ros_context_valid()
+        if ros_cleanup:
+            try:
+                self.publish_patrol_command('cancel')
+                self.publish_zero_velocity()
+            except Exception:
+                ros_cleanup = False
         extras = [
             name
             for name in self.processes
@@ -2156,7 +2298,7 @@ class SystemSupervisorNode(Node):
         )
         for name in shutdown_order:
             try:
-                self.stop_process(name)
+                self.stop_process(name, ros_cleanup=ros_cleanup, report=False)
             except Exception:
                 pass
         return super().destroy_node()

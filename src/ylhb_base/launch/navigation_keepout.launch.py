@@ -8,13 +8,18 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import LifecycleNode, Node
 
 
-def fail_if_keepout_mask_missing(context):
-    mask_path = os.path.expanduser(LaunchConfiguration('keepout_mask').perform(context))
-    if os.path.exists(mask_path):
+def fail_if_keepout_masks_missing(context):
+    mask_paths = [
+        os.path.expanduser(LaunchConfiguration(name).perform(context))
+        for name in ('keepout_global_mask', 'keepout_local_mask')
+    ]
+    missing = [path for path in mask_paths if not os.path.exists(path)]
+    if not missing:
         return []
+    paths = ', '.join(missing)
     return [
-        LogInfo(msg=f'ERROR: keepout mask {mask_path} does not exist. Run scripts/generate_keepout_mask.py first.'),
-        Shutdown(reason=f'keepout mask missing: {mask_path}'),
+        LogInfo(msg=f'ERROR: keepout masks missing: {paths}. Run scripts/generate_keepout_mask.py first.'),
+        Shutdown(reason=f'keepout masks missing: {paths}'),
     ]
 
 
@@ -40,7 +45,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     params_file = LaunchConfiguration('params_file')
     autostart = LaunchConfiguration('autostart')
-    keepout_mask = LaunchConfiguration('keepout_mask')
+    keepout_global_mask = LaunchConfiguration('keepout_global_mask')
+    keepout_local_mask = LaunchConfiguration('keepout_local_mask')
 
     declare_map_yaml_cmd = DeclareLaunchArgument(
         'map',
@@ -62,10 +68,15 @@ def generate_launch_description():
         default_value='false',
         description='Let the supervisor activate localization and navigation in order')
 
-    declare_keepout_mask_cmd = DeclareLaunchArgument(
-        'keepout_mask',
-        default_value=os.path.join(workspace_dir, 'maps', 'keepout', 'keepout_mask_power_room_a.yaml'),
-        description='Full path to keepout mask yaml file')
+    declare_keepout_global_mask_cmd = DeclareLaunchArgument(
+        'keepout_global_mask',
+        default_value=os.path.join(workspace_dir, 'maps', 'keepout', 'keepout_global_mask.yaml'),
+        description='Global planner keepout mask yaml')
+
+    declare_keepout_local_mask_cmd = DeclareLaunchArgument(
+        'keepout_local_mask',
+        default_value=os.path.join(workspace_dir, 'maps', 'keepout', 'keepout_local_mask.yaml'),
+        description='Local controller keepout mask yaml')
 
     bringup_reminder = LogInfo(
         msg=(
@@ -95,32 +106,60 @@ def generate_launch_description():
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_params_file_cmd)
     ld.add_action(declare_autostart_cmd)
-    ld.add_action(declare_keepout_mask_cmd)
-    ld.add_action(OpaqueFunction(function=fail_if_keepout_mask_missing))
+    ld.add_action(declare_keepout_global_mask_cmd)
+    ld.add_action(declare_keepout_local_mask_cmd)
+    ld.add_action(OpaqueFunction(function=fail_if_keepout_masks_missing))
     ld.add_action(nav2_bringup_cmd)
     ld.add_action(LifecycleNode(
         package='nav2_map_server',
         executable='map_server',
-        name='keepout_filter_mask_server',
+        name='keepout_global_mask_server',
         namespace='',
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'yaml_filename': keepout_mask,
-            'topic_name': '/keepout_filter_mask',
+            'yaml_filename': keepout_global_mask,
+            'topic_name': '/keepout_global_mask',
         }],
     ))
     ld.add_action(LifecycleNode(
         package='nav2_map_server',
         executable='costmap_filter_info_server',
-        name='costmap_filter_info_server',
+        name='keepout_global_filter_info_server',
         namespace='',
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'filter_info_topic': '/keepout_costmap_filter_info',
+            'filter_info_topic': '/keepout_global_filter_info',
             'type': 0,
-            'mask_topic': '/keepout_filter_mask',
+            'mask_topic': '/keepout_global_mask',
+            'base': 0.0,
+            'multiplier': 1.0,
+        }],
+    ))
+    ld.add_action(LifecycleNode(
+        package='nav2_map_server',
+        executable='map_server',
+        name='keepout_local_mask_server',
+        namespace='',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'yaml_filename': keepout_local_mask,
+            'topic_name': '/keepout_local_mask',
+        }],
+    ))
+    ld.add_action(LifecycleNode(
+        package='nav2_map_server',
+        executable='costmap_filter_info_server',
+        name='keepout_local_filter_info_server',
+        namespace='',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'filter_info_topic': '/keepout_local_filter_info',
+            'type': 0,
+            'mask_topic': '/keepout_local_mask',
             'base': 0.0,
             'multiplier': 1.0,
         }],
@@ -134,8 +173,10 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'autostart': True,
             'node_names': [
-                'keepout_filter_mask_server',
-                'costmap_filter_info_server',
+                'keepout_global_mask_server',
+                'keepout_global_filter_info_server',
+                'keepout_local_mask_server',
+                'keepout_local_filter_info_server',
             ],
         }],
     ))
