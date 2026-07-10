@@ -112,6 +112,7 @@ class UiBackend(QObject):
         self.route_preview_loader = route_preview_loader
         self.patrol_task_builder = patrol_task_builder
         self._route_preview_thread: Optional[threading.Thread] = None
+        self._route_preview_mode = 'route_focus'
         self._control_unlocked = False
         self._last_control_activity = 0.0
         self._last_system_command_at: Dict[str, float] = {}
@@ -452,6 +453,10 @@ class UiBackend(QObject):
     @pyqtProperty(bool, notify=routePreviewChanged)
     def routePreviewLoading(self) -> bool:
         return bool(self.state.route_preview.get('loading'))
+
+    @pyqtProperty(str, notify=routePreviewChanged)
+    def routePreviewMode(self) -> str:
+        return self._route_preview_mode
 
     @pyqtProperty(str, notify=systemStatusChanged)
     def patrolStartProfile(self) -> str:
@@ -802,6 +807,13 @@ class UiBackend(QObject):
     def refreshRoutePreview(self) -> None:
         self._start_route_preview_refresh(force=True)
 
+    @pyqtSlot(str)
+    def setRoutePreviewMode(self, mode: str) -> None:
+        if mode not in {'route_focus', 'full_map'} or mode == self._route_preview_mode:
+            return
+        self._route_preview_mode = mode
+        self._start_route_preview_refresh(force=True)
+
     @pyqtSlot()
     def finishStartup(self) -> None:
         if self._ui_ready:
@@ -830,7 +842,12 @@ class UiBackend(QObject):
 
     def _refresh_route_preview_worker(self, force: bool) -> None:
         try:
-            preview = self.route_preview_loader(force=force)
+            try:
+                preview = self.route_preview_loader(
+                    force=force, preview_mode=self._route_preview_mode
+                )
+            except TypeError:
+                preview = self.route_preview_loader(force=force)
         except Exception as exc:
             preview = {
                 'ok': False,

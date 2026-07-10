@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -53,6 +54,10 @@ def require(condition, message):
         raise SystemExit(f"ERROR: {message}")
 
 
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def check_ros():
     commands = [
         ["ros2", "topic", "info", "/keepout_costmap_filter_info", "--no-daemon"],
@@ -71,6 +76,7 @@ def main():
     parser.add_argument("--route", required=True)
     parser.add_argument("--mask", required=True, dest="mask_yaml")
     parser.add_argument("--nav2-params", required=True)
+    parser.add_argument("--metadata", default="")
     parser.add_argument("--ros", action="store_true")
     args = parser.parse_args()
 
@@ -79,6 +85,9 @@ def main():
 
     map_meta = yaml.safe_load(Path(args.map_yaml).read_text(encoding="utf-8"))
     mask_meta = yaml.safe_load(Path(args.mask_yaml).read_text(encoding="utf-8"))
+    metadata_path = Path(args.metadata).expanduser() if args.metadata else Path(args.mask_yaml).with_suffix('.metadata.json')
+    require(metadata_path.exists(), f"missing {metadata_path}")
+    generated = json.loads(metadata_path.read_text(encoding="utf-8"))
     route = validate_route_map_binding(
         json.loads(Path(args.route).read_text(encoding="utf-8")),
         args.map_yaml,
@@ -94,6 +103,12 @@ def main():
     require(mask_meta["origin"][:2] == map_meta["origin"][:2] and mask_meta["origin"][2] == 0,
             "mask origin x/y must match map and yaw must be 0")
     require(0 in mask_pixels, "mask contains no black keepout pixels")
+    require(generated["map_yaml_sha256"] == sha256(args.map_yaml), "metadata map yaml hash differs")
+    require(generated["map_pgm_sha256"] == sha256(image_path(args.map_yaml, map_meta)), "metadata map pgm hash differs")
+    require(generated["route_sha256"] == sha256(args.route), "metadata route hash differs")
+    require((generated["width"], generated["height"]) == (mask_width, mask_height), "metadata size differs")
+    require(generated["resolution"] == mask_meta["resolution"], "metadata resolution differs")
+    require(generated["origin"][:2] == mask_meta["origin"][:2], "metadata origin differs")
 
     params = yaml.safe_load(Path(args.nav2_params).read_text(encoding="utf-8"))
     global_params = params["global_costmap"]["global_costmap"]["ros__parameters"]

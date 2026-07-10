@@ -15,6 +15,7 @@ ScrollView {
     property bool tasksVisible: false
     property bool eventsVisible: false
     property bool inspectionProfile: backend.patrolStartProfile === "inspection"
+    property var previewMap: backend.routePreview.map_identity || ({})
     property int startupStageIndex: stageIndex(backend.systemStatus.startup_step || "")
     property var readinessItems: [
         { "label": "底盘", "key": "bringup" },
@@ -171,6 +172,12 @@ ScrollView {
         }
 
         Label { text: "路线预览"; color: Theme.text; font.pixelSize: 20; font.bold: true }
+        RowLayout {
+            Layout.fillWidth: true
+            Button { text: "路线聚焦"; checkable: true; checked: backend.routePreviewMode === "route_focus"; onClicked: backend.setRoutePreviewMode("route_focus") }
+            Button { text: "完整地图"; checkable: true; checked: backend.routePreviewMode === "full_map"; onClicked: backend.setRoutePreviewMode("full_map") }
+            Label { Layout.fillWidth: true; color: Theme.muted; text: "地图 " + (root.previewMap.image || "-") + " / 分辨率 " + String(backend.routePreview.map_resolution || "-") + "m / 目标 " + String(backend.routePreview.target_count || 0) + " / 禁行区 " + String(backend.routePreview.keepout_count || 0) + " / " + String((backend.routePreview.safety_warnings || []).length) + " 条安全提示" }
+        }
         RoutePreviewViewer {
             id: routePreviewPane
             Layout.fillWidth: true

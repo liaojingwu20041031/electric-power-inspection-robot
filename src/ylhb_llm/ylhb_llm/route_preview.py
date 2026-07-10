@@ -130,13 +130,15 @@ def _read_pgm_size(path: Path) -> Tuple[int, int]:
         return int(tokens[0]), int(tokens[1])
 
 
-def _route_signature(paths: Iterable[Path], active_route_id: str) -> str:
-    digest = hashlib.sha1(active_route_id.encode("utf-8"))
+def _route_signature(
+    paths: Iterable[Path], active_route_id: str, preview_mode: str
+) -> str:
+    digest = hashlib.sha256(
+        f"route-preview-v4:{preview_mode}:{active_route_id}:footprint-v1:warn=0.20".encode("utf-8")
+    )
     for path in paths:
-        stat = path.stat()
         digest.update(str(path).encode("utf-8"))
-        digest.update(str(stat.st_mtime_ns).encode("ascii"))
-        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
 
 
@@ -191,6 +193,7 @@ def _draw_preview(
     origin: Tuple[float, float],
     route_data: Dict[str, Any],
     route: Dict[str, Any],
+    preview_mode: str = "route_focus",
 ) -> None:
     from PIL import Image, ImageDraw, ImageFont
 
@@ -199,6 +202,28 @@ def _draw_preview(
     except Exception:
         image = Image.new("RGB", (width, height), "#F3F4F6")
     width, height = image.size
+    source_height = height
+    crop_left = crop_top = 0
+    targets = {str(item.get("id")): item for item in route_data.get("targets", [])}
+    ordered = [targets[target_id] for target_id in route.get("target_ids", []) if target_id in targets]
+    start_pose = (route_data.get("start_pose") or {}).get("pose") or {}
+    if preview_mode == "route_focus":
+        focus = [(float(start_pose.get("x", 0.0)), float(start_pose.get("y", 0.0)))]
+        focus += [(float((item.get("pose") or {}).get("x", 0.0)), float((item.get("pose") or {}).get("y", 0.0))) for item in ordered]
+        for zone in route_data.get("keepout_zones", []):
+            if zone.get("enabled") is True and zone.get("type") == "hard_keepout":
+                focus += [(float(point["x"]), float(point["y"])) for point in zone.get("polygon", [])]
+        min_x, max_x = min(point[0] for point in focus), max(point[0] for point in focus)
+        min_y, max_y = min(point[1] for point in focus), max(point[1] for point in focus)
+        margin = max(0.5, max(max_x - min_x, max_y - min_y) * 0.1) + 0.38
+        min_x, max_x = max(origin[0], min_x - margin), min(origin[0] + width * resolution, max_x + margin)
+        min_y, max_y = max(origin[1], min_y - margin), min(origin[1] + height * resolution, max_y + margin)
+        crop_left = max(0, int(math.floor((min_x - origin[0]) / resolution)))
+        crop_right = min(width, int(math.ceil((max_x - origin[0]) / resolution)))
+        crop_top = max(0, int(math.floor(height - (max_y - origin[1]) / resolution)))
+        crop_bottom = min(height, int(math.ceil(height - (min_y - origin[1]) / resolution)))
+        image = image.crop((crop_left, crop_top, max(crop_left + 1, crop_right), max(crop_top + 1, crop_bottom)))
+        width, height = image.size
     scale = 1.0
     if width < 1000:
         scale = 1000.0 / max(1, width)
@@ -219,19 +244,15 @@ def _draw_preview(
             except OSError:
                 pass
 
-    targets = {str(item.get("id")): item for item in route_data.get("targets", [])}
-    ordered = [targets[target_id] for target_id in route.get("target_ids", []) if target_id in targets]
-    start_pose = (route_data.get("start_pose") or {}).get("pose") or {}
-
     def scaled_pixel(x_value: float, y_value: float) -> Tuple[int, int]:
         px, py = map_to_pixel(
             x_value,
             y_value,
             resolution=resolution,
             origin=origin,
-            image_height=int(round(height / scale)),
+            image_height=source_height,
         )
-        return int(round(px * scale)), int(round(py * scale))
+        return int(round((px - crop_left) * scale)), int(round((py - crop_top) * scale))
 
     points = [
         scaled_pixel(
@@ -266,7 +287,7 @@ def _draw_preview(
             outline="#111827",
             width=2,
         )
-        draw.text((px + 10, py + 5), str(index), fill="#111827", font=font)
+        draw.text((px + 10, py + 5), f"{index}. {target.get('name', target.get('id', ''))}", fill="#111827", font=font)
         yaw = float(pose.get("yaw", 0.0))
         draw.line(
             [(px, py), (px + math.cos(yaw) * 22, py - math.sin(yaw) * 22)],
@@ -302,12 +323,12 @@ def _draw_preview(
 
     overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
     overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle([8, 8, 308, 52], fill=(255, 255, 255, 210), outline="#111827")
+    overlay_draw.rectangle([8, 8, 430, 72], fill=(255, 255, 255, 210), outline="#111827")
     image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(image)
     draw.text(
         (18, 25),
-        f"{route.get('name', route.get('id', 'route'))} targets: {len(ordered)}",
+        f"{route.get('name', route.get('id', 'route'))} 目标 {len(ordered)} | 蓝=路线 绿/黄/红=安全 | 红区=禁行",
         fill="#111827",
         font=font,
     )
@@ -329,6 +350,7 @@ def generate_route_preview(
     map_yaml_path: Path = DEFAULT_MAP_YAML,
     force: bool = False,
     route_file_path: Optional[Path] = None,
+    preview_mode: str = "route_focus",
 ) -> Dict[str, Any]:
     map_yaml = Path(map_yaml_path).expanduser().resolve()
     base_failure = {
@@ -352,8 +374,11 @@ def generate_route_preview(
         "map_identity": {},
         "keepout_count": 0,
         "safety_warnings": [],
+        "preview_mode": preview_mode,
     }
     route_path = (Path(route_file_path).expanduser() if route_file_path else map_yaml.parent / "route_patrol_001.json").resolve()
+    if preview_mode not in {"route_focus", "full_map"}:
+        return {**base_failure, "message": f"路线预览失败: unsupported preview mode: {preview_mode}"}
     try:
         map_info = _parse_map_yaml(map_yaml)
         width, height = _read_pgm_size(map_info["image"])
@@ -364,7 +389,7 @@ def generate_route_preview(
             active_route_id = str(route_data["routes"][0]["id"])
         route = get_route(route_data, active_route_id)
         active_route_id = str(route.get("id") or route_data.get("active_route_id") or "")
-        signature = _route_signature([map_yaml, map_info["image"], route_path], active_route_id)
+        signature = _route_signature([map_yaml, map_info["image"], route_path], active_route_id, preview_mode)
         output_path = Path("/tmp") / f"ylhb_route_preview_{signature}.png"
         if needs_regenerate_preview(output_path, force):
             try:
@@ -377,6 +402,7 @@ def generate_route_preview(
                     (float(map_info["origin"][0]), float(map_info["origin"][1])),
                     route_data,
                     route,
+                    preview_mode,
                 )
             except ModuleNotFoundError as exc:
                 if exc.name == "PIL" or "PIL" in str(exc):
@@ -419,8 +445,10 @@ def generate_route_preview(
             "target_count": len(targets),
             "targets": targets,
             "map_identity": route_data.get("map", {}),
+            "map_resolution": float(map_info["resolution"]),
             "keepout_count": sum(1 for zone in route_data.get("keepout_zones", []) if zone.get("enabled") is True and zone.get("type") == "hard_keepout"),
             "safety_warnings": list((route_data.get("safety") or {}).get("warnings", [])),
+            "preview_mode": preview_mode,
         }
     except Exception as exc:
         return {

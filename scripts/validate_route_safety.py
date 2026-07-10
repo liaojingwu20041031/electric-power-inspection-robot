@@ -3,6 +3,7 @@ import argparse
 import ast
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -177,6 +178,16 @@ def validate_route(map_yaml_path, route_path, nav2_path, warn_distance):
     return route_raw, status, failures, warnings
 
 
+def atomic_write_text(path, content):
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--map", required=True, dest="map_yaml")
@@ -184,6 +195,7 @@ def main():
     parser.add_argument("--nav2-params", required=True)
     parser.add_argument("--warn-distance", type=float, default=0.20)
     parser.add_argument("--write-back", action="store_true")
+    parser.add_argument("--report", action="store_true")
     args = parser.parse_args()
     try:
         route, status, failures, warnings = validate_route(args.map_yaml, args.route, args.nav2_params, args.warn_distance)
@@ -191,7 +203,10 @@ def main():
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     if args.write_back:
-        Path(args.route).write_text(json.dumps(route, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(args.route, json.dumps(route, ensure_ascii=False, indent=2) + "\n")
+    if args.report:
+        print(json.dumps({"status": status, "ok": status != "unsafe", "failures": failures, "warnings": warnings}, ensure_ascii=False))
+        return 1 if status == "unsafe" else 0
     for warning in warnings:
         print(f"WARN: {warning}")
     for failure in failures:

@@ -48,9 +48,9 @@ class FakeBridge:
         pass
 
 
-def make_backend(clock):
+def make_backend(clock, **kwargs):
     QCoreApplication.instance() or QCoreApplication([])
-    return UiBackend(FakeBridge(), UiState(), clock=clock)
+    return UiBackend(FakeBridge(), UiState(), clock=clock, **kwargs)
 
 
 def route_loop_config():
@@ -575,6 +575,21 @@ def test_route_preview_direct_properties_are_exposed_for_qml():
     assert backend.routePreviewImageUrl == 'file:///tmp/preview.png'
     assert backend.routePreviewImageSource == 'file:///tmp/preview.png'
     assert backend.routePreviewMessage == 'ok'
+
+
+def test_route_preview_mode_refreshes_with_selected_mode():
+    calls = []
+    backend = make_backend(
+        lambda: 100.0,
+        route_preview_loader=lambda force=False, preview_mode='route_focus': calls.append((force, preview_mode)) or {'ok': True, 'targets': []},
+    )
+
+    backend.setRoutePreviewMode('full_map')
+    backend._route_preview_thread.join(timeout=2.0)
+    assert process_events_until(lambda: bool(calls))
+
+    assert backend.routePreviewMode == 'full_map'
+    assert calls[-1] == (True, 'full_map')
 
 
 def test_route_preview_image_source_is_empty_for_non_overlay_or_missing_file():

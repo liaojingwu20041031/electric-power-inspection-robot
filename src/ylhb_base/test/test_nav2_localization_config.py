@@ -1,7 +1,12 @@
 import ast
+import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+import pytest
 import yaml
 
 
@@ -67,6 +72,43 @@ def test_navigation_launch_uses_unified_keepout_entrypoint():
     assert "'config', 'nav2_params.yaml'" in source
     assert "nav2_params_keepout" not in source
     assert "default_value='true'" in source
+    assert "local_costmap.local_costmap.ros__parameters.keepout_filter.enabled': 'false'" in source
+
+
+def test_keepout_lifecycle_nodes_explicitly_use_root_namespace():
+    source = NAVIGATION_LAUNCH_PATH.read_text(encoding="utf-8")
+
+    for node_name in (
+        "keepout_filter_mask_server",
+        "costmap_filter_info_server",
+    ):
+        node_start = source.index(f"name='{node_name}'")
+        node_end = source.index("))", node_start)
+        assert "namespace=''," in source[node_start:node_end]
+
+
+@pytest.mark.parametrize("enable_keepout", ("true", "false"))
+def test_navigation_launch_show_args_parses_with_each_keepout_setting(enable_keepout):
+    if not shutil.which("ros2") or not (WORKSPACE_DIR / "install" / "setup.bash").exists():
+        pytest.skip("ROS launch environment is unavailable")
+    env = os.environ.copy()
+    env["ROS_LOG_DIR"] = tempfile.mkdtemp(prefix="ylhb_ros_launch_")
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            "source /opt/ros/humble/setup.bash && "
+            f"source {WORKSPACE_DIR}/install/setup.bash && "
+            "ros2 launch ylhb_base navigation.launch.py "
+            f"enable_keepout:={enable_keepout} --show-args",
+        ],
+        cwd=WORKSPACE_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert result.returncode == 0, result.stdout
 
 
 def load_nav2_behavior_tree():

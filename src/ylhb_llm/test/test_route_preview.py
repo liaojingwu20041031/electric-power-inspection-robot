@@ -136,6 +136,21 @@ def test_generate_route_preview_creates_png_without_gui_application(tmp_path):
         image.verify()
 
 
+def test_generate_route_preview_supports_route_focus_and_full_map(tmp_path):
+    map_yaml = tmp_path / "my_map.yaml"
+    map_pgm = tmp_path / "my_map.pgm"
+    map_pgm.write_bytes(b"P5\n80 80\n255\n" + bytes([245]) * 6400)
+    map_yaml.write_text("image: my_map.pgm\nresolution: 0.05\norigin: [-0.5, -0.5, 0]\n", encoding="utf-8")
+    write_route(tmp_path / "route_patrol_001.json", 1)
+
+    focus = generate_route_preview(map_yaml, force=True, preview_mode="route_focus")
+    full = generate_route_preview(map_yaml, force=True, preview_mode="full_map")
+
+    assert focus["preview_mode"] == "route_focus"
+    assert full["preview_mode"] == "full_map"
+    assert focus["image_path"] != full["image_path"]
+
+
 def test_generate_route_preview_deletes_bad_cache_and_regenerates(tmp_path):
     map_yaml = tmp_path / "my_map.yaml"
     map_pgm = tmp_path / "my_map.pgm"

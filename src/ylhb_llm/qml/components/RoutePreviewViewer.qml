@@ -15,38 +15,42 @@ Rectangle {
     property bool loading: false
     property string message: ""
     property int imageStatus: routePreviewImage.status
-    property real minZoom: 0.5
-    property real maxZoom: 4.0
+    property real minZoom: 0.05
+    property real maxZoom: 6.0
     property real zoom: 1.0
     property real panX: 0
     property real panY: 0
     property real pinchStartZoom: 1.0
     property bool dragging: false
+    property bool autoFit: true
     property string imageLoadError: ""
 
     function clamp(value, low, high) {
         return Math.max(low, Math.min(high, value))
     }
 
-    function setZoom(value) {
+    function setZoom(value, manual) {
         zoom = clamp(value, minZoom, maxZoom)
+        if (manual === true) autoFit = false
     }
 
     function zoomIn() {
-        setZoom(zoom * 1.2)
+        setZoom(zoom * 1.2, true)
     }
 
     function zoomOut() {
-        setZoom(zoom / 1.2)
+        setZoom(zoom / 1.2, true)
     }
 
     function reset() {
+        autoFit = false
         zoom = 1.0
         panX = 0
         panY = 0
     }
 
     function fit() {
+        autoFit = true
         if (routePreviewImage.implicitWidth <= 0 || routePreviewImage.implicitHeight <= 0) {
             reset()
             return
@@ -59,6 +63,9 @@ Rectangle {
         panX = 0
         panY = 0
     }
+
+    onWidthChanged: { if (autoFit) fit() }
+    onHeightChanged: { if (autoFit) fit() }
 
     Item {
         id: imageViewport
@@ -84,7 +91,7 @@ Rectangle {
                 root.imageLoadError = status === Image.Error
                     ? "路线预览图解码失败，请点击重绘预览"
                     : ""
-                if (status === Image.Ready) {
+                if (status === Image.Ready && root.autoFit) {
                     root.fit()
                 }
             }
@@ -93,7 +100,7 @@ Rectangle {
         PinchArea {
             anchors.fill: parent
             onPinchStarted: root.pinchStartZoom = root.zoom
-            onPinchUpdated: root.setZoom(root.pinchStartZoom * pinch.scale)
+            onPinchUpdated: root.setZoom(root.pinchStartZoom * pinch.scale, true)
 
             MouseArea {
                 anchors.fill: parent
@@ -103,6 +110,7 @@ Rectangle {
 
                 onPressed: {
                     root.dragging = true
+                    root.autoFit = false
                     lastX = mouse.x
                     lastY = mouse.y
                 }

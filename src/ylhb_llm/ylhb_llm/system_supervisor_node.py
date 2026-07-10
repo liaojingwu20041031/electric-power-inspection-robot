@@ -9,7 +9,9 @@ import sys
 from typing import Any, Dict, Iterable, List, Optional
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseWithCovarianceStamped
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 from lifecycle_msgs.srv import GetState
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -58,6 +60,8 @@ STARTUP_STEP_LABELS = {
     'waiting_tf': '等待底盘传感器',
     'waiting_after_bringup': '底盘启动后等待',
     'starting_navigation': '等待地图',
+    'navigation_process_spawned': '导航进程已创建',
+    'navigation_ready': '导航已就绪',
     'waiting_navigation': '等待地图',
     'waiting_map': '等待地图',
     'waiting_initialpose_subscribers': '等待地图',
@@ -65,6 +69,8 @@ STARTUP_STEP_LABELS = {
     'generating_keepout_mask': '生成禁行区',
     'waiting_keepout_active': '等待禁行区',
     'starting_executor': '发布初始位姿',
+    'executor_process_spawned': '巡逻执行器进程已创建',
+    'executor_ready': '巡逻执行器已就绪',
     'waiting_executor': '发布初始位姿',
     'waiting_route_file': '发布初始位姿',
     'waiting_patrol_status': '发布初始位姿',
@@ -72,6 +78,9 @@ STARTUP_STEP_LABELS = {
     'waiting_after_executor': '巡逻执行器启动后等待',
     'waiting_patrol_running': '等待巡逻执行器运行',
     'patrol_start_sent': '巡逻启动命令已发送',
+    'patrol_command_sent': '巡逻启动命令已发送',
+    'navigation_process_exited': '导航进程启动后退出',
+    'executor_process_exited': '巡逻执行器启动后退出',
     'waiting_executor_response': '等待巡逻执行器响应',
     'waiting_nav2': '等待导航服务',
     'sending_goal': '发送导航目标',
@@ -157,9 +166,21 @@ class ManagedProcess:
         self.command = command
         self.process: Optional[subprocess.Popen] = None
         self.last_message = ''
+        self.last_exit_code: Optional[int] = None
+        self.last_started_at = 0.0
+        self.last_error = ''
+        self.last_command = command
+
+    def poll_exit_code(self) -> Optional[int]:
+        if self.process is None:
+            return None
+        exit_code = self.process.poll()
+        if exit_code is not None:
+            self.last_exit_code = exit_code
+        return exit_code
 
     def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+        return self.process is not None and self.poll_exit_code() is None
 
 
 class SystemSupervisorNode(Node):
@@ -194,6 +215,15 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('tts_voice', 'Serena')
         self.declare_parameter('tts_language_type', 'Chinese')
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+        self.declare_parameter('patrol_sensor_freshness_sec', 1.0)
+        self.declare_parameter('patrol_bringup_timeout_sec', 25.0)
+        self.declare_parameter('patrol_navigation_timeout_sec', 35.0)
+        self.declare_parameter('patrol_localization_timeout_sec', 25.0)
+        self.declare_parameter('patrol_executor_timeout_sec', 15.0)
+        self.declare_parameter('patrol_initial_pose_timeout_sec', 8.0)
+        self.declare_parameter('patrol_amcl_timeout_sec', 10.0)
+        self.declare_parameter('patrol_nav2_timeout_sec', 25.0)
+        self.declare_parameter('patrol_command_timeout_sec', 8.0)
 
         self.workspace_dir = os.path.expanduser(str(self.get_parameter('workspace_dir').value))
         self.ros_distro = str(self.get_parameter('ros_distro').value)
@@ -239,6 +269,15 @@ class SystemSupervisorNode(Node):
         self.last_patrol_start_request_id = ''
         self.last_patrol_event: Dict[str, Any] = {}
         self.last_initial_pose_event: Dict[str, Any] = {}
+        self.last_patrol_command_ack: Dict[str, Any] = {}
+        self.last_odom_received_at = 0.0
+        self.last_scan_received_at = 0.0
+        self.last_amcl_received_at = 0.0
+        self.startup_generation = 0
+        self.startup_id = ''
+        self.startup_started_at = 0.0
+        self.patrol_start_cancel_event = threading.Event()
+        self.patrol_start_active = False
         self.latest_mapping3d_status: Dict[str, Any] = {}
         self.latest_mapping3d_result: Dict[str, Any] = {}
         self.inflight_commands = set()
@@ -313,6 +352,11 @@ class SystemSupervisorNode(Node):
             '/patrol/event',
             self.patrol_event_callback,
             patrol_status_qos_profile(),
+        )
+        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        self.create_subscription(
+            PoseWithCovarianceStamped, '/amcl_pose', self.amcl_pose_callback, 10
         )
         self.create_subscription(
             String,
@@ -409,6 +453,17 @@ class SystemSupervisorNode(Node):
             self.last_patrol_event = payload
             if payload.get('event') == 'initial_pose_published':
                 self.last_initial_pose_event = payload
+            if payload.get('event') == 'command_accepted':
+                self.last_patrol_command_ack = payload
+
+    def odom_callback(self, _msg: Odometry) -> None:
+        self.last_odom_received_at = time.time()
+
+    def scan_callback(self, _msg: LaserScan) -> None:
+        self.last_scan_received_at = time.time()
+
+    def amcl_pose_callback(self, _msg: PoseWithCovarianceStamped) -> None:
+        self.last_amcl_received_at = time.time()
 
     def mapping3d_status_callback(self, msg: String) -> None:
         try:
@@ -443,10 +498,13 @@ class SystemSupervisorNode(Node):
             return
         if command in patrol_commands:
             patrol_command = patrol_commands[command]
+            if patrol_command == 'cancel':
+                self.cancel_patrol_start()
             self.publish_patrol_command(patrol_command)
             self.set_result(command, True, f'已发送巡逻命令: {patrol_command}')
             return
         if command == 'stop_patrol_mode':
+            self.cancel_patrol_start()
             self.stop_process('patrol_executor')
             self.reset_patrol_mode_state()
             self.set_result(command, True, '巡逻模式已停止')
@@ -491,11 +549,8 @@ class SystemSupervisorNode(Node):
             self.start_process('mobile_bridge')
             return
         if command == 'restart_navigation':
-            if not self.prepare_patrol_navigation_assets():
-                self.set_result(command, False, '导航资源准备失败: ' + self.patrol_error)
-                return
             self.stop_process('navigation')
-            self.start_process('navigation')
+            self.start_navigation_process()
             return
         if command == 'restart_perception':
             self.stop_process('perception')
@@ -519,34 +574,63 @@ class SystemSupervisorNode(Node):
             return
         self.set_result(command, False, f'Unknown system command: {command}')
 
-    def start_process(self, name: str) -> None:
+    def start_process(self, name: str) -> bool:
         if name == 'llm' and self.embedded_task_layer:
             self.set_result(
                 'start_llm',
                 True,
                 self.voice_summary('AI task layer is embedded in inspection launch'),
             )
-            return
-        if name == 'navigation' and not self.prepare_patrol_navigation_assets():
-            self.set_result('start_navigation', False, '导航资源准备失败: ' + self.patrol_error)
-            return
+            return True
+        if name == 'navigation':
+            return self.start_navigation_process()
+        return self.start_process_raw(name)
+
+    def start_process_raw(self, name: str) -> bool:
         proc = self.processes[name]
         with self.lock:
             if proc.is_running():
                 self.set_result_locked(f'start_{name}', True, f'{START_PROCESS_MESSAGES.get(name, name)}，已在运行')
-                return
+                return True
             cmd = self.wrap_command(proc.command)
-            proc.process = subprocess.Popen(
-                cmd,
-                shell=True,
-                executable='/bin/bash',
-                cwd=self.workspace_dir,
-                preexec_fn=os.setsid,
-            )
+            proc.last_command = proc.command
+            try:
+                proc.process = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    executable='/bin/bash',
+                    cwd=self.workspace_dir,
+                    preexec_fn=os.setsid,
+                )
+            except Exception as exc:
+                proc.last_error = f'failed to start: {exc}'
+                proc.last_message = proc.last_error
+                self.set_result_locked(f'start_{name}', False, f'{name} 启动失败: {exc}')
+                return False
+            proc.last_exit_code = None
+            proc.last_error = ''
+            proc.last_started_at = time.time()
             proc.last_message = f'started pid={proc.process.pid}'
-            self.set_result_locked(f'start_{name}', True, START_PROCESS_MESSAGES.get(name, f'{name} 已启动'))
+        time.sleep(0.75)
+        with self.lock:
+            exit_code = proc.poll_exit_code()
+            if exit_code is not None:
+                proc.last_error = f'{name} process exited immediately, exit code={exit_code}'
+                proc.last_message = proc.last_error
+                self.set_result_locked(f'start_{name}', False, proc.last_error)
+                return False
+            self.set_result_locked(f'start_{name}', True, f'{name} 启动命令已发送')
+        return True
+
+    def start_navigation_process(self) -> bool:
+        if not self.prepare_patrol_navigation_assets():
+            self.set_result('start_navigation', False, '导航资源准备失败: ' + self.patrol_error)
+            return False
+        return self.start_process_raw('navigation')
 
     def stop_process(self, name: str) -> None:
+        if name in ('bringup', 'navigation', 'patrol_executor'):
+            self.cancel_patrol_start()
         if name == 'llm' and self.embedded_task_layer:
             self.set_result(
                 'stop_llm',
@@ -594,15 +678,21 @@ class SystemSupervisorNode(Node):
             return False
 
     def start_robot_stack(self) -> None:
-        if not self.prepare_patrol_navigation_assets():
-            self.set_result('start_robot_stack', False, '导航资源准备失败: ' + self.patrol_error)
-            return
-        for name in ('bringup', 'zed', 'perception', 'navigation', 'llm'):
-            self.start_process(name)
+        for name in ('bringup', 'zed', 'perception'):
+            if not self.start_process(name):
+                self.set_result('start_robot_stack', False, f'{name} 启动失败')
+                return
             time.sleep(0.3)
+        if not self.start_navigation_process():
+            self.set_result('start_robot_stack', False, '导航启动失败: ' + self.patrol_error)
+            return
+        if not self.start_process('llm'):
+            self.set_result('start_robot_stack', False, 'llm 启动失败')
+            return
         self.set_result('start_robot_stack', True, '巡检节点启动命令已发送')
 
     def stop_robot_stack(self) -> None:
+        self.cancel_patrol_start()
         names = ('patrol_executor', 'navigation', 'perception', 'zed', 'bringup')
         if all(not self.processes[name].is_running() for name in names):
             self.reset_patrol_mode_state()
@@ -631,7 +721,9 @@ class SystemSupervisorNode(Node):
             return
         if navigation_running:
             self.stop_process('navigation')
-            self.start_process('navigation')
+            if not self.start_process_raw('navigation'):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
+                return
             if not self.wait_for_nav2_active_ready(25.0) or not self.wait_for_keepout_active_ready(12.0):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: Nav2/Keepout lifecycle 未激活')
                 return
@@ -640,14 +732,59 @@ class SystemSupervisorNode(Node):
 
     def start_patrol_mode(self, profile: str = 'navigation', route_id: str = '') -> None:
         profile = profile if profile in ('navigation', 'inspection') else 'navigation'
+        with getattr(self, 'lock', threading.Lock()):
+            if getattr(self, 'patrol_start_active', False):
+                self.set_result('start_patrol_mode', True, '巡逻启动正在进行')
+                return
+            self.patrol_start_active = True
+            self.startup_generation = getattr(self, 'startup_generation', 0) + 1
+            generation = self.startup_generation
+            self.startup_id = f'patrol_start_{int(time.time() * 1000)}_{generation}'
+            self.startup_started_at = time.time()
+            self.patrol_start_cancel_event = threading.Event()
+            self.last_patrol_status = {}
+            self.last_initial_pose_event = {}
+            self.last_patrol_command_ack = {}
+            self.last_patrol_start_request_id = ''
+            self.last_amcl_received_at = 0.0
+        try:
+            self._start_patrol_transaction(profile, route_id, generation)
+        finally:
+            if self.is_current_patrol_start(generation):
+                self.patrol_start_active = False
+
+    def is_current_patrol_start(self, generation: int) -> bool:
+        return (
+            generation == getattr(self, 'startup_generation', 0)
+            and not getattr(self, 'patrol_start_cancel_event', threading.Event()).is_set()
+        )
+
+    def cancel_patrol_start(self) -> None:
+        event = getattr(self, 'patrol_start_cancel_event', None)
+        if event is not None:
+            event.set()
+        self.startup_generation = getattr(self, 'startup_generation', 0) + 1
+        self.patrol_start_active = False
+
+    def _start_patrol_transaction(self, profile: str, route_id: str, generation: int) -> None:
         self.patrol_mode_state = 'starting'
         self.patrol_error = ''
         self.log_info('start_patrol_mode: 按手动流程启动巡逻')
 
+        def gate(ok: bool, error: str, *, stop_navigation: bool = True) -> bool:
+            if not self.is_current_patrol_start(generation):
+                return False
+            if ok:
+                return True
+            self.fail_patrol_start(self.patrol_error or error, stop_navigation, generation)
+            return False
+
         self.startup_step = 'starting_bringup'
-        self.start_process('bringup')
-        self.startup_step = 'waiting_after_bringup'
-        time.sleep(PATROL_BRINGUP_TO_NAVIGATION_DELAY_SEC)
+        if not self.start_process('bringup'):
+            self.fail_patrol_start('底盘与雷达启动失败', stop_navigation=False, generation=generation)
+            return
+        if not gate(self.wait_for_core_sensors(self.patrol_timeout('patrol_bringup_timeout_sec', 25.0)), '底盘与传感器未就绪', stop_navigation=False):
+            return
 
         if profile == 'inspection':
             self.startup_step = 'starting_inspection'
@@ -655,73 +792,89 @@ class SystemSupervisorNode(Node):
             self.start_process('perception')
 
         self.startup_step = 'starting_navigation'
-        if not self.prepare_keepout_navigation():
-            self.patrol_mode_state = 'failed'
-            self.startup_step = 'patrol_failed'
-            self.set_result('start_patrol_mode', False, '巡逻启动失败: ' + self.patrol_error)
+        if not self.start_navigation_process():
+            self.fail_patrol_start(self.patrol_error or '导航进程启动失败', generation=generation)
             return
-        self.start_process('navigation')
-        self.startup_step = 'waiting_after_navigation'
-        time.sleep(PATROL_NAVIGATION_TO_EXECUTOR_DELAY_SEC)
-        navigation_ok = self.wait_for_navigation_ready(35.0)
-        navigation_error = self.patrol_error
+        self.startup_step = 'navigation_process_spawned'
+        if not gate(self.wait_for_navigation_ready(self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)), '导航未就绪'):
+            return
+        if not gate(self.wait_for_localization_ready(self.patrol_timeout('patrol_localization_timeout_sec', 25.0)), '未确认 map_server/AMCL active'):
+            return
 
         self.startup_step = 'starting_executor'
         started_at = time.time()
-        self.start_process('patrol_executor')
-        self.startup_step = 'waiting_after_executor'
-        time.sleep(PATROL_EXECUTOR_TO_START_DELAY_SEC)
-        heartbeat_ok = self.wait_for_patrol_status_heartbeat(started_at, 8.0)
-        subscriber_ok = self.wait_for_patrol_command_subscriber(5.0)
-        initial_pose_ok = self.wait_for_initial_pose_published(8.0)
-        map_to_odom_ok = self.wait_for_map_to_odom(10.0)
-        nav2_active_ok = self.wait_for_nav2_active_ready(25.0)
-        keepout_active_ok = self.wait_for_keepout_active_ready(12.0)
+        executor = getattr(self, 'processes', {}).get('patrol_executor')
+        if executor is not None:
+            route_path = getattr(self, 'patrol_route_path', '')
+            executor.command = (
+                'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
+                f'route_file_path:={route_path} auto_start:=false '
+                f'publish_initial_pose_on_startup:=true startup_id:={self.startup_id}'
+            )
+        if not self.start_process('patrol_executor'):
+            self.fail_patrol_start('巡逻执行器启动失败', generation=generation)
+            return
+        self.startup_step = 'executor_process_spawned'
+        heartbeat_ok = self.wait_for_patrol_status_heartbeat(started_at, self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0))
+        subscriber_ok = self.wait_for_patrol_command_subscriber(self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0))
+        executor_ok = self.wait_for_patrol_executor_ready(self.patrol_timeout('patrol_executor_timeout_sec', 15.0))
+        initial_pose_ok = self.wait_for_initial_pose_published(self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0), generation)
+        initial_pose_at = float((getattr(self, 'last_initial_pose_event', {}) or {}).get('timestamp') or started_at)
+        amcl_ok = self.wait_for_fresh_amcl(self.patrol_timeout('patrol_amcl_timeout_sec', 10.0), initial_pose_at, generation)
+        map_to_odom_ok = self.wait_for_map_to_odom(self.patrol_timeout('patrol_amcl_timeout_sec', 10.0))
         self.log_patrol_start_readiness()
         gate_warnings = []
+        if not executor_ok:
+            gate_warnings.append('巡逻执行器未就绪')
+        if not heartbeat_ok:
+            gate_warnings.append('未确认 /patrol/status heartbeat')
+        if not subscriber_ok:
+            gate_warnings.append('未确认 /patrol/command 订阅者')
         if not initial_pose_ok:
             gate_warnings.append('未确认初始位姿已发布')
+        if not amcl_ok:
+            gate_warnings.append('未确认初始位姿后的 /amcl_pose')
         if not map_to_odom_ok:
             gate_warnings.append('未确认 map->odom TF')
-        if not nav2_active_ok:
-            gate_warnings.append('未确认 Nav2 lifecycle active')
-        if not keepout_active_ok:
-            gate_warnings.append('未确认 Keepout lifecycle active')
         if gate_warnings:
-            self.patrol_mode_state = 'failed'
-            self.startup_step = 'patrol_failed'
-            self.patrol_error = '；'.join(gate_warnings)
-            self.set_result('start_patrol_mode', False, '巡逻启动门控失败: ' + self.patrol_error)
+            self.fail_patrol_start('；'.join(gate_warnings), generation=generation)
             return
-        request_id = f"patrol_start_{int(time.time() * 1000)}"
+        if not gate(self.wait_for_nav2_active_ready(self.patrol_timeout('patrol_nav2_timeout_sec', 25.0)), '未确认 Nav2 lifecycle active'):
+            return
+        if not gate(self.wait_for_keepout_active_ready(12.0), '未确认 Keepout lifecycle active'):
+            return
+        if not gate(self.wait_for_nav2_action_ready(self.patrol_timeout('patrol_nav2_timeout_sec', 25.0)), 'Nav2 动作服务未就绪'):
+            return
+        self.startup_step = 'executor_ready'
+        request_id = f"{self.startup_id}_command"
         if route_id:
             self.publish_patrol_command('start', request_id=request_id, route_id=route_id)
         else:
             self.publish_patrol_command('start', request_id=request_id)
-        self.startup_step = 'patrol_start_sent'
-        time.sleep(5.0)
-        status_state = str((self.last_patrol_status or {}).get('state') or '')
-        if status_state in ('idle', 'unavailable'):
-            if route_id:
+        self.startup_step = 'patrol_command_sent'
+        if not self.wait_for_patrol_command_ack(request_id, self.patrol_timeout('patrol_command_timeout_sec', 8.0), generation):
+            if self.is_current_patrol_start(generation):
                 self.publish_patrol_command('start', request_id=request_id, route_id=route_id)
-            else:
-                self.publish_patrol_command('start', request_id=request_id)
+            if not self.wait_for_patrol_command_ack(request_id, self.patrol_timeout('patrol_command_timeout_sec', 8.0), generation):
+                self.fail_patrol_start(self.patrol_error or '巡逻执行器未确认启动命令', generation=generation)
+                return
         if self.patrol_mode_state == 'starting':
             self.patrol_mode_state = 'command_sent'
-            self.startup_step = 'patrol_start_sent'
-        warnings = []
-        if not navigation_ok:
-            warnings.append(navigation_error or '导航依赖未完全就绪')
-        if not heartbeat_ok:
-            warnings.append('未确认 /patrol/status heartbeat')
-        if not subscriber_ok:
-            warnings.append('未确认 /patrol/command 订阅者')
-        if warnings:
-            self.patrol_error = 'warning: ' + '；'.join(warnings)
-        message = '已按手动流程发送巡逻启动命令'
-        if warnings:
-            message = f"{message}（{self.patrol_error}）"
-        self.set_result('start_patrol_mode', True, message)
+            self.startup_step = 'patrol_command_sent'
+        self.set_result('start_patrol_mode', True, '巡逻启动命令已发送')
+
+    def fail_patrol_start(self, error: str, stop_navigation: bool = True, generation: Optional[int] = None) -> None:
+        if generation is not None and generation != getattr(self, 'startup_generation', generation):
+            return
+        self.patrol_mode_state = 'failed'
+        self.startup_step = 'patrol_failed'
+        self.patrol_error = error
+        self.cancel_patrol_start()
+        if getattr(self, 'processes', {}).get('patrol_executor'):
+            self.stop_process('patrol_executor')
+        if stop_navigation and getattr(self, 'processes', {}).get('navigation'):
+            self.stop_process('navigation')
+        self.set_result('start_patrol_mode', False, '巡逻启动失败: ' + error)
 
     def publish_patrol_command(self, command: str, request_id: str = '', route_id: str = '') -> None:
         if not request_id:
@@ -792,18 +945,23 @@ class SystemSupervisorNode(Node):
             '--map', self.default_navigation_map,
             '--route', self.patrol_route_path,
             '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', 'nav2_params.yaml'),
-            '--warn-distance', '0.20', '--write-back',
+            '--warn-distance', '0.20', '--report',
         ]
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        try:
+            report = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            report = {}
         if result.returncode == 1:
-            self.patrol_error = result.stdout.strip()
+            self.patrol_error = '；'.join(report.get('failures') or [result.stdout.strip()])
             return 'unsafe'
         if result.returncode != 0:
             self.patrol_error = f'route safety validation failed: {result.stdout.strip()}'
             return 'error'
-        if 'route safety warning' in result.stdout:
-            self.patrol_error = 'warning: ' + result.stdout.strip()
-        return 'warning' if 'route safety warning' in result.stdout else 'ok'
+        if report.get('status') == 'warning':
+            self.patrol_error = 'warning: ' + '；'.join(report.get('warnings') or [])
+            return 'warning'
+        return 'ok'
 
     def generate_keepout_mask(self) -> bool:
         output_dir = os.path.dirname(self.keepout_mask_path)
@@ -966,9 +1124,10 @@ class SystemSupervisorNode(Node):
         return last_state or 'timeout'
 
     def build_patrol_readiness(self) -> Dict[str, bool]:
-        bringup = self.processes.get('bringup')
-        navigation = self.processes.get('navigation')
-        executor = self.processes.get('patrol_executor')
+        processes = getattr(self, 'processes', {})
+        bringup = processes.get('bringup')
+        navigation = processes.get('navigation')
+        executor = processes.get('patrol_executor')
         readiness = {
             'bringup': bool(bringup and bringup.is_running()),
             'navigation': bool(navigation and navigation.is_running()),
@@ -980,6 +1139,7 @@ class SystemSupervisorNode(Node):
             'map': self.topic_has_publishers('/map'),
             'map_to_odom': self.has_map_to_odom(),
             'initialpose_subscribers': self.topic_has_subscribers('/initialpose'),
+            'localization_active': self.is_localization_active(),
             'nav2_action': self.has_nav2_action(),
             'nav2_active': self.is_nav2_active(),
             'keepout_active': self.is_keepout_active() if getattr(self, 'enable_keepout_navigation', False) else True,
@@ -989,9 +1149,10 @@ class SystemSupervisorNode(Node):
         return readiness
 
     def build_light_patrol_readiness(self) -> Dict[str, bool]:
-        bringup = self.processes.get('bringup')
-        navigation = self.processes.get('navigation')
-        executor = self.processes.get('patrol_executor')
+        processes = getattr(self, 'processes', {})
+        bringup = processes.get('bringup')
+        navigation = processes.get('navigation')
+        executor = processes.get('patrol_executor')
         return {
             'bringup': bool(bringup and bringup.is_running()),
             'navigation': bool(navigation and navigation.is_running()),
@@ -1003,6 +1164,7 @@ class SystemSupervisorNode(Node):
             'map': False,
             'map_to_odom': False,
             'initialpose_subscribers': False,
+            'localization_active': False,
             'nav2_action': False,
             'nav2_active': False,
             'keepout_active': False,
@@ -1037,11 +1199,13 @@ class SystemSupervisorNode(Node):
         return False
 
     def wait_for_core_sensors(self, timeout_sec: float = 25.0) -> bool:
-        return self.wait_for_readiness_keys(
-            ('bringup', 'odom', 'scan', 'tf'),
-            timeout_sec,
-            error_prefix='底盘与传感器等待超时',
-        )
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if self.wait_for_readiness_keys(('bringup', 'odom', 'scan', 'tf'), 0.3, '') and self.has_fresh_core_sensors():
+                return True
+            self.startup_step = 'waiting_odom'
+            self.patrol_error = '等待 1 秒内的新 /odom、/scan 与基础 TF'
+        return False
 
     def wait_for_navigation_ready(self, timeout_sec: float = 35.0) -> bool:
         return self.wait_for_readiness_keys(
@@ -1081,22 +1245,66 @@ class SystemSupervisorNode(Node):
         )
 
     def wait_for_patrol_executor_ready(self, timeout_sec: float = 15.0) -> bool:
+        if not hasattr(self, 'processes'):
+            return True
         return self.wait_for_readiness_keys(
             ('executor', 'route_file', 'patrol_status'),
             timeout_sec,
             error_prefix='巡逻执行器等待超时',
         )
 
-    def wait_for_initial_pose_published(self, timeout_sec: float = 8.0) -> bool:
+    def wait_for_initial_pose_published(self, timeout_sec: float = 8.0, generation: Optional[int] = None) -> bool:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
-            if self.has_initial_pose_published():
+            if generation is not None and not self.is_current_patrol_start(generation):
+                return False
+            if self.process_exited_before_readiness('patrol_executor'):
+                return False
+            if self.has_initial_pose_published(generation):
                 self.patrol_error = ''
                 return True
             self.startup_step = 'waiting_initial_pose_published'
             self.patrol_error = '等待巡逻执行器发布初始位姿'
             time.sleep(0.1)
         self.patrol_error = '等待初始位姿发布超时'
+        return False
+
+    def wait_for_fresh_amcl(self, timeout_sec: float, after: float, generation: int) -> bool:
+        if not hasattr(self, 'processes'):
+            return True
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if not self.is_current_patrol_start(generation):
+                return False
+            if getattr(self, 'last_amcl_received_at', 0.0) >= after:
+                return True
+            self.startup_step = 'waiting_amcl_pose'
+            self.patrol_error = '等待初始位姿后的 /amcl_pose'
+            time.sleep(0.1)
+        return False
+
+    def wait_for_localization_ready(self, timeout_sec: float) -> bool:
+        if not hasattr(self, 'processes'):
+            return True
+        return self.wait_for_readiness_keys(
+            ('navigation', 'map', 'initialpose_subscribers', 'localization_active'),
+            timeout_sec,
+            error_prefix='定位服务未就绪',
+        )
+
+    def wait_for_patrol_command_ack(self, request_id: str, timeout_sec: float, generation: int) -> bool:
+        if not hasattr(self, 'processes'):
+            return True
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if not self.is_current_patrol_start(generation):
+                return False
+            ack = getattr(self, 'last_patrol_command_ack', {}) or {}
+            if ack.get('event') == 'command_accepted' and ack.get('request_id') == request_id:
+                return True
+            self.startup_step = 'waiting_executor_response'
+            self.patrol_error = '等待巡逻执行器确认启动命令'
+            time.sleep(0.1)
         return False
 
     def wait_for_readiness_keys(
@@ -1109,6 +1317,9 @@ class SystemSupervisorNode(Node):
         deadline = time.monotonic() + timeout_sec
         last_missing: List[str] = []
         while time.monotonic() < deadline:
+            for name in self.readiness_process_names(required):
+                if self.process_exited_before_readiness(name):
+                    return False
             readiness = self.build_patrol_readiness()
             last_missing = [key for key in required if not readiness.get(key)]
             if not last_missing:
@@ -1119,6 +1330,33 @@ class SystemSupervisorNode(Node):
             time.sleep(0.25)
         self.patrol_error = self.readiness_timeout_message(error_prefix, last_missing)
         return False
+
+    def readiness_process_names(self, required: Iterable[str]) -> Iterable[str]:
+        required = set(required)
+        navigation_keys = {
+            'navigation', 'map', 'initialpose_subscribers', 'nav2_action',
+            'nav2_active', 'keepout_active', 'map_to_odom', 'localization_active',
+        }
+        if required.intersection(navigation_keys):
+            yield 'navigation'
+        if required.intersection({
+            'executor', 'route_file', 'patrol_status', 'initial_pose_published', 'map_to_odom',
+        }):
+            yield 'patrol_executor'
+
+    def process_exited_before_readiness(self, name: str) -> bool:
+        proc = getattr(self, 'processes', {}).get(name)
+        if proc is None or getattr(proc, 'process', None) is None:
+            return False
+        exit_code = proc.poll_exit_code()
+        if exit_code is None:
+            return False
+        error = f'{name} process exited before readiness, exit code={exit_code}'
+        proc.last_error = error
+        proc.last_message = error
+        self.patrol_error = error
+        self.startup_step = f'{name}_process_exited'
+        return True
 
     def readiness_wait_message(self, missing: List[str]) -> str:
         if len(missing) == 1 and missing[0] in READINESS_ERROR_MESSAGES:
@@ -1165,10 +1403,9 @@ class SystemSupervisorNode(Node):
 
     def has_patrol_route_file(self) -> bool:
         try:
-            return any(
-                name.startswith('route_patrol_') and name.endswith('.json')
-                for name in os.listdir(os.path.dirname(self.default_navigation_map))
-            )
+            route = load_route_file(self.patrol_route_path)
+            validate_route_map_binding(route, self.default_navigation_map)
+            return route.get('version') == 3
         except Exception:
             return False
 
@@ -1184,9 +1421,44 @@ class SystemSupervisorNode(Node):
         except Exception:
             return False
 
-    def has_initial_pose_published(self) -> bool:
+    def has_initial_pose_published(self, generation: Optional[int] = None) -> bool:
         event = getattr(self, 'last_initial_pose_event', {}) or {}
-        return event.get('event') == 'initial_pose_published'
+        if event.get('event') != 'initial_pose_published':
+            return False
+        if generation is None:
+            return True
+        return (
+            event.get('startup_id') == getattr(self, 'startup_id', '')
+            and os.path.abspath(str(event.get('route_path') or '')) == self.patrol_route_path
+            and float(event.get('timestamp') or 0.0) >= getattr(self, 'startup_started_at', 0.0)
+        )
+
+    def patrol_timeout(self, name: str, default: float) -> float:
+        try:
+            return float(self.get_parameter(name).value)
+        except Exception:
+            return default
+
+    def has_fresh_core_sensors(self) -> bool:
+        freshness = self.patrol_timeout('patrol_sensor_freshness_sec', 1.0)
+        now = time.time()
+        return (
+            now - getattr(self, 'last_odom_received_at', 0.0) <= freshness
+            and now - getattr(self, 'last_scan_received_at', 0.0) <= freshness
+            and self.has_base_sensor_tf()
+        )
+
+    def has_base_sensor_tf(self) -> bool:
+        tf_buffer = getattr(self, 'tf_buffer', None)
+        if tf_buffer is None:
+            return False
+        try:
+            return bool(
+                tf_buffer.can_transform('odom', 'base_footprint', Time())
+                and tf_buffer.can_transform('base_footprint', 'laser_link', Time())
+            )
+        except Exception:
+            return False
 
     def has_map_to_odom(self) -> bool:
         tf_buffer = getattr(self, 'tf_buffer', None)
@@ -1198,8 +1470,14 @@ class SystemSupervisorNode(Node):
             return False
 
     def is_nav2_active(self) -> bool:
-        required_nodes = ('/bt_navigator', '/planner_server', '/controller_server')
+        required_nodes = (
+            '/bt_navigator', '/planner_server', '/controller_server',
+            '/global_costmap/global_costmap', '/local_costmap/local_costmap',
+        )
         return all(self.lifecycle_node_is_active(name) for name in required_nodes)
+
+    def is_localization_active(self) -> bool:
+        return all(self.lifecycle_node_is_active(name) for name in ('/map_server', '/amcl'))
 
     def is_keepout_active(self) -> bool:
         required_nodes = ('/keepout_filter_mask_server', '/costmap_filter_info_server')
@@ -1246,6 +1524,8 @@ class SystemSupervisorNode(Node):
     def wait_for_patrol_command_subscriber(self, timeout_sec: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
+            if self.process_exited_before_readiness('patrol_executor'):
+                return False
             if self.is_patrol_executor_ready():
                 return True
             time.sleep(0.1)
@@ -1254,6 +1534,8 @@ class SystemSupervisorNode(Node):
     def wait_for_patrol_status_heartbeat(self, since: float, timeout_sec: float = 5.0) -> bool:
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
+            if self.process_exited_before_readiness('patrol_executor'):
+                return False
             if getattr(self, 'last_patrol_status_received_at', 0.0) >= since:
                 return True
             time.sleep(0.1)
@@ -1294,6 +1576,7 @@ class SystemSupervisorNode(Node):
             self.set_result('save_map', False, f'保存地图失败: {message}')
 
     def emergency_stop(self) -> None:
+        self.cancel_patrol_start()
         self.publish_mode('fault')
         twist = Twist()
         for _ in range(5):
@@ -1401,11 +1684,23 @@ class SystemSupervisorNode(Node):
                 getattr(self, 'startup_step', ''),
                 getattr(self, 'startup_step', ''),
             ),
+            'navigation_process_running': bool(
+                self.processes.get('navigation') and self.processes['navigation'].is_running()
+            ),
+            'navigation_exit_code': getattr(self.processes.get('navigation'), 'last_exit_code', None),
+            'navigation_last_error': getattr(self.processes.get('navigation'), 'last_error', ''),
             'last_patrol_status': getattr(self, 'last_patrol_status', {}),
             'patrol_diagnostics': {
                 'last_patrol_event': getattr(self, 'last_patrol_event', {}),
                 'last_initial_pose_event': getattr(self, 'last_initial_pose_event', {}),
                 'last_patrol_start_request_id': getattr(self, 'last_patrol_start_request_id', ''),
+                'last_patrol_command_ack': getattr(self, 'last_patrol_command_ack', {}),
+                'startup_id': getattr(self, 'startup_id', ''),
+                'startup_started_at': getattr(self, 'startup_started_at', 0.0),
+                'startup_generation': getattr(self, 'startup_generation', 0),
+                'odom_age_sec': max(0.0, time.time() - getattr(self, 'last_odom_received_at', 0.0)),
+                'scan_age_sec': max(0.0, time.time() - getattr(self, 'last_scan_received_at', 0.0)),
+                'amcl_age_sec': max(0.0, time.time() - getattr(self, 'last_amcl_received_at', 0.0)),
             },
             'latest_mapping3d_status': getattr(self, 'latest_mapping3d_status', {}),
             'latest_mapping3d_result': getattr(self, 'latest_mapping3d_result', {}),

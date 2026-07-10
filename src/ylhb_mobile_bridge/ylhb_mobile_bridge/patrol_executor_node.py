@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 
 from .patrol_route_store import (
@@ -507,6 +508,7 @@ class PatrolExecutorNode(Node):
         )
         self.map_frame = str(self.get_parameter("map_frame").value)
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
+        self.startup_id = str(self.get_parameter("startup_id").value)
 
         self._route_data: Optional[Dict[str, Any]] = None
         self._schedule_clock = PatchedScheduleClock()
@@ -517,6 +519,7 @@ class PatrolExecutorNode(Node):
         self._initial_pose_timer = None
         self._initial_pose_remaining = 0
         self._auto_start_after_initial_pose = False
+        self._seen_start_request_ids = deque(maxlen=64)
 
         self._status_pub = self.create_publisher(
             String,
@@ -585,6 +588,7 @@ class PatrolExecutorNode(Node):
             "map_frame": "map",
             "cmd_vel_topic": "/cmd_vel",
             "auto_start": False,
+            "startup_id": "",
             "schedule_check_period_sec": 1.0,
             "publish_initial_pose_on_startup": True,
             "initial_pose_publish_count": 3,
@@ -729,7 +733,21 @@ class PatrolExecutorNode(Node):
             command = str(payload.get("command", "")).strip().lower()
             route_id = payload.get("route_id")
             if command == "start":
-                self._start_route_from_file(route_id)
+                request_id = str(payload.get("request_id") or "")
+                duplicate = bool(request_id and request_id in self._seen_start_request_ids)
+                started = True if duplicate else self._start_route_from_file(route_id)
+                if started and request_id and not duplicate:
+                    self._seen_start_request_ids.append(request_id)
+                if started:
+                    self._publish_event({
+                        "event": "command_accepted",
+                        "command": "start",
+                        "request_id": request_id,
+                        "duplicate": duplicate,
+                        "startup_id": getattr(self, "startup_id", ""),
+                        "route_path": getattr(self, "resolved_route_file_path", None) or "",
+                        "timestamp": time.time(),
+                    })
             elif command == "go_to_target":
                 self._go_to_target(str(payload.get("target_id") or ""))
             elif command == "pause":
@@ -1073,6 +1091,8 @@ class PatrolExecutorNode(Node):
                 "event": "initial_pose_published",
                 "remaining": self._initial_pose_remaining,
                 "stamp_zero": stamp_zero,
+                "startup_id": getattr(self, "startup_id", ""),
+                "route_path": getattr(self, "resolved_route_file_path", None) or "",
                 "timestamp": time.time(),
             }
         )

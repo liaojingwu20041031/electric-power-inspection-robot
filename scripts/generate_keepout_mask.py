@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -64,8 +66,18 @@ def active_hard_zones(route):
             yield polygon
 
 
-def write_pgm(path, width, height, pixels):
-    path.write_bytes(f"P5\n{width} {height}\n255\n".encode("ascii") + bytes(pixels))
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def stage_write(path, data):
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return temporary
 
 
 def main():
@@ -74,6 +86,7 @@ def main():
     parser.add_argument("--route", required=True)
     parser.add_argument("--output-dir", default="maps/keepout")
     parser.add_argument("--name", default="keepout_mask_power_room_a")
+    parser.add_argument("--metadata", default="")
     args = parser.parse_args()
 
     map_yaml_path = Path(args.map_yaml).expanduser()
@@ -107,7 +120,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     pgm_path = output_dir / f"{args.name}.pgm"
     yaml_path = output_dir / f"{args.name}.yaml"
-    write_pgm(pgm_path, width, height, pixels)
+    metadata_path = Path(args.metadata).expanduser() if args.metadata else output_dir / f"{args.name}.metadata.json"
     mask_yaml = {
         "image": pgm_path.name,
         "mode": "trinary",
@@ -117,8 +130,31 @@ def main():
         "occupied_thresh": 0.65,
         "free_thresh": float(map_data["free_thresh"]),
     }
-    yaml_path.write_text(yaml.safe_dump(mask_yaml, sort_keys=False), encoding="utf-8")
-    print(f"wrote {yaml_path} and {pgm_path}")
+    metadata = {
+        "map_yaml_sha256": sha256(map_yaml_path),
+        "map_pgm_sha256": sha256(map_image),
+        "route_sha256": sha256(args.route),
+        "width": width,
+        "height": height,
+        "resolution": resolution,
+        "origin": [float(origin[0]), float(origin[1]), 0.0],
+        "generated_at": __import__("time").time(),
+    }
+    staged = [
+        (stage_write(pgm_path, f"P5\n{width} {height}\n255\n".encode("ascii") + bytes(pixels)), pgm_path),
+        (stage_write(yaml_path, yaml.safe_dump(mask_yaml, sort_keys=False).encode("utf-8")), yaml_path),
+        (stage_write(metadata_path, (json.dumps(metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8")), metadata_path),
+    ]
+    try:
+        read_pgm_header(staged[0][0])
+        yaml.safe_load(staged[1][0].read_text(encoding="utf-8"))
+        json.loads(staged[2][0].read_text(encoding="utf-8"))
+        for temporary, final in staged:
+            os.replace(temporary, final)
+    finally:
+        for temporary, _final in staged:
+            temporary.unlink(missing_ok=True)
+    print(f"wrote {yaml_path}, {pgm_path} and {metadata_path}")
 
 
 if __name__ == "__main__":

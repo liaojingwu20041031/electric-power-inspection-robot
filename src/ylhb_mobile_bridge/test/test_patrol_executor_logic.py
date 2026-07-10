@@ -452,6 +452,7 @@ def test_status_and_event_publishers_use_patrol_status_qos(monkeypatch):
         "map_frame": "map",
         "cmd_vel_topic": "/cmd_vel",
         "auto_start": False,
+        "startup_id": "",
         "schedule_check_period_sec": 1.0,
         "publish_initial_pose_on_startup": True,
         "initial_pose_publish_count": 3,
@@ -825,6 +826,42 @@ def test_initial_pose_stamp_zero_event_marks_stamp_policy():
     assert published[0].header.stamp.nanosec == 0
     assert events[0]["event"] == "initial_pose_published"
     assert events[0]["stamp_zero"] is True
+
+
+def test_initial_pose_event_binds_startup_and_resolved_route():
+    data = route_file_data()
+    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
+    node._route_data = data
+    node._initial_pose_remaining = 1
+    node._initial_pose_timer = None
+    node.map_frame = "map"
+    node.startup_id = "startup_42"
+    node.resolved_route_file_path = "/tmp/route_patrol_001.json"
+    node._initial_pose_pub = type("Publisher", (), {"publish": lambda *_args: None})()
+    node.get_parameter = lambda name: type("Parameter", (), {"value": True})()
+    events = []
+    node._publish_event = events.append
+    node._finish_initial_pose_sequence = lambda: None
+
+    node._publish_one_initial_pose()
+
+    assert events[0]["startup_id"] == "startup_42"
+    assert events[0]["route_path"] == "/tmp/route_patrol_001.json"
+
+
+def test_duplicate_start_request_only_republishes_acknowledgement():
+    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
+    node._seen_start_request_ids = []
+    node._start_route_from_file = lambda _route_id: True
+    events = []
+    node._publish_event = events.append
+    message = type("Message", (), {"data": '{"command":"start","request_id":"r1"}'})()
+
+    node._on_command(message)
+    node._on_command(message)
+
+    assert [event["event"] for event in events] == ["command_accepted", "command_accepted"]
+    assert events[1]["duplicate"] is True
 
 
 def test_auto_start_waits_for_initial_pose_sequence_completion():

@@ -51,6 +51,7 @@ def generate_launch_description():
         source_file=params_file,
         param_rewrites={
             'global_costmap.global_costmap.ros__parameters.keepout_filter.enabled': enable_keepout,
+            'local_costmap.local_costmap.ros__parameters.keepout_filter.enabled': 'false',
         },
         convert_types=True,
     )
@@ -117,6 +118,7 @@ def generate_launch_description():
         package='nav2_map_server',
         executable='map_server',
         name='keepout_filter_mask_server',
+        namespace='',
         output='screen',
         condition=IfCondition(enable_keepout),
         parameters=[{
@@ -129,6 +131,7 @@ def generate_launch_description():
         package='nav2_map_server',
         executable='costmap_filter_info_server',
         name='costmap_filter_info_server',
+        namespace='',
         output='screen',
         condition=IfCondition(enable_keepout),
         parameters=[{

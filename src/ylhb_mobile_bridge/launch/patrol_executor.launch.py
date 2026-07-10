@@ -11,6 +11,7 @@ def generate_launch_description():
     publish_initial_pose = LaunchConfiguration(
         "publish_initial_pose_on_startup"
     )
+    startup_id = LaunchConfiguration("startup_id")
 
     return LaunchDescription(
         [
@@ -23,6 +24,7 @@ def generate_launch_description():
                 "publish_initial_pose_on_startup",
                 default_value="true",
             ),
+            DeclareLaunchArgument("startup_id", default_value=""),
             Node(
                 package="ylhb_mobile_bridge",
                 executable="patrol_executor_node",
@@ -39,6 +41,7 @@ def generate_launch_description():
                             publish_initial_pose,
                             value_type=bool,
                         ),
+                        "startup_id": startup_id,
                     }
                 ],
             ),

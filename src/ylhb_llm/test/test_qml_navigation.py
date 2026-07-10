@@ -76,6 +76,8 @@ def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
     assert "image_error" in qml
     assert "Nav2 Action" not in qml
     assert "backend.patrolStateLabel" in qml
+    assert "backend.routePreview.map_identity.image" not in qml
+    assert "backend.routePreview.map_identity || ({})" in qml
 
 
 def test_route_preview_viewer_has_zoom_pan_and_error_controls():
@@ -92,6 +94,9 @@ def test_route_preview_viewer_has_zoom_pan_and_error_controls():
     assert "scale: root.zoom" in qml
     assert "smooth: !root.dragging" in qml
     assert "cache: true" in qml
+    assert "property bool autoFit: true" in qml
+    assert "property real minZoom: 0.05" in qml
+    assert "property real maxZoom: 6.0" in qml
     assert "路线预览图解码失败" in qml
 
 
@@ -120,6 +125,8 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.patrolCanPause' in qml
     assert 'backend.patrolCanResume' in qml
     assert 'backend.patrolCanCancel' in qml
+    assert 'backend.setRoutePreviewMode("route_focus")' in qml
+    assert 'backend.setRoutePreviewMode("full_map")' in qml
     controls = qml.split('Label { text: "主控制"', 1)[1].split('Label { text: "路线预览"', 1)[0]
     assert 'backend.sendSystemCommand("stop_navigation")' not in controls
     assert 'backend.sendSystemCommand("stop_bringup")' not in controls

@@ -9,7 +9,7 @@ from std_msgs.msg import String
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
 from ylhb_llm import system_supervisor_node
-from ylhb_llm.system_supervisor_node import SystemSupervisorNode
+from ylhb_llm.system_supervisor_node import ManagedProcess, SystemSupervisorNode
 
 
 class FakeProcess:
@@ -29,9 +29,18 @@ class FakePublisher:
 
 
 def allow_patrol_start_gates(node):
+    node.start_navigation_process = Mock(return_value=True)
+    node.stop_process = Mock()
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_localization_ready = Mock(return_value=True)
     node.wait_for_map_to_odom = Mock(return_value=True)
+    node.wait_for_fresh_amcl = Mock(return_value=True)
     node.wait_for_nav2_active_ready = Mock(return_value=True)
     node.wait_for_keepout_active_ready = Mock(return_value=True)
+    node.wait_for_nav2_action_ready = Mock(return_value=True)
+    node.wait_for_patrol_executor_ready = Mock(return_value=True)
+    node.wait_for_patrol_command_ack = Mock(return_value=True)
     node.log_patrol_start_readiness = Mock()
 
 
@@ -56,6 +65,205 @@ def test_mobile_bridge_commands_start_stop_and_restart():
     node.handle_command('restart_mobile_bridge', {})
     assert node.stop_process.call_args_list[-1].args == ('mobile_bridge',)
     assert node.start_process.call_args_list[-1].args == ('mobile_bridge',)
+
+
+def test_start_process_reports_immediate_navigation_exit(monkeypatch):
+    class ExitedProcess:
+        pid = 123
+
+        def poll(self):
+            return 1
+
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'navigation': ManagedProcess('navigation', 'false')}
+    node.lock = threading.Lock()
+    node.workspace_dir = '/tmp'
+    node.wrap_command = lambda command: command
+    node.set_result_locked = Mock()
+    monkeypatch.setattr(
+        system_supervisor_node.subprocess,
+        'Popen',
+        lambda *args, **kwargs: ExitedProcess(),
+    )
+
+    assert node.start_process_raw('navigation') is False
+    proc = node.processes['navigation']
+    assert proc.last_exit_code == 1
+    assert 'exited' in proc.last_error
+    assert '导航已启动' not in node.set_result_locked.call_args.args[2]
+
+
+def test_navigation_exit_stops_lifecycle_readiness_wait_immediately():
+    class ExitedProcess:
+        def poll(self):
+            return 2
+
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    navigation = ManagedProcess('navigation', 'false')
+    navigation.process = ExitedProcess()
+    node.processes = {'navigation': navigation}
+    node.build_patrol_readiness = Mock(return_value={'nav2_active': False})
+
+    assert node.wait_for_readiness_keys(('nav2_active',), 0.01, 'Nav2 lifecycle 未激活') is False
+    assert node.startup_step == 'navigation_process_exited'
+    assert 'exit code=2' in node.patrol_error
+
+
+def test_patrol_stops_before_executor_when_navigation_is_not_ready():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'idle'
+    node.patrol_error = ''
+    node.processes = {
+        'bringup': FakeProcess(running=True),
+        'navigation': FakeProcess(running=True),
+        'patrol_executor': FakeProcess(running=False),
+    }
+    node.start_process = Mock(return_value=True)
+    node.start_navigation_process = Mock(return_value=True)
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=False)
+    node.stop_process = Mock()
+    node.set_result = Mock()
+    node.log_info = Mock()
+
+    node.start_patrol_mode()
+
+    node.start_process.assert_called_once_with('bringup')
+    node.start_navigation_process.assert_called_once_with()
+    assert all(call.args != ('patrol_executor',) for call in node.start_process.call_args_list)
+    assert [call.args for call in node.stop_process.call_args_list] == [
+        ('patrol_executor',), ('navigation',)
+    ]
+    assert node.patrol_mode_state == 'failed'
+    assert node.startup_step == 'patrol_failed'
+
+
+def test_navigation_start_prepares_assets_once_before_raw_spawn():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.prepare_patrol_navigation_assets = Mock(return_value=True)
+    node.start_process_raw = Mock(return_value=True)
+
+    assert node.start_navigation_process() is True
+    node.prepare_patrol_navigation_assets.assert_called_once_with()
+    node.start_process_raw.assert_called_once_with('navigation')
+
+
+def test_runtime_route_safety_check_is_read_only(tmp_path, monkeypatch):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.workspace_dir = str(Path(__file__).resolve().parents[3])
+    node.default_navigation_map = str(tmp_path / 'map.yaml')
+    node.patrol_route_path = str(tmp_path / 'route.json')
+    node.patrol_error = ''
+    seen = []
+    monkeypatch.setattr(
+        system_supervisor_node.subprocess,
+        'run',
+        lambda command, **_kwargs: seen.append(command) or type('Result', (), {'returncode': 0, 'stdout': 'route safety ok'})(),
+    )
+
+    assert node.run_route_safety_check() == 'ok'
+    assert '--write-back' not in seen[0]
+
+
+def test_only_current_startup_event_can_satisfy_initial_pose_gate(tmp_path):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.startup_generation = 3
+    node.startup_id = 'startup_3'
+    node.startup_started_at = 100.0
+    node.patrol_route_path = str(tmp_path / 'route.json')
+    node.last_initial_pose_event = {
+        'event': 'initial_pose_published', 'startup_id': 'startup_2',
+        'route_path': node.patrol_route_path, 'timestamp': 101.0,
+    }
+
+    assert node.has_initial_pose_published(3) is False
+
+    node.last_initial_pose_event['startup_id'] = 'startup_3'
+    assert node.has_initial_pose_published(3) is True
+
+
+def test_duplicate_patrol_start_does_not_start_second_transaction():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.lock = threading.Lock()
+    node.patrol_start_active = True
+    node.set_result = Mock()
+
+    node.start_patrol_mode()
+
+    node.set_result.assert_called_once_with('start_patrol_mode', True, '巡逻启动正在进行')
+
+
+def test_start_ack_timeout_retries_same_request_id_once():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {}
+    node.start_process = Mock(return_value=True)
+    node.start_navigation_process = Mock(return_value=True)
+    node.publish_patrol_command = Mock()
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.wait_for_localization_ready = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_executor_ready = Mock(return_value=True)
+    node.wait_for_initial_pose_published = Mock(return_value=True)
+    node.wait_for_fresh_amcl = Mock(return_value=True)
+    node.wait_for_map_to_odom = Mock(return_value=True)
+    node.wait_for_nav2_active_ready = Mock(return_value=True)
+    node.wait_for_keepout_active_ready = Mock(return_value=True)
+    node.wait_for_nav2_action_ready = Mock(return_value=True)
+    node.wait_for_patrol_command_ack = Mock(side_effect=[False, True])
+    node.log_patrol_start_readiness = Mock()
+    node.set_result = Mock()
+    node.log_info = Mock()
+
+    node.start_patrol_mode()
+
+    assert node.publish_patrol_command.call_count == 2
+    assert node.publish_patrol_command.call_args_list[0].kwargs['request_id'] == node.publish_patrol_command.call_args_list[1].kwargs['request_id']
+
+
+def test_robot_stack_and_restart_use_the_single_navigation_owner():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.start_process = Mock(return_value=True)
+    node.start_navigation_process = Mock(return_value=True)
+    node.set_result = Mock()
+
+    node.start_robot_stack()
+
+    node.start_navigation_process.assert_called_once_with()
+    assert [call.args[0] for call in node.start_process.call_args_list] == [
+        'bringup', 'zed', 'perception', 'llm',
+    ]
+
+    node.processes = {'navigation': FakeProcess(running=True)}
+    node.stop_process = Mock()
+    node.start_navigation_process.reset_mock()
+    node.handle_command('restart_navigation', {})
+
+    node.stop_process.assert_called_once_with('navigation')
+    node.start_navigation_process.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("safety", "expected"),
+    (("warning", True), ("unsafe", False)),
+)
+def test_route_safety_warning_allows_but_unsafe_blocks_navigation_assets(tmp_path, monkeypatch, safety, expected):
+    map_path = tmp_path / "map.yaml"
+    route_path = tmp_path / "route.json"
+    map_path.write_text("image: map.pgm\n", encoding="utf-8")
+    route_path.write_text("{}", encoding="utf-8")
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.default_navigation_map = str(map_path)
+    node.patrol_route_path = str(route_path)
+    node.enable_keepout_navigation = False
+    node.processes = {'navigation': ManagedProcess('navigation', 'launch')}
+    node.run_route_safety_check = Mock(return_value=safety)
+    node.patrol_error = 'warning: target_001'
+    monkeypatch.setattr(system_supervisor_node, 'load_route_file', lambda _path: {})
+    monkeypatch.setattr(system_supervisor_node, 'validate_route_map_binding', lambda _route, _map: None)
+
+    assert node.prepare_patrol_navigation_assets() is expected
 
 
 def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order(monkeypatch):
@@ -87,12 +295,13 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
 
     def fake_start_process(name):
         sequence.append(f'start_{name}')
+        return True
 
     def fake_wait_navigation_ready(_timeout):
         sequence.append('wait_navigation_ready')
         return True
 
-    def fake_wait_initial_pose(_timeout):
+    def fake_wait_initial_pose(_timeout, *_args):
         sequence.append('wait_initial_pose')
         return True
 
@@ -105,12 +314,14 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
         return True
 
     node.start_process.side_effect = fake_start_process
+    node.start_navigation_process.side_effect = lambda: sequence.append('start_navigation') or True
+    node.wait_for_core_sensors.side_effect = lambda _timeout: sequence.append('wait_core_sensors') or True
     node.wait_for_navigation_ready.side_effect = fake_wait_navigation_ready
     node.wait_for_initial_pose_published.side_effect = fake_wait_initial_pose
     node.wait_for_map_to_odom.side_effect = fake_wait_map_to_odom
     node.wait_for_nav2_active_ready.side_effect = fake_wait_nav2_active
     node.log_patrol_start_readiness.side_effect = lambda: sequence.append('log_start_readiness')
-    node.publish_patrol_command.side_effect = lambda command, request_id='': sequence.append(
+    node.publish_patrol_command.side_effect = lambda command, request_id='', **_kwargs: sequence.append(
         f'publish_{command}'
     )
     sleeps = []
@@ -126,36 +337,32 @@ def test_start_patrol_mode_navigation_profile_starts_dependencies_in_ready_order
 
     assert sequence == [
         'start_bringup',
-        'sleep_3',
+        'wait_core_sensors',
         'start_navigation',
-        'sleep_20',
         'wait_navigation_ready',
         'start_patrol_executor',
-        'sleep_6',
         'wait_initial_pose',
         'wait_map_to_odom',
-        'wait_nav2_active',
         'log_start_readiness',
-        'publish_start',
-        'sleep_5',
+        'wait_nav2_active',
         'publish_start',
     ]
-    node.wait_for_core_sensors.assert_not_called()
+    node.wait_for_core_sensors.assert_called_once_with(25.0)
     node.wait_for_navigation_ready.assert_called_once_with(35.0)
-    node.wait_for_patrol_executor_ready.assert_not_called()
-    node.wait_for_initial_pose_published.assert_called_once_with(8.0)
+    node.wait_for_patrol_executor_ready.assert_called_once_with(15.0)
+    node.wait_for_initial_pose_published.assert_called_once_with(8.0, 1)
     node.wait_for_map_to_odom.assert_called_once_with(10.0)
     node.wait_for_nav2_active_ready.assert_called_once_with(25.0)
-    node.wait_for_nav2_action_ready.assert_not_called()
+    node.wait_for_nav2_action_ready.assert_called_once_with(25.0)
     node.wait_for_patrol_status.assert_not_called()
     node.wait_for_patrol_status_heartbeat.assert_called_once_with(100.0, 8.0)
-    node.wait_for_patrol_command_subscriber.assert_called_once_with(5.0)
+    node.wait_for_patrol_command_subscriber.assert_called_once_with(8.0)
     assert node.publish_patrol_command.call_args_list[-1].args[0] == 'start'
     assert node.patrol_mode_state == 'command_sent'
     node.set_result.assert_called_with(
         'start_patrol_mode',
         True,
-        '已按手动流程发送巡逻启动命令',
+        '巡逻启动命令已发送',
     )
 
 
@@ -186,13 +393,13 @@ def test_start_patrol_mode_inspection_profile_starts_perception_stack():
         'bringup',
         'zed',
         'perception',
-        'navigation',
         'patrol_executor',
     ]
-    assert node.publish_patrol_command.call_count == 2
+    node.start_navigation_process.assert_called_once_with()
+    assert node.publish_patrol_command.call_count == 1
 
 
-def test_start_patrol_mode_gates_start_on_nav2_lifecycle_not_action_server():
+def test_start_patrol_mode_gates_start_on_nav2_action_server():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
@@ -206,25 +413,18 @@ def test_start_patrol_mode_gates_start_on_nav2_lifecycle_not_action_server():
     node.wait_for_navigation_ready = Mock(return_value=True)
     node.wait_for_patrol_executor_ready = Mock(return_value=True)
     node.wait_for_initial_pose_published = Mock(return_value=True)
-    node.wait_for_nav2_action_ready = Mock(return_value=False)
     allow_patrol_start_gates(node)
+    node.wait_for_nav2_action_ready = Mock(return_value=False)
 
     node.handle_command('start_patrol_mode', {})
 
-    assert [call.args[0] for call in node.start_process.call_args_list] == [
-        'bringup',
-        'navigation',
-        'patrol_executor',
-    ]
-    node.wait_for_initial_pose_published.assert_called_once_with(8.0)
-    node.wait_for_map_to_odom.assert_called_once_with(10.0)
-    node.wait_for_nav2_active_ready.assert_called_once_with(25.0)
-    node.wait_for_nav2_action_ready.assert_not_called()
-    assert node.publish_patrol_command.call_args_list[-1].args[0] == 'start'
+    assert [call.args[0] for call in node.start_process.call_args_list] == ['bringup', 'patrol_executor']
+    node.wait_for_nav2_action_ready.assert_called_once_with(25.0)
+    node.publish_patrol_command.assert_not_called()
     node.set_result.assert_called_with(
         'start_patrol_mode',
-        True,
-        '已按手动流程发送巡逻启动命令',
+        False,
+        '巡逻启动失败: Nav2 动作服务未就绪',
     )
 
 
@@ -248,20 +448,24 @@ def test_start_patrol_keepout_generation_failure_blocks_navigation_start():
     node.enable_keepout_navigation = True
     node.patrol_error = ''
     node.start_process = Mock()
+    def navigation_assets_fail():
+        node.patrol_error = 'keepout mask generation failed: bad route'
+        return False
+
+    node.start_navigation_process = Mock(side_effect=navigation_assets_fail)
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.stop_process = Mock()
     node.publish_patrol_command = Mock()
     node.generate_keepout_mask = Mock(return_value=False)
     node.set_result = Mock()
     node.log_info = Mock()
 
-    def fake_prepare():
-        node.patrol_error = 'keepout mask generation failed: bad route'
-        return False
-
-    node.prepare_keepout_navigation = Mock(side_effect=fake_prepare)
+    node.patrol_error = 'keepout mask generation failed: bad route'
 
     node.handle_command('start_patrol_mode', {})
 
     assert [call.args[0] for call in node.start_process.call_args_list] == ['bringup']
+    node.start_navigation_process.assert_called_once_with()
     node.publish_patrol_command.assert_not_called()
     node.set_result.assert_called_with(
         'start_patrol_mode',
@@ -274,8 +478,10 @@ def test_start_patrol_keepout_lifecycle_failure_blocks_start_command():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.enable_keepout_navigation = True
     node.start_process = Mock()
+    node.start_navigation_process = Mock(return_value=True)
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.stop_process = Mock()
     node.publish_patrol_command = Mock()
-    node.prepare_keepout_navigation = Mock(return_value=True)
     node.wait_for_patrol_command_subscriber = Mock(return_value=True)
     node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
     node.wait_for_navigation_ready = Mock(return_value=True)
@@ -295,7 +501,7 @@ def test_start_patrol_keepout_lifecycle_failure_blocks_start_command():
     node.set_result.assert_called_with(
         'start_patrol_mode',
         False,
-        '巡逻启动门控失败: 未确认 Keepout lifecycle active',
+        '巡逻启动失败: 未确认 Keepout lifecycle active',
     )
 
 
@@ -317,6 +523,8 @@ def test_start_patrol_mode_does_not_publish_start_before_nav2_active():
     node.wait_for_nav2_active_ready = Mock(return_value=False)
     node.log_patrol_start_readiness = Mock()
     node.wait_for_nav2_action_ready = Mock(return_value=True)
+    node.start_navigation_process = Mock(return_value=True)
+    node.stop_process = Mock()
 
     node.handle_command('start_patrol_mode', {})
 
@@ -325,7 +533,7 @@ def test_start_patrol_mode_does_not_publish_start_before_nav2_active():
     node.set_result.assert_called_with(
         'start_patrol_mode',
         False,
-        '巡逻启动门控失败: 未确认 Nav2 lifecycle active',
+        '巡逻启动失败: 未确认 Nav2 lifecycle active',
     )
 
 
@@ -354,7 +562,7 @@ def test_start_patrol_mode_does_not_wait_for_patrol_status_but_forwards_start():
     node.set_result.assert_called_with(
         'start_patrol_mode',
         True,
-        '已按手动流程发送巡逻启动命令',
+        '巡逻启动命令已发送',
     )
 
 
@@ -442,7 +650,7 @@ def test_cancel_patrol_only_forwards_cancel_without_stopping_processes():
     node.set_result.assert_called_with('cancel_patrol', True, '已发送巡逻命令: cancel')
 
 
-def test_start_patrol_reuses_running_processes_and_republishes_start():
+def test_start_patrol_reuses_running_processes_and_sends_one_start():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.processes = {
         'bringup': FakeProcess(running=True),
@@ -465,13 +673,13 @@ def test_start_patrol_reuses_running_processes_and_republishes_start():
 
     assert [call.args[0] for call in node.start_process.call_args_list] == [
         'bringup',
-        'navigation',
         'patrol_executor',
     ]
-    assert node.publish_patrol_command.call_count == 2
+    node.start_navigation_process.assert_called_once_with()
+    assert node.publish_patrol_command.call_count == 1
 
 
-def test_start_patrol_mode_warns_without_subscriber_or_heartbeat_and_never_sets_running():
+def test_start_patrol_mode_fails_without_subscriber_or_heartbeat():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
@@ -486,11 +694,11 @@ def test_start_patrol_mode_warns_without_subscriber_or_heartbeat_and_never_sets_
 
     node.handle_command('start_patrol_mode', {})
 
-    assert node.patrol_mode_state == 'command_sent'
-    assert 'warning' in node.patrol_error
-    assert node.publish_patrol_command.call_count == 1
+    assert node.patrol_mode_state == 'failed'
+    assert '未确认 /patrol/status heartbeat' in node.patrol_error
+    node.publish_patrol_command.assert_not_called()
     node.set_result.assert_called_once()
-    assert node.set_result.call_args.args[1] is True
+    assert node.set_result.call_args.args[1] is False
 
 
 def test_patrol_status_callback_is_business_state_source():
@@ -533,7 +741,7 @@ def test_patrol_status_callback_is_business_state_source():
     assert node.patrol_mode_state == 'failed'
 
 
-def test_start_patrol_republishes_once_when_executor_still_idle_or_unavailable(monkeypatch):
+def test_start_patrol_does_not_retry_when_executor_acknowledges(monkeypatch):
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.start_process = Mock()
     node.publish_patrol_command = Mock()
@@ -551,12 +759,12 @@ def test_start_patrol_republishes_once_when_executor_still_idle_or_unavailable(m
 
     node.handle_command('start_patrol_mode', {})
 
-    assert node.publish_patrol_command.call_count == 2
+    assert node.publish_patrol_command.call_count == 1
 
     node.publish_patrol_command.reset_mock()
     node.last_patrol_status = {'state': 'unavailable'}
     node.handle_command('start_patrol_mode', {})
-    assert node.publish_patrol_command.call_count == 2
+    assert node.publish_patrol_command.call_count == 1
 
 
 def test_start_patrol_does_not_republish_for_terminal_or_active_states(monkeypatch):
