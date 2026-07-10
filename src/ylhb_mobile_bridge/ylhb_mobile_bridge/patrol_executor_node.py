@@ -1104,9 +1104,23 @@ def main(args=None) -> None:
     node = PatrolExecutorNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.get_logger().info("patrol_executor stopped cleanly")
+        except Exception:
+            pass
+        try:
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if rclpy.ok():
+                try:
+                    rclpy.shutdown()
+                except KeyboardInterrupt:
+                    pass
 
 
 if __name__ == "__main__":

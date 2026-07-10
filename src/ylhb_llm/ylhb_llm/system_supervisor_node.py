@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import signal
 import socket
@@ -13,7 +14,7 @@ from geometry_msgs.msg import Twist, PoseWithCovarianceStamped
 from lifecycle_msgs.msg import State
 from lifecycle_msgs.srv import GetState
 from nav_msgs.msg import Odometry
-from nav2_msgs.srv import ManageLifecycleNodes
+from nav2_msgs.srv import ManageLifecycleNodes, SetInitialPose
 from sensor_msgs.msg import LaserScan
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -326,6 +327,12 @@ class SystemSupervisorNode(Node):
         self.startup_started_at = 0.0
         self.patrol_start_cancel_event = threading.Event()
         self.patrol_start_active = False
+        self.set_initial_pose_client = None
+        self.initial_pose_request_sent_at = 0.0
+        self.initial_pose_service_ok = False
+        self.initial_pose_confirmed_at = 0.0
+        self.localization_lifecycle_started = False
+        self.navigation_lifecycle_started = False
         self.latest_mapping3d_status: Dict[str, Any] = {}
         self.latest_mapping3d_result: Dict[str, Any] = {}
         self.inflight_commands = set()
@@ -717,14 +724,37 @@ class SystemSupervisorNode(Node):
 
     def cleanup_process_ros_interfaces(self, name: str) -> None:
         if name == 'navigation':
-            self.manage_lifecycle_nodes(
-                LIFECYCLE_MANAGER_NAVIGATION,
-                ManageLifecycleNodes.Request.SHUTDOWN,
-                timeout_sec=2.0,
-                required=False,
-            )
+            self.shutdown_started_lifecycles()
         if name == 'bringup':
             self.stop_lidar_motor()
+
+    def shutdown_started_lifecycles(self) -> None:
+        if getattr(self, 'navigation_lifecycle_started', False):
+            nav_unconfigured = all(
+                self.lifecycle_node_state(name) == State.PRIMARY_STATE_UNCONFIGURED
+                for name in NAVIGATION_LIFECYCLE_NODES
+            )
+            if not nav_unconfigured:
+                self.manage_lifecycle_nodes(
+                    LIFECYCLE_MANAGER_NAVIGATION,
+                    ManageLifecycleNodes.Request.SHUTDOWN,
+                    timeout_sec=3.0,
+                    required=False,
+                )
+            self.navigation_lifecycle_started = False
+        if getattr(self, 'localization_lifecycle_started', False):
+            loc_unconfigured = all(
+                self.lifecycle_node_state(name) == State.PRIMARY_STATE_UNCONFIGURED
+                for name in LOCALIZATION_LIFECYCLE_NODES
+            )
+            if not loc_unconfigured:
+                self.manage_lifecycle_nodes(
+                    LIFECYCLE_MANAGER_LOCALIZATION,
+                    ManageLifecycleNodes.Request.SHUTDOWN,
+                    timeout_sec=3.0,
+                    required=False,
+                )
+            self.localization_lifecycle_started = False
 
     def terminate_process_group(self, proc: ManagedProcess) -> tuple[bool, str]:
         with self.lock:
@@ -884,6 +914,12 @@ class SystemSupervisorNode(Node):
             self.last_patrol_command_ack = {}
             self.last_patrol_start_request_id = ''
             self.last_amcl_received_at = 0.0
+            self.set_initial_pose_client = None
+            self.initial_pose_request_sent_at = 0.0
+            self.initial_pose_service_ok = False
+            self.initial_pose_confirmed_at = 0.0
+            self.localization_lifecycle_started = False
+            self.navigation_lifecycle_started = False
         try:
             self._start_patrol_transaction(profile, route_id, generation)
         finally:
@@ -917,13 +953,16 @@ class SystemSupervisorNode(Node):
             self.fail_patrol_start(self.patrol_error or error, generation)
             return False
 
+        # 1. bringup
         self.startup_step = 'starting_bringup'
         if not self.start_process('bringup'):
             self.fail_patrol_start('底盘与雷达启动失败', generation=generation)
             return
+        # 2. core sensors
         if not gate(self.wait_for_core_sensors(self.patrol_timeout('patrol_bringup_timeout_sec', 25.0)), '底盘与传感器未就绪'):
             return
 
+        # 3. inspection peripherals
         if profile == 'inspection':
             self.startup_step = 'starting_inspection'
             for name in ('zed', 'perception'):
@@ -931,15 +970,18 @@ class SystemSupervisorNode(Node):
                     self.fail_patrol_start(f'{name} 启动失败', generation=generation)
                     return
 
+        # 4. navigation bringup, autostart=false
         self.startup_step = 'starting_navigation'
         if not self.start_navigation_process():
             self.fail_patrol_start(self.patrol_error or '导航进程启动失败', generation=generation)
             return
         self.startup_step = 'navigation_process_spawned'
+        # 5. Nav2 components loaded (lifecycle services discoverable)
         if not gate(self.wait_for_lifecycle_manager_services(15.0), 'Nav2 lifecycle manager 服务未就绪'):
             return
         if not gate(self.wait_for_nav2_components_loaded(15.0), 'Nav2 核心组件未加载'):
             return
+        # 6. STARTUP localization lifecycle
         if not gate(
             self.manage_lifecycle_nodes(
                 LIFECYCLE_MANAGER_LOCALIZATION,
@@ -949,6 +991,8 @@ class SystemSupervisorNode(Node):
             'localization lifecycle 启动失败',
         ):
             return
+        self.localization_lifecycle_started = True
+        # 7. localization nodes active (map_server + AMCL)
         if not gate(
             self.wait_for_lifecycle_nodes_active(
                 LOCALIZATION_LIFECYCLE_NODES,
@@ -957,6 +1001,7 @@ class SystemSupervisorNode(Node):
             'AMCL 尚未 active',
         ):
             return
+        # 8. /map publisher and /initialpose subscriber
         if not gate(
             self.wait_for_navigation_ready(
                 self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)
@@ -964,55 +1009,30 @@ class SystemSupervisorNode(Node):
             '地图或 initialpose 订阅尚未就绪',
         ):
             return
+        # 9. keepout mask lifecycle active
         if not gate(
             self.wait_for_lifecycle_nodes_active(KEEPOUT_LIFECYCLE_NODES, 12.0),
             'Keepout lifecycle 尚未 active',
         ):
             return
-
-        self.startup_step = 'starting_executor'
-        started_at = time.time()
-        executor = getattr(self, 'processes', {}).get('patrol_executor')
-        if executor is not None:
-            route_path = getattr(self, 'patrol_route_path', '')
-            executor.command = (
-                'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
-                f'route_file_path:={route_path} auto_start:=false '
-                f'publish_initial_pose_on_startup:=true startup_id:={self.startup_id}'
-            )
-        if not self.start_process('patrol_executor'):
-            self.fail_patrol_start('巡逻执行器启动失败', generation=generation)
+        # 10. AMCL initial pose via /set_initial_pose service
+        if not gate(
+            self.initialize_amcl_with_confirmation(generation),
+            'AMCL 初始定位失败',
+        ):
             return
-        self.startup_step = 'executor_process_spawned'
-        heartbeat_ok = self.wait_for_patrol_status_heartbeat(started_at, self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0))
-        subscriber_ok = self.wait_for_patrol_command_subscriber(self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0))
-        executor_ok = self.wait_for_patrol_executor_ready(self.patrol_timeout('patrol_executor_timeout_sec', 15.0))
-        initial_pose_ok = self.wait_for_initial_pose_published(self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0), generation)
-        initial_pose_at = float((getattr(self, 'last_initial_pose_event', {}) or {}).get('timestamp') or started_at)
-        amcl_ok = self.wait_for_fresh_amcl(self.patrol_timeout('patrol_amcl_timeout_sec', 10.0), initial_pose_at, generation)
-        map_to_odom_ok = self.wait_for_stable_map_to_odom(
-            self.patrol_timeout('patrol_amcl_timeout_sec', 10.0),
-            stable_duration_sec=1.0,
-            after_amcl=initial_pose_at,
-            generation=generation,
-        )
-        self.log_patrol_start_readiness()
-        gate_warnings = []
-        if not executor_ok:
-            gate_warnings.append('巡逻执行器未就绪')
-        if not heartbeat_ok:
-            gate_warnings.append('未确认 /patrol/status heartbeat')
-        if not subscriber_ok:
-            gate_warnings.append('未确认 /patrol/command 订阅者')
-        if not initial_pose_ok:
-            gate_warnings.append('未确认初始位姿已发布')
-        if not amcl_ok:
-            gate_warnings.append('未确认初始位姿后的 /amcl_pose')
-        if not map_to_odom_ok:
-            gate_warnings.append('未确认 map->odom TF')
-        if gate_warnings:
-            self.fail_patrol_start('；'.join(gate_warnings), generation=generation)
+        # 11. stable map->odom
+        if not gate(
+            self.wait_for_stable_map_to_odom(
+                timeout_sec=10.0,
+                stable_duration_sec=1.0,
+                after_amcl=self.initial_pose_request_sent_at,
+                generation=generation,
+            ),
+            'map->odom 未稳定',
+        ):
             return
+        # 12. STARTUP navigation lifecycle (after localization+initial pose)
         if not gate(
             self.manage_lifecycle_nodes(
                 LIFECYCLE_MANAGER_NAVIGATION,
@@ -1022,6 +1042,8 @@ class SystemSupervisorNode(Node):
             'navigation lifecycle 启动失败',
         ):
             return
+        self.navigation_lifecycle_started = True
+        # 13. navigation nodes active
         if not gate(
             self.wait_for_lifecycle_nodes_active(
                 NAVIGATION_LIFECYCLE_NODES,
@@ -1030,11 +1052,43 @@ class SystemSupervisorNode(Node):
             'Nav2 节点尚未全部 active',
         ):
             return
+        # 14. global/local costmap received keepout mask
         if not gate(
             self.wait_for_keepout_runtime_ready(12.0),
             'global/local costmap 尚未收到 keepout info 和 mask',
         ):
             return
+        # 15. patrol executor (no auto initial pose)
+        self.startup_step = 'starting_executor'
+        started_at = time.time()
+        executor = getattr(self, 'processes', {}).get('patrol_executor')
+        if executor is not None:
+            route_path = getattr(self, 'patrol_route_path', '')
+            executor.command = (
+                'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
+                f'route_file_path:={route_path} auto_start:=false '
+                f'publish_initial_pose_on_startup:=false startup_id:={self.startup_id}'
+            )
+        if not self.start_process('patrol_executor'):
+            self.fail_patrol_start('巡逻执行器启动失败', generation=generation)
+            return
+        # 16. executor /patrol/status and /patrol/command
+        self.startup_step = 'executor_process_spawned'
+        heartbeat_ok = self.wait_for_patrol_status_heartbeat(started_at, self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0))
+        subscriber_ok = self.wait_for_patrol_command_subscriber(self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0))
+        executor_ok = self.wait_for_patrol_executor_ready(self.patrol_timeout('patrol_executor_timeout_sec', 15.0))
+        self.log_patrol_start_readiness()
+        gate_warnings = []
+        if not executor_ok:
+            gate_warnings.append('巡逻执行器未就绪')
+        if not heartbeat_ok:
+            gate_warnings.append('未确认 /patrol/status heartbeat')
+        if not subscriber_ok:
+            gate_warnings.append('未确认 /patrol/command 订阅者')
+        if gate_warnings:
+            self.fail_patrol_start('；'.join(gate_warnings), generation=generation)
+            return
+        # 17. send patrol start
         self.startup_step = 'executor_ready'
         request_id = f"{self.startup_id}_command"
         if route_id:
@@ -1052,6 +1106,88 @@ class SystemSupervisorNode(Node):
             self.patrol_mode_state = 'command_sent'
             self.startup_step = 'patrol_command_sent'
         self.set_result('start_patrol_mode', True, '巡逻启动命令已发送')
+
+    def load_patrol_initial_pose(self) -> PoseWithCovarianceStamped:
+        route = load_route_file(self.patrol_route_path)
+        start_pose = route.get('start_pose') or {}
+        pose = start_pose.get('pose') or {}
+        covariance = start_pose.get('covariance') or {}
+        message = PoseWithCovarianceStamped()
+        message.header.frame_id = 'map'
+        message.header.stamp = Time().to_msg()
+        message.pose.pose.position.x = float(pose.get('x') or 0.0)
+        message.pose.pose.position.y = float(pose.get('y') or 0.0)
+        yaw = float(pose.get('yaw') or 0.0)
+        message.pose.pose.orientation.z = math.sin(yaw / 2.0)
+        message.pose.pose.orientation.w = math.cos(yaw / 2.0)
+        message.pose.covariance[0] = float(covariance.get('x') or 0.0)
+        message.pose.covariance[7] = float(covariance.get('y') or 0.0)
+        message.pose.covariance[35] = float(covariance.get('yaw') or 0.0)
+        return message
+
+    def request_amcl_initial_pose(self, generation: int, timeout_sec: float = 4.0) -> bool:
+        if not self.is_current_patrol_start(generation):
+            return False
+        if not all(
+            self.lifecycle_node_is_active(name) for name in LOCALIZATION_LIFECYCLE_NODES
+        ):
+            self.patrol_error = 'AMCL lifecycle 不在 active 状态'
+            return False
+        client = self.set_initial_pose_client
+        if client is None:
+            client = self.create_client(SetInitialPose, '/set_initial_pose')
+            self.set_initial_pose_client = client
+        if not client.wait_for_service(timeout_sec=2.0):
+            self.patrol_error = '/set_initial_pose 服务不可用'
+            return False
+        request = SetInitialPose.Request()
+        request.pose = self.load_patrol_initial_pose()
+        pose_msg = request.pose.pose.pose
+        yaw = 2.0 * math.atan2(pose_msg.orientation.z, pose_msg.orientation.w)
+        self.log_info(
+            'AMCL initial pose request: '
+            f'x={pose_msg.position.x:.3f} y={pose_msg.position.y:.3f} '
+            f'yaw={yaw:.3f} attempt=1'
+        )
+        self.initial_pose_request_sent_at = time.time()
+        future = client.call_async(request)
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if not self.is_current_patrol_start(generation):
+                return False
+            if future.done():
+                try:
+                    future.result()
+                except Exception as exc:
+                    self.patrol_error = f'AMCL 初始位姿服务调用失败: {exc}'
+                    return False
+                self.initial_pose_service_ok = True
+                self.log_info('AMCL set_initial_pose service completed')
+                return True
+            time.sleep(0.02)
+        self.patrol_error = 'AMCL 初始位姿服务调用超时'
+        return False
+
+    def initialize_amcl_with_confirmation(self, generation: int) -> bool:
+        for attempt in range(1, 3):
+            if not self.is_current_patrol_start(generation):
+                return False
+            self.log_info(f'AMCL 初始定位 attempt={attempt}')
+            sent_at = time.time()
+            if not self.request_amcl_initial_pose(generation):
+                return False
+            if self.wait_for_fresh_amcl(timeout_sec=4.0, after=sent_at, generation=generation):
+                self.initial_pose_confirmed_at = getattr(self, 'last_amcl_received_at', 0.0)
+                self.log_info('fresh /amcl_pose confirmed')
+                return True
+            self.log_info(
+                'AMCL 未在本次初始位姿请求后发布 /amcl_pose，准备重试 '
+                f'attempt={attempt + 1}'
+            )
+        self.patrol_error = (
+            'AMCL 已接收初始位姿服务请求，但未发布新的 /amcl_pose'
+        )
+        return False
 
     def fail_patrol_start(self, error: str, generation: Optional[int] = None) -> None:
         if generation is not None and generation != getattr(self, 'startup_generation', generation):
@@ -1367,6 +1503,17 @@ class SystemSupervisorNode(Node):
 
             'patrol_status': self.topic_has_publishers('/patrol/status'),
             'initial_pose_published': self.has_initial_pose_published(),
+            'set_initial_pose_service': self.service_exists('/set_initial_pose'),
+            'initial_pose_service_ok': bool(getattr(self, 'initial_pose_service_ok', False)),
+            'amcl_pose_confirmed': getattr(self, 'initial_pose_confirmed_at', 0.0) > 0.0,
+            'initial_pose': {
+                'service_available': self.service_exists('/set_initial_pose'),
+                'request_sent': getattr(self, 'initial_pose_request_sent_at', 0.0) > 0.0,
+                'service_completed': bool(getattr(self, 'initial_pose_service_ok', False)),
+                'amcl_pose_confirmed': getattr(self, 'initial_pose_confirmed_at', 0.0) > 0.0,
+                'request_sent_at': getattr(self, 'initial_pose_request_sent_at', 0.0),
+                'amcl_confirmed_at': getattr(self, 'initial_pose_confirmed_at', 0.0),
+            },
         }
         return readiness
 
@@ -1393,6 +1540,17 @@ class SystemSupervisorNode(Node):
             'keepout_active': False,
             'patrol_status': False,
             'initial_pose_published': False,
+            'set_initial_pose_service': False,
+            'initial_pose_service_ok': False,
+            'amcl_pose_confirmed': False,
+            'initial_pose': {
+                'service_available': False,
+                'request_sent': False,
+                'service_completed': False,
+                'amcl_pose_confirmed': False,
+                'request_sent_at': 0.0,
+                'amcl_confirmed_at': 0.0,
+            },
         }
 
     def wait_for_patrol_readiness(self, timeout_sec: float = 25.0) -> bool:
@@ -2048,7 +2206,11 @@ class SystemSupervisorNode(Node):
     def log_patrol_start_readiness(self) -> None:
         try:
             readiness = self.build_patrol_readiness()
-            fields = ('map', 'initial_pose_published', 'map_to_odom', 'nav2_components_loaded', 'nav2_active')
+            fields = (
+                'map', 'localization_active', 'set_initial_pose_service',
+                'initial_pose_service_ok', 'amcl_pose_confirmed', 'map_to_odom',
+                'nav2_active',
+            )
             summary = ', '.join(f'{key}={bool(readiness.get(key))}' for key in fields)
             self.log_info(f'patrol start readiness: {summary}')
         except Exception as exc:
