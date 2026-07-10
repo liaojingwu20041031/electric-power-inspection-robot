@@ -111,14 +111,35 @@ def main():
     require(generated["origin"][:2] == mask_meta["origin"][:2], "metadata origin differs")
 
     params = yaml.safe_load(Path(args.nav2_params).read_text(encoding="utf-8"))
+
     global_params = params["global_costmap"]["global_costmap"]["ros__parameters"]
-    keepout = global_params["keepout_filter"]
-    require("keepout_filter" in global_params["filters"], "global keepout_filter missing from filters")
-    require(keepout["plugin"] == "nav2_costmap_2d::KeepoutFilter", "wrong keepout plugin")
-    require(keepout["filter_info_topic"] == "keepout_costmap_filter_info", "wrong filter info topic")
+    global_filters = global_params.get("filters") or []
+    keepout = global_params.get("keepout_filter") or {}
+
+    require(
+        "keepout_filter" in global_filters,
+        "global keepout_filter missing from filters",
+    )
+    require(
+        keepout.get("plugin") == "nav2_costmap_2d::KeepoutFilter",
+        "wrong keepout plugin",
+    )
+    require(
+        keepout.get("filter_info_topic") == "/keepout_costmap_filter_info",
+        "wrong global keepout filter info topic",
+    )
+
     local_params = params["local_costmap"]["local_costmap"]["ros__parameters"]
-    require("keepout_filter" in local_params["filters"], "local keepout_filter missing from filters")
-    require(local_params["keepout_filter"]["enabled"] is False, "local keepout should default false")
+    local_filters = local_params.get("filters") or []
+
+    require(
+        "keepout_filter" not in local_filters,
+        "local costmap must not load keepout_filter",
+    )
+    require(
+        "keepout_filter" not in local_params,
+        "local costmap contains stale keepout_filter configuration",
+    )
 
     if args.ros:
         check_ros()
