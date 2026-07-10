@@ -130,10 +130,11 @@ def main():
     )
 
     local_params = params["local_costmap"]["local_costmap"]["ros__parameters"]
-    local_filters = local_params.get("filters") or []
+    local_filters = local_params.get("filters")
 
     require(
-        "keepout_filter" not in local_filters,
+        local_filters is None
+        or "keepout_filter" not in local_filters,
         "local costmap must not load keepout_filter",
     )
     require(

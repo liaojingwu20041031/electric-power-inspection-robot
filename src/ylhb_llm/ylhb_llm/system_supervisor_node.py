@@ -98,8 +98,10 @@ READINESS_ERROR_MESSAGES = {
     'map_to_odom': '等待 map->odom TF 超时',
     'initialpose_subscribers': '等待 /initialpose 订阅者超时',
     'nav2_action': 'Nav2 动作服务未就绪',
-    'nav2_active': 'Nav2 lifecycle 未激活',
-    'keepout_active': 'Keepout lifecycle 未激活',
+    'nav2_action_discovered': 'Nav2 动作服务未就绪',
+    'nav2_components_loaded': 'Nav2 核心组件未加载',
+    'nav2_active': 'Nav2 未激活',
+    'keepout_active': '禁行区数据未送达 global costmap',
     'executor': '巡逻执行器未就绪',
     'route_file': '未找到正式巡逻路线文件',
     'patrol_status': '等待 /patrol/status 发布者超时',
@@ -724,6 +726,12 @@ class SystemSupervisorNode(Node):
             if not self.start_process_raw('navigation'):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
+            if not self.wait_for_navigation_ready(self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
+                return
+            if not self.wait_for_nav2_components_loaded(15.0):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
+                return
             if not self.wait_for_keepout_runtime_ready(12.0):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
@@ -797,6 +805,8 @@ class SystemSupervisorNode(Node):
             return
         self.startup_step = 'navigation_process_spawned'
         if not gate(self.wait_for_navigation_ready(self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)), '导航未就绪'):
+            return
+        if not gate(self.wait_for_nav2_components_loaded(15.0), 'Nav2 核心组件未加载'):
             return
 
         self.startup_step = 'starting_executor'
@@ -897,10 +907,12 @@ class SystemSupervisorNode(Node):
 
     def navigation_launch_command(self) -> str:
         default_map = getattr(self, 'default_navigation_map', workspace_path('maps', 'my_map.yaml'))
-        command = f'ros2 launch ylhb_base navigation.launch.py map:={default_map}'
         if getattr(self, 'enable_keepout_navigation', False):
-            command += f' enable_keepout:=true keepout_mask:={self.keepout_mask_path}'
-        return command
+            return (
+                f'ros2 launch ylhb_base navigation_keepout.launch.py '
+                f'map:={default_map} keepout_mask:={self.keepout_mask_path}'
+            )
+        return f'ros2 launch ylhb_base navigation.launch.py map:={default_map}'
 
     def prepare_keepout_navigation(self) -> bool:
         if not hasattr(self, 'default_navigation_map'):
@@ -928,13 +940,17 @@ class SystemSupervisorNode(Node):
             return False
         if not getattr(self, 'enable_keepout_navigation', False):
             return True
+        if self.check_keepout_setup():
+            return True
+        error = self.patrol_error
+        config_error_keywords = ('keepout_filter', 'keepout plugin', 'filter info topic')
+        if any(kw in error for kw in config_error_keywords):
+            return False
         self.startup_step = 'generating_keepout_mask'
         if not self.generate_keepout_mask() or not os.path.exists(self.keepout_mask_path):
             self.patrol_error = self.patrol_error or f'keepout mask missing: {self.keepout_mask_path}'
             return False
-        if not self.check_keepout_setup():
-            return False
-        return True
+        return self.check_keepout_setup()
 
     def run_route_safety_check(self) -> str:
         command = [
@@ -987,7 +1003,7 @@ class SystemSupervisorNode(Node):
             '--map', self.default_navigation_map,
             '--route', self.patrol_route_path,
             '--mask', self.keepout_mask_path,
-            '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', 'nav2_params.yaml'),
+            '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', 'nav2_params_keepout.yaml'),
         ]
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if result.returncode != 0:
@@ -1138,8 +1154,9 @@ class SystemSupervisorNode(Node):
 
             # 使用真实功能信号，不再调用 lifecycle service
             'localization_active': self.has_map_to_odom(),
-            'nav2_action': self.has_nav2_action(),
-            'nav2_active': self.has_nav2_action(),
+            'nav2_components_loaded': self.nav2_components_loaded(),
+            'nav2_action_discovered': self.has_nav2_action(),
+            'nav2_active': self.compute_nav2_active(),
             'keepout_active': self.has_keepout_runtime_ready(),
 
             'patrol_status': self.topic_has_publishers('/patrol/status'),
@@ -1164,7 +1181,8 @@ class SystemSupervisorNode(Node):
             'map_to_odom': False,
             'initialpose_subscribers': False,
             'localization_active': False,
-            'nav2_action': False,
+            'nav2_components_loaded': False,
+            'nav2_action_discovered': False,
             'nav2_active': False,
             'keepout_active': False,
             'patrol_status': False,
@@ -1180,7 +1198,7 @@ class SystemSupervisorNode(Node):
             'odom',
             'scan',
             'tf',
-            'nav2_action',
+            'nav2_action_discovered',
             'patrol_status',
         )
         deadline = time.monotonic() + timeout_sec
@@ -1215,7 +1233,7 @@ class SystemSupervisorNode(Node):
 
     def wait_for_nav2_action_ready(self, timeout_sec: float = 25.0) -> bool:
         return self.wait_for_readiness_keys(
-            ('nav2_action',),
+            ('nav2_action_discovered',),
             timeout_sec,
             error_prefix='Nav2 动作服务未就绪',
         )
@@ -1334,6 +1352,7 @@ class SystemSupervisorNode(Node):
         required = set(required)
         navigation_keys = {
             'navigation', 'map', 'initialpose_subscribers', 'nav2_action',
+            'nav2_action_discovered', 'nav2_components_loaded',
             'nav2_active', 'keepout_active', 'map_to_odom', 'localization_active',
         }
         if required.intersection(navigation_keys):
@@ -1500,6 +1519,51 @@ class SystemSupervisorNode(Node):
             return False
         return False
 
+    def service_exists(self, service_name: str) -> bool:
+        try:
+            return any(
+                name == service_name
+                for name, _types in self.get_service_names_and_types()
+            )
+        except Exception:
+            return False
+
+    def nav2_components_loaded(self) -> bool:
+        required_services = (
+            '/map_server/get_state',
+            '/amcl/get_state',
+            '/controller_server/get_state',
+            '/planner_server/get_state',
+            '/bt_navigator/get_state',
+        )
+        return all(self.service_exists(name) for name in required_services)
+
+    def wait_for_nav2_components_loaded(self, timeout_sec: float = 15.0) -> bool:
+        required_services = (
+            '/map_server/get_state',
+            '/amcl/get_state',
+            '/controller_server/get_state',
+            '/planner_server/get_state',
+            '/bt_navigator/get_state',
+        )
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            missing = [name for name in required_services if not self.service_exists(name)]
+            if not missing:
+                self.patrol_error = ''
+                return True
+            self.startup_step = 'waiting_nav2'
+            self.patrol_error = 'Nav2 组件未加载: ' + ', '.join(missing)
+            time.sleep(0.25)
+        return False
+
+    def compute_nav2_active(self) -> bool:
+        status = getattr(self, 'last_patrol_status', {}) or {}
+        if status.get('nav2_action_ready'):
+            return True
+        phase = str(status.get('navigation_phase') or '')
+        return phase in ('waiting_nav2', 'sending_goal', 'retrying_goal', 'target', 'return_home')
+
     def has_nav2_action(self) -> bool:
         action_topics = (
             '/navigate_to_pose/_action/status',
@@ -1517,15 +1581,30 @@ class SystemSupervisorNode(Node):
 
         return (
             self.topic_has_publishers('/keepout_costmap_filter_info')
-            and self.topic_has_subscribers('/keepout_costmap_filter_info')
             and self.topic_has_publishers('/keepout_filter_mask')
-            and self.topic_has_subscribers('/keepout_filter_mask')
+            and self.global_costmap_subscribes('/keepout_costmap_filter_info')
+            and self.global_costmap_subscribes('/keepout_filter_mask')
         )
+
+    def global_costmap_subscribes(self, topic: str) -> bool:
+        try:
+            subs = self.get_subscriptions_info_by_topic(topic)
+        except Exception:
+            return False
+        for sub in subs:
+            node_name = str(getattr(sub, 'node_name', '') or '')
+            node_ns = str(getattr(sub, 'node_namespace', '') or '')
+            full = f'{node_ns}/{node_name}'
+            if 'global_costmap' in full:
+                return True
+        return False
 
     def wait_for_keepout_runtime_ready(
         self,
         timeout_sec: float = 12.0,
     ) -> bool:
+        if not getattr(self, 'enable_keepout_navigation', False):
+            return True
         deadline = time.monotonic() + timeout_sec
 
         while time.monotonic() < deadline:
@@ -1546,7 +1625,7 @@ class SystemSupervisorNode(Node):
     def log_patrol_start_readiness(self) -> None:
         try:
             readiness = self.build_patrol_readiness()
-            fields = ('map', 'initial_pose_published', 'map_to_odom', 'nav2_active')
+            fields = ('map', 'initial_pose_published', 'map_to_odom', 'nav2_components_loaded', 'nav2_active')
             summary = ', '.join(f'{key}={bool(readiness.get(key))}' for key in fields)
             self.log_info(f'patrol start readiness: {summary}')
         except Exception as exc:

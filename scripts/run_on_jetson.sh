@@ -125,6 +125,10 @@ case "${MODE}" in
     shift || true
     exec ros2 launch ylhb_base navigation.launch.py "$@"
     ;;
+  navigation_keepout)
+    shift || true
+    exec ros2 launch ylhb_base navigation_keepout.launch.py "$@"
+    ;;
   zed)
     shift || true
     exec ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i "$@"
@@ -196,6 +200,7 @@ Modes:
   bringup      Start chassis backend, IMU, RPLidar, robot_state_publisher, EKF
   mapping      Start slam_toolbox mapping
   navigation   Start Nav2 with default map ${WS_DIR}/maps/my_map.yaml
+  navigation_keepout  Start Nav2 with keepout filter and keepout mask servers
   zed          Start ZED 2i wrapper
   zed_3d_capture  Record ZED SVO for later high-quality 3D reconstruction
   zed_3d_reconstruct  Reconstruct pointcloud.ply from a recorded ZED SVO
@@ -213,7 +218,7 @@ Examples:
   $0 llm enable_voice:=true enable_tts:=true audio_input_device:=plughw:CARD=Luna,DEV=0 audio_output_device:=plughw:CARD=Luna,DEV=0
   $0 inspection fullscreen:=true
   $0 navigation map:=${WS_DIR}/maps/my_map.yaml
-  $0 navigation enable_keepout:=true keepout_mask:=${WS_DIR}/maps/keepout/keepout_mask_power_room_a.yaml
+  $0 navigation_keepout map:=${WS_DIR}/maps/my_map.yaml keepout_mask:=${WS_DIR}/maps/keepout/keepout_mask_power_room_a.yaml
   $0 zed_3d_capture duration_sec:=0
   $0 zed_3d_reconstruct latest
   $0 zed_3d_reconstruct input:=latest profile:=quality_safe

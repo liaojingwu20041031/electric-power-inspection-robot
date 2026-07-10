@@ -271,6 +271,13 @@ global_costmap:
       footprint: "[ [0.18650, 0.00000], [0.16543, 0.10591], [0.10544, 0.19569], [0.01566, 0.25568], [-0.09025, 0.27675], [-0.19616, 0.25568], [-0.28594, 0.19569], [-0.34593, 0.10591], [-0.36700, 0.00000], [-0.34593, -0.10591], [-0.28594, -0.19569], [-0.19616, -0.25568], [-0.09025, -0.27675], [0.01566, -0.25568], [0.10544, -0.19569], [0.16543, -0.10591] ]"
       # 给实车圆柱外廓保留 10mm 参数边界，和 local_costmap 保持一致。
       footprint_padding: 0.01
+      # 全局 keepout filter：只在 keepout 导航模式下启用。
+      filters: ["keepout_filter"]
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/keepout_costmap_filter_info"
+        transform_tolerance: 0.1
       # 全局地图使用静态地图、激光障碍层和膨胀层，让全局规划可绕开临时障碍。
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
