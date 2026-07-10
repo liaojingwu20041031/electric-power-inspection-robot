@@ -798,8 +798,6 @@ class SystemSupervisorNode(Node):
         self.startup_step = 'navigation_process_spawned'
         if not gate(self.wait_for_navigation_ready(self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)), '导航未就绪'):
             return
-        if not gate(self.wait_for_localization_ready(self.patrol_timeout('patrol_localization_timeout_sec', 25.0)), '未确认 map_server/AMCL active'):
-            return
 
         self.startup_step = 'starting_executor'
         started_at = time.time()
