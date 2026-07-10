@@ -10,9 +10,11 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import rclpy
 from geometry_msgs.msg import Twist, PoseWithCovarianceStamped
-from nav_msgs.msg import Odometry
-from sensor_msgs.msg import LaserScan
+from lifecycle_msgs.msg import State
 from lifecycle_msgs.srv import GetState
+from nav_msgs.msg import Odometry
+from nav2_msgs.srv import ManageLifecycleNodes
+from sensor_msgs.msg import LaserScan
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
@@ -101,11 +103,37 @@ READINESS_ERROR_MESSAGES = {
     'nav2_action_discovered': 'Nav2 动作服务未就绪',
     'nav2_components_loaded': 'Nav2 核心组件未加载',
     'nav2_active': 'Nav2 未激活',
-    'keepout_active': '禁行区数据未送达 global costmap',
+    'keepout_active': 'Keepout lifecycle 尚未 active',
     'executor': '巡逻执行器未就绪',
     'route_file': '未找到正式巡逻路线文件',
     'patrol_status': '等待 /patrol/status 发布者超时',
 }
+
+LOCALIZATION_LIFECYCLE_NODES = ('/map_server', '/amcl')
+NAVIGATION_LIFECYCLE_NODES = (
+    '/controller_server',
+    '/smoother_server',
+    '/planner_server',
+    '/behavior_server',
+    '/bt_navigator',
+    '/waypoint_follower',
+    '/velocity_smoother',
+)
+KEEPOUT_LIFECYCLE_NODES = (
+    '/keepout_filter_mask_server',
+    '/costmap_filter_info_server',
+)
+LIFECYCLE_MANAGER_LOCALIZATION = '/lifecycle_manager_localization/manage_nodes'
+LIFECYCLE_MANAGER_NAVIGATION = '/lifecycle_manager_navigation/manage_nodes'
+SHUTDOWN_ORDER = (
+    'patrol_executor',
+    'navigation',
+    'perception',
+    'zed',
+    'mapping',
+    'bringup',
+    'mobile_bridge',
+)
 
 
 def latched_qos() -> QoSProfile:
@@ -285,6 +313,9 @@ class SystemSupervisorNode(Node):
         self.latest_mapping3d_result: Dict[str, Any] = {}
         self.inflight_commands = set()
         self.lifecycle_clients: Dict[str, Any] = {}
+        self.lifecycle_manager_clients: Dict[str, Any] = {}
+        self.lifecycle_states: Dict[str, str] = {}
+        self.map_to_odom_stable_since = 0.0
         self.tf_buffer = None
         self.tf_listener = None
         try:
@@ -508,9 +539,15 @@ class SystemSupervisorNode(Node):
             return
         if command == 'stop_patrol_mode':
             self.cancel_patrol_start()
+            self.publish_patrol_command('cancel')
+            self.publish_zero_velocity()
+            time.sleep(0.2)
             self.stop_process('patrol_executor')
+            self.stop_process('navigation')
+            self.stop_process('bringup')
             self.reset_patrol_mode_state()
-            self.set_result(command, True, '巡逻模式已停止')
+            self.publish_mode('ready')
+            self.set_result(command, True, '巡逻、导航与底盘已停止')
             return
         if command == 'start_3d_mapping':
             self.start_3d_mapping()
@@ -646,21 +683,41 @@ class SystemSupervisorNode(Node):
             if not proc.is_running():
                 self.set_result_locked(f'stop_{name}', True, f'{name} already stopped')
                 return
-            if name == 'bringup':
-                self.stop_lidar_motor()
             assert proc.process is not None
             pid = proc.process.pid
+            process = proc.process
+
+        if name == 'navigation':
+            self.manage_lifecycle_nodes(
+                LIFECYCLE_MANAGER_NAVIGATION,
+                ManageLifecycleNodes.Request.SHUTDOWN,
+                timeout_sec=2.0,
+                required=False,
+            )
+        if name == 'bringup':
+            self.stop_lidar_motor()
+
+        try:
+            process_group = os.getpgid(pid)
+            os.killpg(process_group, signal.SIGINT)
             try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                process.wait(timeout=6.0)
+            except subprocess.TimeoutExpired:
+                os.killpg(process_group, signal.SIGTERM)
                 try:
-                    proc.process.wait(timeout=5.0)
+                    process.wait(timeout=2.0)
                 except subprocess.TimeoutExpired:
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
-                    proc.process.wait(timeout=2.0)
+                    os.killpg(process_group, signal.SIGKILL)
+                    process.wait(timeout=2.0)
+            with self.lock:
                 proc.last_message = 'stopped'
-                self.set_result_locked(f'stop_{name}', True, f'{name} stopped')
-            except Exception as exc:
-                self.set_result_locked(f'stop_{name}', False, f'Failed to stop {name}: {exc}')
+            self.set_result(f'stop_{name}', True, f'{name} stopped')
+        except ProcessLookupError:
+            with self.lock:
+                proc.last_message = 'stopped'
+            self.set_result(f'stop_{name}', True, f'{name} stopped')
+        except Exception as exc:
+            self.set_result(f'stop_{name}', False, f'Failed to stop {name}: {exc}')
 
     def stop_lidar_motor(self) -> bool:
         try:
@@ -680,6 +737,9 @@ class SystemSupervisorNode(Node):
             self.log_info(f'LiDAR stop_motor service call failed: {exc}')
             return False
 
+    def publish_zero_velocity(self) -> None:
+        self.cmd_vel_pub.publish(Twist())
+
     def start_robot_stack(self) -> None:
         for name in ('bringup', 'zed', 'perception'):
             if not self.start_process(name):
@@ -696,6 +756,8 @@ class SystemSupervisorNode(Node):
 
     def stop_robot_stack(self) -> None:
         self.cancel_patrol_start()
+        self.publish_patrol_command('cancel')
+        self.publish_zero_velocity()
         names = ('patrol_executor', 'navigation', 'perception', 'zed', 'bringup')
         if all(not self.processes[name].is_running() for name in names):
             self.reset_patrol_mode_state()
@@ -807,9 +869,38 @@ class SystemSupervisorNode(Node):
             self.fail_patrol_start(self.patrol_error or '导航进程启动失败', generation=generation)
             return
         self.startup_step = 'navigation_process_spawned'
-        if not gate(self.wait_for_navigation_ready(self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)), '导航未就绪'):
+        if not gate(self.wait_for_lifecycle_manager_services(15.0), 'Nav2 lifecycle manager 服务未就绪'):
             return
         if not gate(self.wait_for_nav2_components_loaded(15.0), 'Nav2 核心组件未加载'):
+            return
+        if not gate(
+            self.manage_lifecycle_nodes(
+                LIFECYCLE_MANAGER_LOCALIZATION,
+                ManageLifecycleNodes.Request.STARTUP,
+                timeout_sec=10.0,
+            ),
+            'localization lifecycle 启动失败',
+        ):
+            return
+        if not gate(
+            self.wait_for_lifecycle_nodes_active(
+                LOCALIZATION_LIFECYCLE_NODES,
+                self.patrol_timeout('patrol_localization_timeout_sec', 25.0),
+            ),
+            'AMCL 尚未 active',
+        ):
+            return
+        if not gate(
+            self.wait_for_navigation_ready(
+                self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)
+            ),
+            '地图或 initialpose 订阅尚未就绪',
+        ):
+            return
+        if not gate(
+            self.wait_for_lifecycle_nodes_active(KEEPOUT_LIFECYCLE_NODES, 12.0),
+            'Keepout lifecycle 尚未 active',
+        ):
             return
 
         self.startup_step = 'starting_executor'
@@ -832,7 +923,12 @@ class SystemSupervisorNode(Node):
         initial_pose_ok = self.wait_for_initial_pose_published(self.patrol_timeout('patrol_initial_pose_timeout_sec', 8.0), generation)
         initial_pose_at = float((getattr(self, 'last_initial_pose_event', {}) or {}).get('timestamp') or started_at)
         amcl_ok = self.wait_for_fresh_amcl(self.patrol_timeout('patrol_amcl_timeout_sec', 10.0), initial_pose_at, generation)
-        map_to_odom_ok = self.wait_for_map_to_odom(self.patrol_timeout('patrol_amcl_timeout_sec', 10.0))
+        map_to_odom_ok = self.wait_for_stable_map_to_odom(
+            self.patrol_timeout('patrol_amcl_timeout_sec', 10.0),
+            stable_duration_sec=1.0,
+            after_amcl=initial_pose_at,
+            generation=generation,
+        )
         self.log_patrol_start_readiness()
         gate_warnings = []
         if not executor_ok:
@@ -851,8 +947,25 @@ class SystemSupervisorNode(Node):
             self.fail_patrol_start('；'.join(gate_warnings), generation=generation)
             return
         if not gate(
+            self.manage_lifecycle_nodes(
+                LIFECYCLE_MANAGER_NAVIGATION,
+                ManageLifecycleNodes.Request.STARTUP,
+                timeout_sec=12.0,
+            ),
+            'navigation lifecycle 启动失败',
+        ):
+            return
+        if not gate(
+            self.wait_for_lifecycle_nodes_active(
+                NAVIGATION_LIFECYCLE_NODES,
+                self.patrol_timeout('patrol_nav2_timeout_sec', 25.0),
+            ),
+            'Nav2 节点尚未全部 active',
+        ):
+            return
+        if not gate(
             self.wait_for_keepout_runtime_ready(12.0),
-            '禁行区数据未送达 global costmap',
+            'global/local costmap 尚未收到 keepout info 和 mask',
         ):
             return
         self.startup_step = 'executor_ready'
@@ -913,7 +1026,8 @@ class SystemSupervisorNode(Node):
         if getattr(self, 'enable_keepout_navigation', False):
             return (
                 f'ros2 launch ylhb_base navigation_keepout.launch.py '
-                f'map:={default_map} keepout_mask:={self.keepout_mask_path}'
+                f'map:={default_map} keepout_mask:={self.keepout_mask_path} '
+                'autostart:=false'
             )
         return f'ros2 launch ylhb_base navigation.launch.py map:={default_map}'
 
@@ -966,7 +1080,7 @@ class SystemSupervisorNode(Node):
             '--map', self.default_navigation_map,
             '--route', self.patrol_route_path,
             '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', nav2_params_name),
-            '--min-keepout-clearance', '0.15', '--warn-distance', '0.20', '--report',
+            '--report',
         ]
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
@@ -1163,12 +1277,15 @@ class SystemSupervisorNode(Node):
             'map_to_odom': self.has_map_to_odom(),
             'initialpose_subscribers': self.topic_has_subscribers('/initialpose'),
 
-            # 使用真实功能信号，不再调用 lifecycle service
-            'localization_active': self.has_map_to_odom(),
+            'localization_active': self.lifecycle_nodes_cached_active(
+                LOCALIZATION_LIFECYCLE_NODES
+            ),
             'nav2_components_loaded': self.nav2_components_loaded(),
             'nav2_action_discovered': self.has_nav2_action(),
             'nav2_active': self.compute_nav2_active(),
-            'keepout_active': self.has_keepout_runtime_ready(),
+            'keepout_active': self.lifecycle_nodes_cached_active(
+                KEEPOUT_LIFECYCLE_NODES
+            ),
 
             'patrol_status': self.topic_has_publishers('/patrol/status'),
             'initial_pose_published': self.has_initial_pose_published(),
@@ -1255,6 +1372,123 @@ class SystemSupervisorNode(Node):
             timeout_sec,
             error_prefix='等待 map->odom TF 超时',
         )
+
+    def wait_for_stable_map_to_odom(
+        self,
+        timeout_sec: float = 10.0,
+        stable_duration_sec: float = 1.0,
+        after_amcl: float = 0.0,
+        generation: Optional[int] = None,
+    ) -> bool:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if generation is not None and not self.is_current_patrol_start(generation):
+                return False
+            amcl_fresh = getattr(self, 'last_amcl_received_at', 0.0) >= after_amcl
+            sensors_fresh = self.has_fresh_core_sensors()
+            transform_ready = self.has_map_to_odom()
+            laser_in_map_ready = self.has_transform('map', 'laser_link')
+            stable_sec = self.map_to_odom_stable_sec()
+            if (
+                amcl_fresh
+                and sensors_fresh
+                and transform_ready
+                and laser_in_map_ready
+                and stable_sec >= stable_duration_sec
+            ):
+                self.patrol_error = ''
+                return True
+            self.startup_step = 'waiting_map_to_odom'
+            if not amcl_fresh:
+                self.patrol_error = 'fresh /amcl_pose 尚未收到'
+            elif not sensors_fresh:
+                self.patrol_error = '/odom、/scan 或基础 TF 已不新鲜'
+            elif not transform_ready:
+                self.patrol_error = 'map->odom 尚未建立'
+            elif not laser_in_map_ready:
+                self.patrol_error = 'map->laser_link 完整 TF 链尚未建立'
+            else:
+                self.patrol_error = (
+                    f'map->odom 尚未连续稳定 {stable_duration_sec:.1f}s '
+                    f'(当前 {stable_sec:.1f}s)'
+                )
+            time.sleep(0.1)
+        return False
+
+    def wait_for_lifecycle_manager_services(self, timeout_sec: float) -> bool:
+        required = (
+            LIFECYCLE_MANAGER_LOCALIZATION,
+            LIFECYCLE_MANAGER_NAVIGATION,
+        )
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            missing = [name for name in required if not self.service_exists(name)]
+            if not missing:
+                self.patrol_error = ''
+                return True
+            self.startup_step = 'waiting_nav2'
+            self.patrol_error = 'lifecycle manager 服务未就绪: ' + ', '.join(missing)
+            time.sleep(0.2)
+        return False
+
+    def manage_lifecycle_nodes(
+        self,
+        service_name: str,
+        command: int,
+        timeout_sec: float,
+        required: bool = True,
+    ) -> bool:
+        try:
+            client = self.lifecycle_manager_clients.get(service_name)
+            if client is None:
+                client = self.create_client(ManageLifecycleNodes, service_name)
+                self.lifecycle_manager_clients[service_name] = client
+            if not client.wait_for_service(timeout_sec=min(timeout_sec, 1.0)):
+                if required:
+                    self.patrol_error = f'lifecycle manager 服务不可用: {service_name}'
+                return False
+            request = ManageLifecycleNodes.Request()
+            request.command = command
+            future = client.call_async(request)
+            deadline = time.monotonic() + timeout_sec
+            while time.monotonic() < deadline:
+                if future.done():
+                    response = future.result()
+                    if response is not None and response.success:
+                        return True
+                    if required:
+                        self.patrol_error = f'lifecycle manager 命令失败: {service_name}'
+                    return False
+                time.sleep(0.02)
+        except Exception as exc:
+            if required:
+                self.patrol_error = f'lifecycle manager 调用失败 {service_name}: {exc}'
+            return False
+        if required:
+            self.patrol_error = f'lifecycle manager 调用超时: {service_name}'
+        return False
+
+    def wait_for_lifecycle_nodes_active(
+        self,
+        node_names: Iterable[str],
+        timeout_sec: float,
+    ) -> bool:
+        required = tuple(node_names)
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            missing = [
+                node_name
+                for node_name in required
+                if not self.lifecycle_node_is_active(node_name)
+            ]
+            if not missing:
+                self.patrol_error = ''
+                return True
+            first = missing[0].lstrip('/')
+            self.startup_step = 'waiting_nav2'
+            self.patrol_error = f'{first} 尚未 active'
+            time.sleep(0.2)
+        return False
 
     def wait_for_nav2_active_ready(self, timeout_sec: float = 25.0) -> bool:
         return self.wait_for_readiness_keys(
@@ -1478,57 +1712,90 @@ class SystemSupervisorNode(Node):
         )
 
     def has_base_sensor_tf(self) -> bool:
+        return self.has_transform('odom', 'base_footprint') and self.has_transform(
+            'base_footprint', 'laser_link'
+        )
+
+    def has_transform(self, target_frame: str, source_frame: str) -> bool:
         tf_buffer = getattr(self, 'tf_buffer', None)
         if tf_buffer is None:
             return False
         try:
-            return bool(
-                tf_buffer.can_transform('odom', 'base_footprint', Time())
-                and tf_buffer.can_transform('base_footprint', 'laser_link', Time())
-            )
+            return bool(tf_buffer.can_transform(target_frame, source_frame, Time()))
         except Exception:
             return False
 
     def has_map_to_odom(self) -> bool:
         tf_buffer = getattr(self, 'tf_buffer', None)
         if tf_buffer is None:
+            self.map_to_odom_stable_since = 0.0
             return False
         try:
-            return bool(tf_buffer.can_transform('map', 'odom', Time()))
+            ready = bool(tf_buffer.can_transform('map', 'odom', Time()))
         except Exception:
-            return False
+            ready = False
+        if ready:
+            if not getattr(self, 'map_to_odom_stable_since', 0.0):
+                self.map_to_odom_stable_since = time.monotonic()
+        else:
+            self.map_to_odom_stable_since = 0.0
+        return ready
 
-    def is_nav2_active(self) -> bool:
-        required_nodes = (
-            '/bt_navigator', '/planner_server', '/controller_server',
-            '/global_costmap/global_costmap', '/local_costmap/local_costmap',
-        )
-        return all(self.lifecycle_node_is_active(name) for name in required_nodes)
+    def map_to_odom_stable_sec(self) -> float:
+        since = getattr(self, 'map_to_odom_stable_since', 0.0)
+        return max(0.0, time.monotonic() - since) if since else 0.0
 
-    def is_localization_active(self) -> bool:
-        return all(self.lifecycle_node_is_active(name) for name in ('/map_server', '/amcl'))
-
-    def is_keepout_active(self) -> bool:
-        required_nodes = ('/keepout_filter_mask_server', '/costmap_filter_info_server')
-        return all(self.lifecycle_node_is_active(name) for name in required_nodes)
-
-    def lifecycle_node_is_active(self, node_name: str) -> bool:
+    def lifecycle_node_state(self, node_name: str) -> int:
         try:
             client = self.lifecycle_clients.get(node_name)
             if client is None:
                 client = self.create_client(GetState, f'{node_name}/get_state')
                 self.lifecycle_clients[node_name] = client
             if not client.wait_for_service(timeout_sec=0.1):
-                return False
+                self.lifecycle_states[node_name] = 'unavailable'
+                return State.PRIMARY_STATE_UNKNOWN
             future = client.call_async(GetState.Request())
             deadline = time.monotonic() + 0.5
             while time.monotonic() < deadline:
                 if future.done():
-                    return future.result().current_state.label == 'active'
+                    response = future.result()
+                    if response is not None:
+                        state = response.current_state
+                        self.lifecycle_states[node_name] = state.label
+                        return state.id
+                    break
                 time.sleep(0.02)
         except Exception:
-            return False
-        return False
+            pass
+        self.lifecycle_states[node_name] = 'unknown'
+        return State.PRIMARY_STATE_UNKNOWN
+
+    def is_nav2_active(self) -> bool:
+        return all(
+            self.lifecycle_node_is_active(name)
+            for name in NAVIGATION_LIFECYCLE_NODES
+        )
+
+    def is_localization_active(self) -> bool:
+        return all(
+            self.lifecycle_node_is_active(name)
+            for name in LOCALIZATION_LIFECYCLE_NODES
+        )
+
+    def is_keepout_active(self) -> bool:
+        return all(
+            self.lifecycle_node_is_active(name)
+            for name in KEEPOUT_LIFECYCLE_NODES
+        )
+
+    def lifecycle_node_is_active(self, node_name: str) -> bool:
+        return self.lifecycle_node_state(node_name) == State.PRIMARY_STATE_ACTIVE
+
+    def lifecycle_nodes_cached_active(self, node_names: Iterable[str]) -> bool:
+        return all(
+            self.lifecycle_states.get(name) == 'active'
+            for name in node_names
+        )
 
     def service_exists(self, service_name: str) -> bool:
         try:
@@ -1540,22 +1807,22 @@ class SystemSupervisorNode(Node):
             return False
 
     def nav2_components_loaded(self) -> bool:
-        required_services = (
-            '/map_server/get_state',
-            '/amcl/get_state',
-            '/controller_server/get_state',
-            '/planner_server/get_state',
-            '/bt_navigator/get_state',
+        required_services = tuple(
+            f'{name}/get_state'
+            for name in (
+                *LOCALIZATION_LIFECYCLE_NODES,
+                *NAVIGATION_LIFECYCLE_NODES,
+            )
         )
         return all(self.service_exists(name) for name in required_services)
 
     def wait_for_nav2_components_loaded(self, timeout_sec: float = 15.0) -> bool:
-        required_services = (
-            '/map_server/get_state',
-            '/amcl/get_state',
-            '/controller_server/get_state',
-            '/planner_server/get_state',
-            '/bt_navigator/get_state',
+        required_services = tuple(
+            f'{name}/get_state'
+            for name in (
+                *LOCALIZATION_LIFECYCLE_NODES,
+                *NAVIGATION_LIFECYCLE_NODES,
+            )
         )
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
@@ -1569,11 +1836,7 @@ class SystemSupervisorNode(Node):
         return False
 
     def compute_nav2_active(self) -> bool:
-        status = getattr(self, 'last_patrol_status', {}) or {}
-        if status.get('nav2_action_ready'):
-            return True
-        phase = str(status.get('navigation_phase') or '')
-        return phase in ('waiting_nav2', 'sending_goal', 'retrying_goal', 'target', 'return_home')
+        return self.lifecycle_nodes_cached_active(NAVIGATION_LIFECYCLE_NODES)
 
     def has_nav2_action(self) -> bool:
         action_topics = (
@@ -1589,15 +1852,27 @@ class SystemSupervisorNode(Node):
     def has_keepout_runtime_ready(self) -> bool:
         if not getattr(self, 'enable_keepout_navigation', False):
             return True
+        return all(self.keepout_subscription_status().values())
 
-        return (
-            self.topic_has_publishers('/keepout_costmap_filter_info')
-            and self.topic_has_publishers('/keepout_filter_mask')
-            and self.costmap_subscribes('/keepout_costmap_filter_info', 'global_costmap')
-            and self.costmap_subscribes('/keepout_filter_mask', 'global_costmap')
-            and self.costmap_subscribes('/keepout_costmap_filter_info', 'local_costmap')
-            and self.costmap_subscribes('/keepout_filter_mask', 'local_costmap')
-        )
+    def keepout_subscription_status(self) -> Dict[str, bool]:
+        info_topic = '/keepout_costmap_filter_info'
+        mask_topic = '/keepout_filter_mask'
+        info_published = self.topic_has_publishers(info_topic)
+        mask_published = self.topic_has_publishers(mask_topic)
+        return {
+            'global_info_subscribed': info_published and self.costmap_subscribes(
+                info_topic, 'global_costmap'
+            ),
+            'global_mask_subscribed': mask_published and self.costmap_subscribes(
+                mask_topic, 'global_costmap'
+            ),
+            'local_info_subscribed': info_published and self.costmap_subscribes(
+                info_topic, 'local_costmap'
+            ),
+            'local_mask_subscribed': mask_published and self.costmap_subscribes(
+                mask_topic, 'local_costmap'
+            ),
+        }
 
     def costmap_subscribes(self, topic: str, costmap_name: str) -> bool:
         try:
@@ -1621,14 +1896,14 @@ class SystemSupervisorNode(Node):
         deadline = time.monotonic() + timeout_sec
 
         while time.monotonic() < deadline:
-            if self.has_keepout_runtime_ready():
+            status = self.keepout_subscription_status()
+            if all(status.values()):
                 self.patrol_error = ''
                 return True
 
             self.startup_step = 'waiting_keepout_active'
-            self.patrol_error = (
-                '等待 global/local costmap 接收禁行区数据'
-            )
+            missing = [name for name, ready in status.items() if not ready]
+            self.patrol_error = 'Keepout 尚未就绪: ' + ', '.join(missing)
             time.sleep(0.25)
 
         self.patrol_error = '禁行区数据未送达 global/local costmap'
@@ -1802,6 +2077,22 @@ class SystemSupervisorNode(Node):
             'patrol_readiness': patrol_readiness,
             'patrol_error': getattr(self, 'patrol_error', ''),
             'patrol_warning': getattr(self, 'patrol_warning', ''),
+            'lifecycle': {
+                name.lstrip('/'): self.lifecycle_states.get(name, 'unknown')
+                for name in (
+                    *LOCALIZATION_LIFECYCLE_NODES,
+                    *NAVIGATION_LIFECYCLE_NODES,
+                    *KEEPOUT_LIFECYCLE_NODES,
+                )
+            },
+            'tf': {
+                'odom_to_base': self.has_transform('odom', 'base_footprint'),
+                'base_to_laser': self.has_transform('base_footprint', 'laser_link'),
+                'map_to_odom': self.has_map_to_odom(),
+                'map_to_laser': self.has_transform('map', 'laser_link'),
+                'map_to_odom_stable_sec': self.map_to_odom_stable_sec(),
+            },
+            'keepout': self.keepout_subscription_status(),
             'startup_step': getattr(self, 'startup_step', ''),
             'startup_step_label': STARTUP_STEP_LABELS.get(
                 getattr(self, 'startup_step', ''),
@@ -1850,7 +2141,20 @@ class SystemSupervisorNode(Node):
         self.status_pub.publish(msg)
 
     def destroy_node(self) -> bool:
-        for name in list(self.processes):
+        self.cancel_patrol_start()
+        self.publish_patrol_command('cancel')
+        self.publish_zero_velocity()
+        extras = [
+            name
+            for name in self.processes
+            if name not in SHUTDOWN_ORDER
+        ]
+        shutdown_order = (
+            *SHUTDOWN_ORDER[:-2],
+            *extras,
+            *SHUTDOWN_ORDER[-2:],
+        )
+        for name in shutdown_order:
             try:
                 self.stop_process(name)
             except Exception:

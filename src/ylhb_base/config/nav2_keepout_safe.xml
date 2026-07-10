@@ -1,14 +1,21 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="1" name="KeepoutSafeNavigation">
-      <PipelineSequence name="NavigateWithoutCostmapClear">
+    <RecoveryNode
+      number_of_retries="2"
+      name="KeepoutSafeNavigation">
+
+      <PipelineSequence name="NavigateWithKeepout">
         <NormalizeGoal input_goal="{goal}" output_goal="{map_goal}" global_frame="map"/>
         <RateController hz="1.0">
           <ComputePathToPose goal="{map_goal}" path="{path}" planner_id="GridBased"/>
         </RateController>
         <FollowPath path="{path}" controller_id="FollowPath"/>
       </PipelineSequence>
-      <Wait wait_duration="0.5"/>
+
+      <RoundRobin name="KeepoutSafeRecovery">
+        <Wait wait_duration="1"/>
+        <BackUp backup_dist="0.08" backup_speed="0.04" time_allowance="3"/>
+      </RoundRobin>
     </RecoveryNode>
   </BehaviorTree>
 </root>

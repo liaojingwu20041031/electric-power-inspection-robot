@@ -42,22 +42,23 @@
       "id": "target_001",
       "name": "巡检点1",
       "pose": {
-        "x": -1.894,
-        "y": -0.751,
+        "x": -1.919,
+        "y": -0.726,
         "yaw": -1.795
       },
       "location": {
         "type": "map_pose",
         "frame_id": "map",
-        "x": -1.894,
-        "y": -0.751,
+        "x": -1.919,
+        "y": -0.726,
         "yaw": -1.795
       },
       "safety": {
         "validation_status": "warning",
-        "min_keepout_distance_m": 0.15326084190992245,
+        "min_keepout_distance_m": 0.18166920692335478,
+        "required_clearance_m": 0.18,
         "warnings": [
-          "target_001 footprint is closer than 0.20m to keepout_001"
+          "target_001 footprint clearance to keepout_001 is 0.182m (warning below 0.230m)"
         ]
       },
       "task_duration_sec": 5
@@ -79,7 +80,8 @@
       },
       "safety": {
         "validation_status": "ok",
-        "min_keepout_distance_m": 1.971830353461178,
+        "min_keepout_distance_m": 1.971041336656708,
+        "required_clearance_m": 0.18,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -102,6 +104,7 @@
       "safety": {
         "validation_status": "ok",
         "min_keepout_distance_m": 3.2061948042439656,
+        "required_clearance_m": 0.18,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -123,7 +126,8 @@
       },
       "safety": {
         "validation_status": "ok",
-        "min_keepout_distance_m": 0.9799944114131222,
+        "min_keepout_distance_m": 0.9797790107280393,
+        "required_clearance_m": 0.18,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -156,7 +160,7 @@
       "name": "禁行区1",
       "type": "hard_keepout",
       "enabled": true,
-      "mask_padding_m": 0.1,
+      "mask_padding_m": 0.05,
       "polygon": [
         {
           "x": -1.468,
@@ -180,9 +184,9 @@
   "schedules": [],
   "safety": {
     "validation_status": "warning",
-    "min_keepout_distance_m": 0.15326084190992245,
+    "min_keepout_distance_m": 0.181669206923355,
     "warnings": [
-      "target_001 footprint is closer than 0.20m to keepout_001"
+      "target_001 footprint clearance to keepout_001 is 0.182m (warning below 0.230m)"
     ]
   }
 }

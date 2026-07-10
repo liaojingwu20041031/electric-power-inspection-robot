@@ -39,6 +39,7 @@ def generate_launch_description():
     map_yaml_file = LaunchConfiguration('map')
     use_sim_time = LaunchConfiguration('use_sim_time')
     params_file = LaunchConfiguration('params_file')
+    autostart = LaunchConfiguration('autostart')
     keepout_mask = LaunchConfiguration('keepout_mask')
 
     declare_map_yaml_cmd = DeclareLaunchArgument(
@@ -55,6 +56,11 @@ def generate_launch_description():
         'params_file',
         default_value=os.path.join(pkg_dir, 'config', 'nav2_params_keepout.yaml'),
         description='Full path to the ROS2 parameters file to use for all launched nodes')
+
+    declare_autostart_cmd = DeclareLaunchArgument(
+        'autostart',
+        default_value='false',
+        description='Let the supervisor activate localization and navigation in order')
 
     declare_keepout_mask_cmd = DeclareLaunchArgument(
         'keepout_mask',
@@ -77,6 +83,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'map': map_yaml_file,
             'params_file': params_file,
+            'autostart': autostart,
         }.items()
     )
 
@@ -87,6 +94,7 @@ def generate_launch_description():
     ld.add_action(declare_map_yaml_cmd)
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_params_file_cmd)
+    ld.add_action(declare_autostart_cmd)
     ld.add_action(declare_keepout_mask_cmd)
     ld.add_action(OpaqueFunction(function=fail_if_keepout_mask_missing))
     ld.add_action(nav2_bringup_cmd)

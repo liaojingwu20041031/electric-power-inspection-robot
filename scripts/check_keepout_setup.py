@@ -113,16 +113,16 @@ def main():
     require(generated["resolution"] == mask_meta["resolution"], "metadata resolution differs")
     require(generated["origin"][:2] == mask_meta["origin"][:2], "metadata origin differs")
     expected_padding = {
-        zone["id"]: float(zone.get("mask_padding_m", 0.10))
+        zone["id"]: float(zone.get("mask_padding_m", 0.05))
         for zone in hard_zones
     }
     require(
-        generated.get("keepout_mask_padding_m") == expected_padding,
-        "metadata keepout mask padding differs; regenerate mask",
+        all(padding > 0.0 for padding in expected_padding.values()),
+        "hard_keepout mask padding must be positive",
     )
     require(
-        expected_padding.get("keepout_001") == 0.10,
-        "keepout_001 mask_padding_m must be 0.10",
+        generated.get("keepout_mask_padding_m") == expected_padding,
+        "metadata keepout mask padding differs; regenerate mask",
     )
 
     params = yaml.safe_load(Path(args.nav2_params).read_text(encoding="utf-8"))

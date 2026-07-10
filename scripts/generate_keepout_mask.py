@@ -141,7 +141,7 @@ def main():
             x = origin[0] + (px + 0.5) * resolution
             for zone in hard_zones:
                 polygon = zone["polygon"]
-                padding = float(zone.get("mask_padding_m", 0.10))
+                padding = float(zone.get("mask_padding_m", 0.05))
                 if (
                     point_in_polygon(x, y, polygon)
                     or distance_to_polygon(x, y, polygon) <= padding + resolution * 0.25
@@ -172,7 +172,7 @@ def main():
         "resolution": resolution,
         "origin": [float(origin[0]), float(origin[1]), 0.0],
         "keepout_mask_padding_m": {
-            zone["id"]: float(zone.get("mask_padding_m", 0.10))
+            zone["id"]: float(zone.get("mask_padding_m", 0.05))
             for zone in hard_zones
         },
         "generated_at": __import__("time").time(),

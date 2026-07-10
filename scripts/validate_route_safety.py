@@ -139,12 +139,44 @@ def footprint_map_failures(polygon, metadata, width, height, pixels):
     for cell_y in range(start_y, end_y + 1):
         for cell_x in range(start_x, end_x + 1):
             center = {"x": origin[0] + (cell_x + 0.5) * resolution, "y": origin[1] + (cell_y + 0.5) * resolution}
-            if point_in_polygon(center, polygon):
+            half = resolution * 0.5
+            cell_polygon = [
+                {"x": center["x"] - half, "y": center["y"] - half},
+                {"x": center["x"] + half, "y": center["y"] - half},
+                {"x": center["x"] + half, "y": center["y"] + half},
+                {"x": center["x"] - half, "y": center["y"] + half},
+            ]
+            if polygons_intersect(polygon, cell_polygon):
                 status = map_cell(pixels[(height - 1 - cell_y) * width + cell_x], metadata)
                 if status != "free":
                     failures.append(f"footprint touches {status}")
                     return failures
     return failures
+
+
+def required_clearance(zone, goal_xy_tolerance, map_resolution, safety_margin):
+    return (
+        float(zone.get("mask_padding_m", 0.05))
+        + goal_xy_tolerance
+        + map_resolution
+        + safety_margin
+    )
+
+
+def navigation_geometry(map_yaml_path, nav2_path):
+    metadata = yaml.safe_load(Path(map_yaml_path).read_text(encoding="utf-8"))
+    width, height, pixels = read_pgm(image_path(Path(map_yaml_path), metadata))
+    nav2 = yaml.safe_load(Path(nav2_path).read_text(encoding="utf-8"))
+    global_params = nav2["global_costmap"]["global_costmap"]["ros__parameters"]
+    controller_params = nav2["controller_server"]["ros__parameters"]
+    footprint = padded_footprint(
+        ast.literal_eval(global_params["footprint"]),
+        float(global_params.get("footprint_padding", 0.0)),
+    )
+    goal_xy_tolerance = float(
+        controller_params["goal_checker"]["xy_goal_tolerance"]
+    )
+    return metadata, width, height, pixels, footprint, goal_xy_tolerance
 
 
 def validate_route(
@@ -153,14 +185,14 @@ def validate_route(
     nav2_path,
     min_keepout_clearance,
     warn_distance,
+    safety_margin,
 ):
     route_raw = json.loads(Path(route_path).read_text(encoding="utf-8"))
     route = validate_route_map_binding(route_raw, map_yaml_path)
-    metadata = yaml.safe_load(Path(map_yaml_path).read_text(encoding="utf-8"))
-    width, height, pixels = read_pgm(image_path(Path(map_yaml_path), metadata))
-    nav2 = yaml.safe_load(Path(nav2_path).read_text(encoding="utf-8"))
-    global_params = nav2["global_costmap"]["global_costmap"]["ros__parameters"]
-    footprint = padded_footprint(ast.literal_eval(global_params["footprint"]), float(global_params.get("footprint_padding", 0.0)))
+    metadata, width, height, pixels, footprint, goal_xy_tolerance = navigation_geometry(
+        map_yaml_path, nav2_path
+    )
+    map_resolution = float(metadata["resolution"])
     route_by_id = {item["id"]: item for item in route["routes"]}
     active_route = route_by_id[route.get("active_route_id") or next(iter(route_by_id), "")]
     targets = {item["id"]: item for item in route["targets"]}
@@ -174,29 +206,43 @@ def validate_route(
         polygon = transform_footprint(pose, footprint)
         item_failures = footprint_map_failures(polygon, metadata, width, height, pixels)
         item_distances = []
+        item_required = []
         for zone in zones:
+            effective_required = max(
+                required_clearance(
+                    zone,
+                    goal_xy_tolerance,
+                    map_resolution,
+                    safety_margin,
+                ),
+                min_keepout_clearance,
+            )
+            warning_threshold = max(effective_required + 0.05, warn_distance)
             if polygons_intersect(polygon, zone["polygon"]):
                 item_failures.append(f"footprint intersects {zone['id']}")
                 distance = 0.0
             else:
                 distance = polygon_clearance(polygon, zone["polygon"])
                 epsilon = 1e-6
-                if distance + epsilon < min_keepout_clearance:
+                if distance + epsilon < effective_required:
                     item_failures.append(
                         f"footprint clearance to {zone['id']} is {distance:.3f}m, "
-                        f"required {min_keepout_clearance:.3f}m"
+                        f"required {effective_required:.3f}m"
                     )
-                elif distance < warn_distance:
+                elif distance < warning_threshold:
                     warnings.append(
-                        f"{name} footprint clearance to {zone['id']} is {distance:.3f}m"
+                        f"{name} footprint clearance to {zone['id']} is {distance:.3f}m "
+                        f"(warning below {warning_threshold:.3f}m)"
                     )
             distances.append(distance)
             item_distances.append(distance)
+            item_required.append(effective_required)
         failures.extend(f"{name} {failure}" for failure in item_failures)
         if name in targets:
             target_safety[name] = {
                 "validation_status": "unsafe" if item_failures else "warning" if any(warning.startswith(f"{name} ") for warning in warnings) else "ok",
                 "min_keepout_distance_m": min(item_distances) if item_distances else None,
+                "required_clearance_m": max(item_required) if item_required else None,
                 "warnings": [warning for warning in warnings if warning.startswith(f"{name} ")],
             }
     status = "unsafe" if failures else "warning" if warnings else "ok"
@@ -205,6 +251,92 @@ def validate_route(
         if target.get("id") in target_safety:
             target["safety"] = target_safety[target["id"]]
     return route_raw, status, failures, warnings
+
+
+def suggest_safe_target(
+    map_yaml_path,
+    route_path,
+    nav2_path,
+    target_id,
+    safety_margin,
+    max_distance,
+):
+    route = validate_route_map_binding(
+        json.loads(Path(route_path).read_text(encoding="utf-8")),
+        map_yaml_path,
+    )
+    targets = {target["id"]: target for target in route["targets"]}
+    if target_id not in targets:
+        raise ValueError(f"unknown target: {target_id}")
+    zones = [
+        zone for zone in route["keepout_zones"]
+        if zone["enabled"] and zone["type"] == "hard_keepout"
+    ]
+    metadata, width, height, pixels, footprint, goal_xy_tolerance = navigation_geometry(
+        map_yaml_path, nav2_path
+    )
+    resolution = float(metadata["resolution"])
+    original = dict(targets[target_id]["pose"])
+    original_polygon = transform_footprint(original, footprint)
+    original_clearance = min(
+        polygon_clearance(original_polygon, zone["polygon"])
+        for zone in zones
+    )
+    steps = int(math.ceil(max_distance / resolution))
+    offsets = sorted(
+        (
+            (math.hypot(dx, dy), dx, dy)
+            for dx in range(-steps, steps + 1)
+            for dy in range(-steps, steps + 1)
+            if (dx or dy) and math.hypot(dx, dy) * resolution <= max_distance
+        ),
+        key=lambda item: item[0],
+    )
+    for _distance_cells, dx, dy in offsets:
+        candidate = {
+            **original,
+            "x": original["x"] + dx * resolution,
+            "y": original["y"] + dy * resolution,
+        }
+        polygon = transform_footprint(candidate, footprint)
+        map_failures = footprint_map_failures(
+            polygon, metadata, width, height, pixels
+        )
+        clearances = []
+        thresholds = []
+        safe = not map_failures
+        for zone in zones:
+            clearance = (
+                0.0
+                if polygons_intersect(polygon, zone["polygon"])
+                else polygon_clearance(polygon, zone["polygon"])
+            )
+            threshold = required_clearance(
+                zone,
+                goal_xy_tolerance,
+                resolution,
+                safety_margin,
+            )
+            clearances.append(clearance)
+            thresholds.append(threshold)
+            safe = safe and clearance + 1e-6 >= threshold
+        if safe:
+            new_clearance = min(clearances)
+            warning_threshold = max(thresholds) + 0.05
+            return {
+                "target_id": target_id,
+                "original_pose": original,
+                "candidate_pose": candidate,
+                "movement_distance_m": math.hypot(dx, dy) * resolution,
+                "original_clearance_m": original_clearance,
+                "candidate_clearance_m": new_clearance,
+                "required_clearance_m": max(thresholds),
+                "map_collision_check": "free",
+                "final_safety_status": (
+                    "warning" if new_clearance < warning_threshold else "ok"
+                ),
+            }
+    return None
 
 
 def atomic_write_text(path, content):
@@ -222,8 +354,11 @@ def main():
     parser.add_argument("--map", required=True, dest="map_yaml")
     parser.add_argument("--route", required=True)
     parser.add_argument("--nav2-params", required=True)
-    parser.add_argument("--min-keepout-clearance", type=float, default=0.15)
-    parser.add_argument("--warn-distance", type=float, default=0.20)
+    parser.add_argument("--min-keepout-clearance", type=float, default=0.0)
+    parser.add_argument("--warn-distance", type=float, default=0.0)
+    parser.add_argument("--safety-margin-m", type=float, default=0.025)
+    parser.add_argument("--suggest-target", default="")
+    parser.add_argument("--suggest-max-distance-m", type=float, default=0.50)
     parser.add_argument("--write-back", action="store_true")
     parser.add_argument("--report", action="store_true")
     args = parser.parse_args()
@@ -234,14 +369,36 @@ def main():
             args.nav2_params,
             args.min_keepout_clearance,
             args.warn_distance,
+            args.safety_margin_m,
         )
+        suggestion = None
+        if args.suggest_target:
+            suggestion = suggest_safe_target(
+                args.map_yaml,
+                args.route,
+                args.nav2_params,
+                args.suggest_target,
+                args.safety_margin_m,
+                args.suggest_max_distance_m,
+            )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     if args.write_back:
         atomic_write_text(args.route, json.dumps(route, ensure_ascii=False, indent=2) + "\n")
     if args.report:
-        print(json.dumps({"status": status, "ok": status != "unsafe", "failures": failures, "warnings": warnings}, ensure_ascii=False))
+        targets = {
+            target["id"]: target.get("safety", {})
+            for target in route.get("targets", [])
+        }
+        print(json.dumps({
+            "status": status,
+            "ok": status != "unsafe",
+            "failures": failures,
+            "warnings": warnings,
+            "targets": targets,
+            "suggestion": suggestion,
+        }, ensure_ascii=False))
         return 1 if status == "unsafe" else 0
     for warning in warnings:
         print(f"WARN: {warning}")

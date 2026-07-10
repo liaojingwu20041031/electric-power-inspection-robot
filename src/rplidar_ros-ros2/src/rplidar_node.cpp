@@ -38,7 +38,8 @@
 #include "sl_lidar.h"
 #include "math.h"
 
-#include <signal.h>
+#include <atomic>
+#include <csignal>
 
 #ifndef _countof
 #define _countof(_Array) (int)(sizeof(_Array) / sizeof(_Array[0]))
@@ -56,7 +57,7 @@ enum {
 
 using namespace sl;
 
-bool need_exit = false;
+static volatile std::sig_atomic_t need_exit = 0;
 
 class RPlidarNode : public rclcpp::Node
 {
@@ -371,6 +372,21 @@ class RPlidarNode : public rclcpp::Node
         is_scanning = false;
     }
 
+    void shutdownDriver()
+    {
+        if (drv == nullptr) {
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Stopping RPLidar scan and motor");
+        drv->stop();
+        drv->setMotorSpeed(0);
+        delete drv;
+        drv = nullptr;
+        is_scanning = false;
+        RCLCPP_INFO(this->get_logger(), "RPLidar stopped cleanly");
+    }
+
 public:    
     int work_loop()
     {        
@@ -408,19 +424,19 @@ public:
             else{
                 RCLCPP_ERROR(this->get_logger(),"Error, cannot bind to the specified serial port %s.",serial_port.c_str());            
             }
-            delete drv; drv = nullptr;
+            shutdownDriver();
             return -1;
         }
         
         // get rplidar device info
         if (!getRPLIDARDeviceInfo(drv)) {
-            delete drv; drv = nullptr;
+            shutdownDriver();
             return -1;
         }
 
         // check health...
         if (!checkRPLIDARHealth(drv)) {
-            delete drv; drv = nullptr;
+            shutdownDriver();
             return -1;
         }
 
@@ -439,7 +455,7 @@ public:
 
         /* start motor and scanning */
         if (!auto_standby && !this->start()) {
-            delete drv; drv = nullptr;
+            shutdownDriver();
             return -1;
         }
 
@@ -549,11 +565,7 @@ public:
             rclcpp::spin_some(shared_from_this());
         }
 
-        // done!
-        drv->setMotorSpeed(0);
-        drv->stop();
-        RCLCPP_INFO(this->get_logger(),"Stop motor");
-        if (drv) { delete drv;  drv = nullptr; }
+        shutdownDriver();
         return 0;
     }
 
@@ -588,7 +600,7 @@ public:
 void ExitHandler(int sig)
 {
     (void)sig;
-    need_exit = true;
+    need_exit = 1;
 }
 
 
@@ -596,7 +608,8 @@ int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);  
   auto rplidar_node = std::make_shared<RPlidarNode>(rclcpp::NodeOptions());
-  signal(SIGINT,ExitHandler);
+  std::signal(SIGINT, ExitHandler);
+  std::signal(SIGTERM, ExitHandler);
   int ret = rplidar_node->work_loop();
   rclcpp::shutdown();
   return ret;

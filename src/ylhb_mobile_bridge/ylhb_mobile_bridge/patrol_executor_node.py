@@ -516,8 +516,6 @@ class PatrolExecutorNode(Node):
         self._active_navigation: Optional[Dict[str, Any]] = None
         self._navigation_request_id = 0
         self._terminal_reset_timer = None
-        self._initial_pose_timer = None
-        self._initial_pose_remaining = 0
         self._auto_start_after_initial_pose = False
         self._seen_start_request_ids = deque(maxlen=64)
 
@@ -591,7 +589,7 @@ class PatrolExecutorNode(Node):
             "startup_id": "",
             "schedule_check_period_sec": 1.0,
             "publish_initial_pose_on_startup": True,
-            "initial_pose_publish_count": 3,
+            "initial_pose_publish_count": 1,
             "initial_pose_publish_period_sec": 0.5,
             "initial_pose_startup_delay_sec": 2.0,
             "initial_pose_stamp_zero": True,
@@ -1040,31 +1038,11 @@ class PatrolExecutorNode(Node):
         start_pose = self._route_data.get("start_pose")
         if not start_pose or not start_pose.get("publish_initial_pose"):
             return False
-        if self._initial_pose_timer is not None:
-            self.destroy_timer(self._initial_pose_timer)
-            self._initial_pose_timer = None
-        self._initial_pose_remaining = max(
-            1,
-            int(self.get_parameter("initial_pose_publish_count").value),
-        )
         self._publish_one_initial_pose()
-        if self._initial_pose_remaining > 0:
-            period = float(
-                self.get_parameter(
-                    "initial_pose_publish_period_sec"
-                ).value
-            )
-            self._initial_pose_timer = self.create_timer(
-                period,
-                self._publish_one_initial_pose,
-            )
         return True
 
     def _publish_one_initial_pose(self) -> None:
-        if self._initial_pose_remaining <= 0 or not self._route_data:
-            if self._initial_pose_timer is not None:
-                self.destroy_timer(self._initial_pose_timer)
-                self._initial_pose_timer = None
+        if not self._route_data:
             return
         start_pose = self._route_data["start_pose"]
         pose = start_pose["pose"]
@@ -1085,25 +1063,17 @@ class PatrolExecutorNode(Node):
         message.pose.covariance[7] = covariance["y"]
         message.pose.covariance[35] = covariance["yaw"]
         self._initial_pose_pub.publish(message)
-        self._initial_pose_remaining -= 1
         self._publish_event(
             {
                 "event": "initial_pose_published",
-                "remaining": self._initial_pose_remaining,
+                "remaining": 0,
                 "stamp_zero": stamp_zero,
                 "startup_id": getattr(self, "startup_id", ""),
                 "route_path": getattr(self, "resolved_route_file_path", None) or "",
                 "timestamp": time.time(),
             }
         )
-        if (
-            self._initial_pose_remaining <= 0
-            and self._initial_pose_timer is not None
-        ):
-            self.destroy_timer(self._initial_pose_timer)
-            self._initial_pose_timer = None
-        if self._initial_pose_remaining <= 0:
-            self._finish_initial_pose_sequence()
+        self._finish_initial_pose_sequence()
 
     def _finish_initial_pose_sequence(self) -> None:
         if self._auto_start_after_initial_pose:

@@ -67,6 +67,7 @@ bt_navigator:
     odom_topic: /odom
     # 行为树内部 TF 查询容忍时间；实车/Foxglove 目标时间戳会有几十毫秒抖动。
     transform_tolerance: 1.5
+    bt_loop_duration: 20
     # 默认行为树禁用恢复动作，失败时不再原地急转或后退。
     default_bt_xml_filename: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_keepout_safe.xml"
     default_nav_to_pose_bt_xml: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_keepout_safe.xml"
@@ -158,6 +159,8 @@ controller_server:
       min_speed_xy: 0.0
       # 平面合速度上限，与 max_vel_x 保持一致。
       max_speed_xy: 0.12
+      # 恢复实机稳定下限；0.10 会选中约 0.109rad/s 的慢转轨迹，
+      # 大角度起步尚未平移就触发 18 秒 progress timeout。
       min_speed_theta: 0.18
       # 加速度/减速度限制，避免 /cmd_vel 突变。
       acc_lim_x: 0.30
@@ -166,13 +169,13 @@ controller_server:
       decel_lim_x: -0.30
       decel_lim_y: 0.0
       decel_lim_theta: -0.50
-      # 速度采样数量；4 个点保留零速，并避开过多低于底盘死区的小速度。
-      vx_samples: 4
-      vy_samples: 5
-      vtheta_samples: 5
+      # 完整 footprint 与 keepout 检查需要足够的中间速度样本。
+      vx_samples: 6
+      vy_samples: 1
+      vtheta_samples: 12
       # DWB 前向仿真时间和采样分辨率。
-      sim_time: 1.7
-      linear_granularity: 0.05
+      sim_time: 1.5
+      linear_granularity: 0.04
       angular_granularity: 0.025
       # 控制器查询 TF 的容忍时间。
       transform_tolerance: 1.5
@@ -205,19 +208,17 @@ controller_server:
       RotateToGoal.lookahead_time: 0.4
 
     progress_checker:
-      # 进度检查器：平移或转向任一满足阈值都算进展，避免原地起步转向被误判卡住。
-      # 12 秒保留真实卡住时的恢复，同时给低速起步留出位移时间。
-      plugin: "nav2_controller::PoseProgressChecker"
-      required_movement_radius: 0.05
-      required_movement_angle: 0.12
-      movement_time_allowance: 12.0
+      # 只有实际平移才算进展，原地旋转不能无限刷新超时。
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.04
+      movement_time_allowance: 18.0
 
     goal_checker:
       # 目标检查器：明确使用 SimpleGoalChecker，消除默认 goal checker 警告。
       plugin: "nav2_controller::SimpleGoalChecker"
-      # 保守收紧到点精度：位置 0.08m、角度 0.08rad。
+      # 保持位置精度，稍微放宽最终方向以减少到点振荡。
       xy_goal_tolerance: 0.08
-      yaw_goal_tolerance: 0.08
+      yaw_goal_tolerance: 0.12
       stateful: True
 
 local_costmap:
@@ -264,10 +265,10 @@ local_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.10
       inflation_layer:
-        # 障碍膨胀层扩大动态障碍安全距离，低速下优先绕行或停车。
+        # Keepout 模式使用完整 footprint 做碰撞检查；收窄软代价带，避免在开阔通道中被两侧膨胀区夹住。
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.35
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.20
 
 global_costmap:
   global_costmap:
@@ -315,10 +316,10 @@ global_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.10
       inflation_layer:
-        # 障碍膨胀层扩大静态地图安全距离，和 local_costmap 保持一致。
+        # 与 local costmap 使用同一窄软代价带，保证全局路径可在真实可通行区域内生成。
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.35
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.20
 
 map_server:
   ros__parameters:
