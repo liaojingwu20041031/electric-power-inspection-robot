@@ -61,6 +61,16 @@ function loadRouteJsonContext() {
   };
   const context = {
     state: {
+      map: {
+        yamlName: "my_map.yaml",
+        pgmName: "my_map.pgm",
+        image: "my_map.pgm",
+        resolution: 0.025,
+        origin: [-7.07, -13.3, 0],
+        width: 395,
+        height: 675,
+        imageSha256: "a".repeat(64),
+      },
       zones: [],
       activeZoneId: null,
       targets: [],
@@ -138,10 +148,28 @@ function testRouteKeepoutZonesRoundTrip() {
       polygon: [{ x: 1.235, y: -2.346 }],
     },
   ]);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(context.buildRouteJson().map)), {
+    yaml: "my_map.yaml",
+    image: "my_map.pgm",
+    resolution: 0.025,
+    origin: [-7.07, -13.3, 0],
+    width: 395,
+    height: 675,
+    image_sha256: "a".repeat(64),
+  });
 
   context.loadRouteJson({
     version: 3,
     frame_id: "map",
+    map: {
+      yaml: "my_map.yaml",
+      image: "my_map.pgm",
+      resolution: 0.025,
+      origin: [-7.07, -13.3, 0],
+      width: 395,
+      height: 675,
+      image_sha256: "a".repeat(64),
+    },
     keepout_zones: [
       {
         id: "keepout_002",

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src" / "ylhb_mobile_bridge"))
+from ylhb_mobile_bridge.patrol_route_store import validate_route_map_binding  # noqa: E402
 
 
 def read_pgm_header(path):
@@ -78,8 +83,15 @@ def main():
         map_image = map_yaml_path.parent / map_image
     width, height = read_pgm_header(map_image)
 
-    route = json.loads(Path(args.route).expanduser().read_text(encoding="utf-8"))
+    route = validate_route_map_binding(
+        json.loads(Path(args.route).expanduser().read_text(encoding="utf-8")),
+        map_yaml_path,
+    )
+    if route["version"] != 3:
+        raise ValueError("keepout mask generation requires a v3 route with map binding")
     hard_zones = list(active_hard_zones(route))
+    if not hard_zones:
+        raise ValueError("route has no enabled hard_keepout keepout_zones")
     origin = map_data["origin"]
     resolution = float(map_data["resolution"])
     pixels = bytearray([254] * (width * height))
@@ -103,7 +115,7 @@ def main():
         "origin": [float(origin[0]), float(origin[1]), 0],
         "negate": 0,
         "occupied_thresh": 0.65,
-        "free_thresh": 0.25,
+        "free_thresh": float(map_data["free_thresh"]),
     }
     yaml_path.write_text(yaml.safe_dump(mask_yaml, sort_keys=False), encoding="utf-8")
     print(f"wrote {yaml_path} and {pgm_path}")

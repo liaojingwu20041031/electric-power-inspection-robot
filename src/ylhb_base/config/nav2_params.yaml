@@ -271,7 +271,7 @@ global_costmap:
       robot_base_frame: base_footprint
       use_sim_time: False
       transform_tolerance: 1.5
-      resolution: 0.05
+      resolution: 0.025
       # 未知区域保留为未知，规划器是否可穿越由 allow_unknown 控制。
       track_unknown_space: true
       # 机器人导航碰撞足迹，和 local_costmap 保持一致。

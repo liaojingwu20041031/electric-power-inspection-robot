@@ -1,10 +1,31 @@
 {
   "version": 3,
   "frame_id": "map",
+  "map": {
+    "yaml": "my_map.yaml",
+    "image": "my_map.pgm",
+    "resolution": 0.025,
+    "origin": [
+      -7.07,
+      -13.3,
+      0
+    ],
+    "width": 395,
+    "height": 675,
+    "image_sha256": "81ade4d8b354272d012789e1d7b79ea11dd6629447ae20a3e579409086bac270"
+  },
   "active_route_id": "route_patrol_001",
   "start_pose": {
     "name": "初始起点",
+    "frame_id": "map",
     "pose": {
+      "x": -0.441,
+      "y": 0.001,
+      "yaw": -0.113
+    },
+    "location": {
+      "type": "map_pose",
+      "frame_id": "map",
       "x": -0.441,
       "y": 0.001,
       "yaw": -0.113
@@ -33,9 +54,11 @@
         "yaw": -1.795
       },
       "safety": {
-        "validation_status": "pending",
-        "min_keepout_distance_m": null,
-        "warnings": []
+        "validation_status": "warning",
+        "min_keepout_distance_m": 0.15326084190992245,
+        "warnings": [
+          "target_001 footprint is closer than 0.20m to keepout_001"
+        ]
       },
       "task_duration_sec": 5
     },
@@ -55,8 +78,8 @@
         "yaw": 1.367
       },
       "safety": {
-        "validation_status": "pending",
-        "min_keepout_distance_m": null,
+        "validation_status": "ok",
+        "min_keepout_distance_m": 1.971830353461178,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -77,8 +100,8 @@
         "yaw": 1.399
       },
       "safety": {
-        "validation_status": "pending",
-        "min_keepout_distance_m": null,
+        "validation_status": "ok",
+        "min_keepout_distance_m": 3.2061948042439656,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -99,8 +122,8 @@
         "yaw": -0.108
       },
       "safety": {
-        "validation_status": "pending",
-        "min_keepout_distance_m": null,
+        "validation_status": "ok",
+        "min_keepout_distance_m": 0.9799944114131222,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -153,5 +176,12 @@
       ]
     }
   ],
-  "schedules": []
+  "schedules": [],
+  "safety": {
+    "validation_status": "warning",
+    "min_keepout_distance_m": 0.15326084190992245,
+    "warnings": [
+      "target_001 footprint is closer than 0.20m to keepout_001"
+    ]
+  }
 }

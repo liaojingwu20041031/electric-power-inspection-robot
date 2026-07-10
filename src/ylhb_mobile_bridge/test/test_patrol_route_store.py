@@ -1,5 +1,7 @@
 import copy
+import hashlib
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,31 @@ TEST_ROUTE_PATH = (
 
 def valid_route_data():
     return copy.deepcopy(load_route_file(str(TEST_ROUTE_PATH)))
+
+
+def valid_v3_map():
+    return {
+        "yaml": "my_map.yaml",
+        "image": "my_map.pgm",
+        "resolution": 0.025,
+        "origin": [-7.07, -13.3, 0.0],
+        "width": 4,
+        "height": 3,
+        "image_sha256": "0" * 64,
+    }
+
+
+def valid_v3_route_data():
+    data = valid_route_data()
+    data["version"] = 3
+    data["map"] = valid_v3_map()
+    data["start_pose"]["frame_id"] = "map"
+    data["start_pose"]["location"] = {"type": "map_pose", "frame_id": "map", **data["start_pose"]["pose"]}
+    for target in data["targets"]:
+        pose = target["pose"]
+        target["location"] = {"type": "map_pose", "frame_id": "map", **pose}
+    data["keepout_zones"] = []
+    return data
 
 
 def expect_validation_error(data, message_part):
@@ -47,8 +74,7 @@ def test_valid_v2_example_passes_and_expands_route():
 
 
 def test_valid_v3_optional_business_fields_are_preserved():
-    data = valid_route_data()
-    data["version"] = 3
+    data = valid_v3_route_data()
     data["site"] = {"id": "site_1", "name": "实训站"}
     data["areas"] = [{"id": "area_1", "name": "主变区"}]
     data["targets"][0]["aliases"] = ["巡检点一"]
@@ -70,8 +96,7 @@ def test_valid_v3_optional_business_fields_are_preserved():
 
 
 def test_v3_location_map_pose_can_backfill_missing_pose():
-    data = valid_route_data()
-    data["version"] = 3
+    data = valid_v3_route_data()
     del data["targets"][0]["pose"]
     data["targets"][0]["location"] = {
         "type": "map_pose",
@@ -87,8 +112,7 @@ def test_v3_location_map_pose_can_backfill_missing_pose():
 
 
 def test_v3_pose_and_location_mismatch_fails():
-    data = valid_route_data()
-    data["version"] = 3
+    data = valid_v3_route_data()
     data["targets"][0]["location"] = {
         "type": "map_pose",
         "frame_id": "map",
@@ -98,6 +122,81 @@ def test_v3_pose_and_location_mismatch_fails():
     }
 
     expect_validation_error(data, "pose and location disagree")
+
+
+def test_v3_start_pose_location_mismatch_fails():
+    data = valid_v3_route_data()
+    data["start_pose"]["location"]["x"] += 0.01
+
+    expect_validation_error(data, "start_pose.pose and location disagree")
+
+
+def test_v3_requires_complete_map_identity_and_valid_keepout_polygon():
+    data = valid_v3_route_data()
+    data["map"].pop("image_sha256")
+    expect_validation_error(data, "map.image_sha256")
+
+    data = valid_v3_route_data()
+    data["keepout_zones"] = [{
+        "id": "keepout_001",
+        "type": "hard_keepout",
+        "enabled": True,
+        "polygon": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 1.0, "y": 1.0},
+            {"x": 0.0, "y": 1.0},
+            {"x": 1.0, "y": 0.0},
+        ],
+    }]
+    expect_validation_error(data, "self-intersects")
+
+    data = valid_v3_route_data()
+    data["keepout_zones"] = [{
+        "id": "keepout_001",
+        "type": "hard_keepout",
+        "enabled": True,
+        "polygon": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 0.0}, {"x": 2.0, "y": 0.0}],
+    }]
+    expect_validation_error(data, "area must not be zero")
+
+
+def test_v3_map_binding_rejects_changed_pgm(tmp_path):
+    map_yaml = tmp_path / "my_map.yaml"
+    map_pgm = tmp_path / "my_map.pgm"
+    map_pgm.write_bytes(b"P5\n4 3\n255\n" + bytes([254]) * 12)
+    map_yaml.write_text(
+        "image: my_map.pgm\nresolution: 0.025\norigin: [-7.07, -13.3, 0]\n",
+        encoding="utf-8",
+    )
+    data = valid_v3_route_data()
+    data["map"]["image_sha256"] = hashlib.sha256(map_pgm.read_bytes()).hexdigest()
+
+    patrol_route_store.validate_route_map_binding(data, map_yaml)
+
+    map_pgm.write_bytes(b"P5\n4 3\n255\n" + bytes([0]) * 12)
+    with pytest.raises(ValueError, match="当前巡逻标注不属于"):
+        patrol_route_store.validate_route_map_binding(data, map_yaml)
+
+
+def test_checked_in_v3_route_safety_keeps_start_safe_and_marks_target_001_warning():
+    root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [
+            "python3", "scripts/validate_route_safety.py",
+            "--map", "maps/my_map.yaml",
+            "--route", "maps/route_patrol_001.json",
+            "--nav2-params", "src/ylhb_base/config/nav2_params.yaml",
+            "--warn-distance", "0.20",
+        ],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "target_001 footprint is closer than 0.20m to keepout_001" in result.stdout
+    assert "start_pose" not in result.stderr
 
 
 def test_load_route_file_reads_and_validates_json():

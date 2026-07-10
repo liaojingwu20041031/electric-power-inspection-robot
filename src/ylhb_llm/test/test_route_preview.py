@@ -305,4 +305,7 @@ def test_workspace_patrol_route_preview_has_four_targets_and_png_exists():
     assert preview["overlay_ok"] is True
     assert preview["active_route_id"] == "route_patrol_001"
     assert preview["target_count"] == 4
+    assert preview["map_identity"]["image"] == "my_map.pgm"
+    assert preview["keepout_count"] == 1
+    assert "target_001 footprint is closer than 0.20m to keepout_001" in preview["safety_warnings"]
     assert Path(preview["image_url"].removeprefix("file://")).exists()

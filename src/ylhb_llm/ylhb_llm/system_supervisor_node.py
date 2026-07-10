@@ -17,6 +17,7 @@ from rclpy.time import Time
 from std_msgs.msg import String
 from std_srvs.srv import Empty
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
+from ylhb_mobile_bridge.patrol_route_store import load_route_file, validate_route_map_binding
 
 try:
     from ylhb_3d_mapping import zed_3d_asset_manager
@@ -175,9 +176,10 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('mapping3d_capture_dir', '')
         self.declare_parameter('mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))
-        self.declare_parameter('enable_keepout_navigation', False)
+        self.declare_parameter('enable_keepout_navigation', True)
         self.declare_parameter('keepout_mask_path', workspace_path('maps', 'keepout', 'keepout_mask_power_room_a.yaml'))
-        self.declare_parameter('keepout_route_path', workspace_path('maps', 'route_patrol_001.json'))
+        self.declare_parameter('patrol_route_path', '')
+        self.declare_parameter('keepout_route_path', '')  # deprecated alias
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
         self.declare_parameter('embedded_task_layer', True)
         self.declare_parameter('enable_voice', False)
@@ -204,7 +206,10 @@ class SystemSupervisorNode(Node):
         self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
         self.enable_keepout_navigation = bool(self.get_parameter('enable_keepout_navigation').value)
         self.keepout_mask_path = os.path.expanduser(str(self.get_parameter('keepout_mask_path').value))
-        self.keepout_route_path = os.path.expanduser(str(self.get_parameter('keepout_route_path').value))
+        patrol_route_path = str(self.get_parameter('patrol_route_path').value).strip()
+        keepout_route_path = str(self.get_parameter('keepout_route_path').value).strip()
+        self.patrol_route_path = os.path.abspath(os.path.expanduser(patrol_route_path or keepout_route_path or os.path.join(self.workspace_dir, 'maps', 'route_patrol_001.json')))
+        self.keepout_route_path = self.patrol_route_path
         self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
         self.embedded_task_layer = bool(self.get_parameter('embedded_task_layer').value)
         self.enable_voice = bool(self.get_parameter('enable_voice').value)
@@ -278,6 +283,7 @@ class SystemSupervisorNode(Node):
             'patrol_executor': ManagedProcess(
                 'patrol_executor',
                 'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
+                f'route_file_path:={self.patrol_route_path} '
                 'auto_start:=false publish_initial_pose_on_startup:=true',
             ),
         }
@@ -431,8 +437,10 @@ class SystemSupervisorNode(Node):
             'pause_patrol': 'pause',
             'resume_patrol': 'resume',
             'cancel_patrol': 'cancel',
-            'reload_patrol_route': 'reload',
         }
+        if command == 'reload_patrol_route':
+            self.reload_patrol_route()
+            return
         if command in patrol_commands:
             patrol_command = patrol_commands[command]
             self.publish_patrol_command(patrol_command)
@@ -483,6 +491,9 @@ class SystemSupervisorNode(Node):
             self.start_process('mobile_bridge')
             return
         if command == 'restart_navigation':
+            if not self.prepare_patrol_navigation_assets():
+                self.set_result(command, False, '导航资源准备失败: ' + self.patrol_error)
+                return
             self.stop_process('navigation')
             self.start_process('navigation')
             return
@@ -515,6 +526,9 @@ class SystemSupervisorNode(Node):
                 True,
                 self.voice_summary('AI task layer is embedded in inspection launch'),
             )
+            return
+        if name == 'navigation' and not self.prepare_patrol_navigation_assets():
+            self.set_result('start_navigation', False, '导航资源准备失败: ' + self.patrol_error)
             return
         proc = self.processes[name]
         with self.lock:
@@ -580,6 +594,9 @@ class SystemSupervisorNode(Node):
             return False
 
     def start_robot_stack(self) -> None:
+        if not self.prepare_patrol_navigation_assets():
+            self.set_result('start_robot_stack', False, '导航资源准备失败: ' + self.patrol_error)
+            return
         for name in ('bringup', 'zed', 'perception', 'navigation', 'llm'):
             self.start_process(name)
             time.sleep(0.3)
@@ -603,6 +620,23 @@ class SystemSupervisorNode(Node):
         self.patrol_mode_state = 'idle'
         self.startup_step = ''
         self.patrol_error = ''
+
+    def reload_patrol_route(self) -> None:
+        if self.patrol_mode_state in ('running', 'paused', 'returning_home') or self.startup_step == 'returning_home':
+            self.set_result('reload_patrol_route', False, '巡逻运行中，请先取消巡逻。')
+            return
+        navigation_running = bool(self.processes.get('navigation') and self.processes['navigation'].is_running())
+        if not self.prepare_patrol_navigation_assets():
+            self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
+            return
+        if navigation_running:
+            self.stop_process('navigation')
+            self.start_process('navigation')
+            if not self.wait_for_nav2_active_ready(25.0) or not self.wait_for_keepout_active_ready(12.0):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: Nav2/Keepout lifecycle 未激活')
+                return
+        self.publish_patrol_command('reload')
+        self.set_result('reload_patrol_route', True, '路线与禁行区已整体刷新')
 
     def start_patrol_mode(self, profile: str = 'navigation', route_id: str = '') -> None:
         profile = profile if profile in ('navigation', 'inspection') else 'navigation'
@@ -719,17 +753,57 @@ class SystemSupervisorNode(Node):
         return command
 
     def prepare_keepout_navigation(self) -> bool:
+        if not hasattr(self, 'default_navigation_map'):
+            return True
+        return self.prepare_patrol_navigation_assets()
+
+    def prepare_patrol_navigation_assets(self) -> bool:
         if getattr(self, 'processes', None) and 'navigation' in self.processes:
             self.processes['navigation'].command = self.navigation_launch_command()
+        try:
+            if not os.path.isfile(self.default_navigation_map):
+                raise ValueError(f'map yaml missing: {self.default_navigation_map}')
+            if not os.path.isfile(self.patrol_route_path):
+                raise ValueError(f'patrol route missing: {self.patrol_route_path}')
+            route = load_route_file(self.patrol_route_path)
+            validate_route_map_binding(route, self.default_navigation_map)
+        except Exception as exc:
+            self.patrol_error = str(exc)
+            return False
+        safety = self.run_route_safety_check()
+        if safety == 'unsafe':
+            self.patrol_error = '巡逻路线安全校验失败'
+            return False
+        if safety == 'error':
+            return False
         if not getattr(self, 'enable_keepout_navigation', False):
             return True
         self.startup_step = 'generating_keepout_mask'
-        if not self.generate_keepout_mask():
+        if not self.generate_keepout_mask() or not os.path.exists(self.keepout_mask_path):
+            self.patrol_error = self.patrol_error or f'keepout mask missing: {self.keepout_mask_path}'
             return False
-        if not os.path.exists(self.keepout_mask_path):
-            self.patrol_error = f'keepout mask missing: {self.keepout_mask_path}'
+        if not self.check_keepout_setup():
             return False
         return True
+
+    def run_route_safety_check(self) -> str:
+        command = [
+            'python3', os.path.join(self.workspace_dir, 'scripts', 'validate_route_safety.py'),
+            '--map', self.default_navigation_map,
+            '--route', self.patrol_route_path,
+            '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', 'nav2_params.yaml'),
+            '--warn-distance', '0.20', '--write-back',
+        ]
+        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.returncode == 1:
+            self.patrol_error = result.stdout.strip()
+            return 'unsafe'
+        if result.returncode != 0:
+            self.patrol_error = f'route safety validation failed: {result.stdout.strip()}'
+            return 'error'
+        if 'route safety warning' in result.stdout:
+            self.patrol_error = 'warning: ' + result.stdout.strip()
+        return 'warning' if 'route safety warning' in result.stdout else 'ok'
 
     def generate_keepout_mask(self) -> bool:
         output_dir = os.path.dirname(self.keepout_mask_path)
@@ -738,7 +812,7 @@ class SystemSupervisorNode(Node):
             'python3',
             os.path.join(self.workspace_dir, 'scripts', 'generate_keepout_mask.py'),
             '--map', self.default_navigation_map,
-            '--route', self.keepout_route_path,
+            '--route', self.patrol_route_path,
             '--output-dir', output_dir,
             '--name', mask_name,
         ]
@@ -749,6 +823,20 @@ class SystemSupervisorNode(Node):
             return False
         if result.returncode != 0:
             self.patrol_error = f'keepout mask generation failed: {result.stdout.strip()}'
+            return False
+        return True
+
+    def check_keepout_setup(self) -> bool:
+        command = [
+            'python3', os.path.join(self.workspace_dir, 'scripts', 'check_keepout_setup.py'),
+            '--map', self.default_navigation_map,
+            '--route', self.patrol_route_path,
+            '--mask', self.keepout_mask_path,
+            '--nav2-params', os.path.join(self.workspace_dir, 'src', 'ylhb_base', 'config', 'nav2_params.yaml'),
+        ]
+        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.returncode != 0:
+            self.patrol_error = f'keepout setup failed: {result.stdout.strip()}'
             return False
         return True
 

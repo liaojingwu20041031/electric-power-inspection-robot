@@ -2,9 +2,14 @@
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src" / "ylhb_mobile_bridge"))
+from ylhb_mobile_bridge.patrol_route_store import validate_route_map_binding  # noqa: E402
 
 
 def read_pgm(path):
@@ -74,7 +79,11 @@ def main():
 
     map_meta = yaml.safe_load(Path(args.map_yaml).read_text(encoding="utf-8"))
     mask_meta = yaml.safe_load(Path(args.mask_yaml).read_text(encoding="utf-8"))
-    route = json.loads(Path(args.route).read_text(encoding="utf-8"))
+    route = validate_route_map_binding(
+        json.loads(Path(args.route).read_text(encoding="utf-8")),
+        args.map_yaml,
+    )
+    require(route["version"] == 3, "keepout setup requires a v3 route with map binding")
     require(any(z.get("enabled") and z.get("type") == "hard_keepout" for z in route.get("keepout_zones", [])),
             "route has no enabled hard_keepout keepout_zones")
 

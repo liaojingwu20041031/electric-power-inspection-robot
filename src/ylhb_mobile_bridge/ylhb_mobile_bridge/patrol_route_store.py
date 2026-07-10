@@ -1,9 +1,12 @@
 import copy
+import hashlib
 import json
 import math
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Tuple, Union
+
+import yaml
 
 
 FAILURE_POLICIES = {"abort", "abort_and_return_home"}
@@ -11,6 +14,11 @@ SCHEDULE_MODES = {"interval", "daily"}
 DEFAULT_ROUTE_DIRECTORY = Path("/home/nvidia/ros2_DL/maps")
 ROUTE_FILE_PATTERN = "route_patrol_*.json"
 ROUTE_NUMBER_PATTERN = re.compile(r"^route_patrol_(\d+)\.json$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+MAP_BINDING_ERROR = (
+    "当前巡逻标注不属于正在加载的地图，请使用路线标注工具在新地图上重新绘制"
+    "起点、巡检点、路线和禁行区。"
+)
 
 
 def _require_dict(value: Any, field: str) -> Dict[str, Any]:
@@ -78,14 +86,10 @@ def _validate_v3_location_pose(
     field: str,
 ) -> Dict[str, float]:
     if location is None:
-        if pose is None:
-            raise ValueError(f"{field}.pose must be present")
-        return pose
+        raise ValueError(f"{field}.location must be a map_pose")
     location_dict = _require_dict(location, f"{field}.location")
     if location_dict.get("type") != "map_pose":
-        if pose is None:
-            raise ValueError(f"{field}.pose must be present")
-        return pose
+        raise ValueError(f"{field}.location.type must be map_pose")
     if location_dict.get("frame_id", "map") != "map":
         raise ValueError(f"{field}.location.frame_id must be map")
     location_pose = {
@@ -118,6 +122,146 @@ def _validate_nonnegative_int(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{field} must be an integer >= 0")
     return value
+
+
+def _read_pgm_header(path: Path) -> Tuple[int, int]:
+    data = path.read_bytes()
+    index = 0
+
+    def token() -> str:
+        nonlocal index
+        while index < len(data):
+            if data[index] == ord("#"):
+                while index < len(data) and data[index] not in b"\r\n":
+                    index += 1
+            elif chr(data[index]).isspace():
+                index += 1
+            else:
+                break
+        start = index
+        while index < len(data) and not chr(data[index]).isspace():
+            index += 1
+        return data[start:index].decode("ascii")
+
+    magic = token()
+    width = int(token())
+    height = int(token())
+    max_value = int(token())
+    if magic != "P5" or width <= 0 or height <= 0 or max_value != 255:
+        raise ValueError(f"invalid 8-bit binary PGM: {path}")
+    return width, height
+
+
+def _validate_map_identity(value: Any) -> Dict[str, Any]:
+    identity = _require_dict(value, "map")
+    origin = _require_list(identity.get("origin"), "map.origin")
+    if len(origin) != 3:
+        raise ValueError("map.origin must contain 3 numbers")
+    image_sha256 = _require_id(identity.get("image_sha256"), "map.image_sha256")
+    if not SHA256_PATTERN.fullmatch(image_sha256):
+        raise ValueError("map.image_sha256 must be a SHA256 hex string")
+    width = identity.get("width")
+    height = identity.get("height")
+    if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
+        raise ValueError("map.width must be a positive integer")
+    if isinstance(height, bool) or not isinstance(height, int) or height <= 0:
+        raise ValueError("map.height must be a positive integer")
+    return {
+        **identity,
+        "yaml": _require_id(identity.get("yaml"), "map.yaml"),
+        "image": _require_id(identity.get("image"), "map.image"),
+        "resolution": _validate_positive(identity.get("resolution"), "map.resolution"),
+        "origin": [_require_number(item, f"map.origin[{index}]") for index, item in enumerate(origin)],
+        "width": width,
+        "height": height,
+        "image_sha256": image_sha256,
+    }
+
+
+def _orientation(a: Dict[str, float], b: Dict[str, float], c: Dict[str, float]) -> float:
+    return (b["x"] - a["x"]) * (c["y"] - a["y"]) - (b["y"] - a["y"]) * (c["x"] - a["x"])
+
+
+def _on_segment(a: Dict[str, float], b: Dict[str, float], point: Dict[str, float], epsilon: float = 1e-9) -> bool:
+    return (
+        abs(_orientation(a, b, point)) <= epsilon
+        and min(a["x"], b["x"]) - epsilon <= point["x"] <= max(a["x"], b["x"]) + epsilon
+        and min(a["y"], b["y"]) - epsilon <= point["y"] <= max(a["y"], b["y"]) + epsilon
+    )
+
+
+def segments_intersect(a: Dict[str, float], b: Dict[str, float], c: Dict[str, float], d: Dict[str, float], epsilon: float = 1e-9) -> bool:
+    first = _orientation(a, b, c)
+    second = _orientation(a, b, d)
+    third = _orientation(c, d, a)
+    fourth = _orientation(c, d, b)
+    if first * second < -epsilon and third * fourth < -epsilon:
+        return True
+    return any((
+        _on_segment(a, b, c, epsilon),
+        _on_segment(a, b, d, epsilon),
+        _on_segment(c, d, a, epsilon),
+        _on_segment(c, d, b, epsilon),
+    ))
+
+
+def _polygon_area(polygon: List[Dict[str, float]]) -> float:
+    return 0.5 * sum(
+        point["x"] * polygon[(index + 1) % len(polygon)]["y"]
+        - point["y"] * polygon[(index + 1) % len(polygon)]["x"]
+        for index, point in enumerate(polygon)
+    )
+
+
+def _polygon_self_intersects(polygon: List[Dict[str, float]]) -> bool:
+    count = len(polygon)
+    for first in range(count):
+        for second in range(first + 1, count):
+            if second in (first, (first + 1) % count) or (first == 0 and second == count - 1):
+                continue
+            if segments_intersect(
+                polygon[first], polygon[(first + 1) % count],
+                polygon[second], polygon[(second + 1) % count],
+            ):
+                return True
+    return False
+
+
+def _validate_keepout_zones(value: Any, field: str) -> List[Dict[str, Any]]:
+    zones = _require_list(value, field)
+    zone_ids = set()
+    normalized = []
+    for index, zone_value in enumerate(zones):
+        zone_field = f"{field}[{index}]"
+        zone = _require_dict(zone_value, zone_field)
+        zone_id = _require_id(zone.get("id"), f"{zone_field}.id")
+        if zone_id in zone_ids:
+            raise ValueError(f"duplicate keepout zone id: {zone_id}")
+        zone_ids.add(zone_id)
+        if zone.get("type") != "hard_keepout":
+            raise ValueError(f"{zone_field}.type must be hard_keepout")
+        polygon_value = _require_list(zone.get("polygon"), f"{zone_field}.polygon")
+        if len(polygon_value) < 3:
+            raise ValueError(f"{zone_field}.polygon must contain at least 3 points")
+        polygon = [
+            {
+                "x": _require_number(_require_dict(point, f"{zone_field}.polygon[{point_index}]").get("x"), f"{zone_field}.polygon[{point_index}].x"),
+                "y": _require_number(_require_dict(point, f"{zone_field}.polygon[{point_index}]").get("y"), f"{zone_field}.polygon[{point_index}].y"),
+            }
+            for point_index, point in enumerate(polygon_value)
+        ]
+        if _polygon_self_intersects(polygon):
+            raise ValueError(f"{zone_field}.polygon self-intersects")
+        if abs(_polygon_area(polygon)) <= 1e-9:
+            raise ValueError(f"{zone_field}.polygon area must not be zero")
+        normalized.append({
+            **zone,
+            "id": zone_id,
+            "type": "hard_keepout",
+            "enabled": _require_bool(zone.get("enabled"), f"{zone_field}.enabled"),
+            "polygon": polygon,
+        })
+    return normalized
 
 
 def resolve_route_file_path(
@@ -187,6 +331,8 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
         raise ValueError("version must be 2 or 3")
     if normalized.get("frame_id") != "map":
         raise ValueError('frame_id must be "map"')
+    if version == 3:
+        normalized["map"] = _validate_map_identity(normalized.get("map"))
 
     start_pose = _require_dict(normalized.get("start_pose"), "start_pose")
     start_name = start_pose.get("name", "start")
@@ -199,9 +345,17 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
     normalized_start_pose = {
         **start_pose,
         "name": start_name,
-        "pose": _validate_pose(start_pose.get("pose"), "start_pose.pose"),
+        "pose": _validate_v3_location_pose(
+            _validate_pose(start_pose.get("pose"), "start_pose.pose"),
+            start_pose.get("location"),
+            "start_pose",
+        ) if version == 3 else _validate_pose(start_pose.get("pose"), "start_pose.pose"),
         "publish_initial_pose": publish_initial_pose,
     }
+    if version == 3:
+        if start_pose.get("frame_id") != "map":
+            raise ValueError("start_pose.frame_id must be map")
+        normalized_start_pose["frame_id"] = "map"
     if publish_initial_pose or "covariance" in start_pose:
         covariance = _require_dict(
             start_pose.get("covariance"),
@@ -390,6 +544,16 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
             )
         normalized_schedules.append(normalized_schedule)
     normalized["schedules"] = normalized_schedules
+    if version == 3:
+        normalized["keepout_zones"] = _validate_keepout_zones(
+            normalized.get("keepout_zones"),
+            "keepout_zones",
+        )
+    elif "keepout_zones" in normalized:
+        normalized["keepout_zones"] = _validate_keepout_zones(
+            normalized["keepout_zones"],
+            "keepout_zones",
+        )
     if "site" in normalized:
         normalized["site"] = _require_dict(normalized["site"], "site")
     if "areas" in normalized:
@@ -410,6 +574,38 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
         normalized["areas"] = normalized_areas
 
     return normalized
+
+
+def validate_route_map_binding(data: Any, map_yaml_path: Union[str, Path]) -> Dict[str, Any]:
+    route = validate_route_file(data)
+    if route["version"] == 2:
+        return route
+    map_yaml_path = Path(map_yaml_path).expanduser()
+    try:
+        metadata = _require_dict(
+            yaml.safe_load(map_yaml_path.read_text(encoding="utf-8")),
+            "map yaml",
+        )
+        image_path = Path(_require_id(metadata.get("image"), "map yaml.image"))
+        if not image_path.is_absolute():
+            image_path = map_yaml_path.parent / image_path
+        width, height = _read_pgm_header(image_path)
+        route_map = route["map"]
+        matches = (
+            route_map["yaml"] == map_yaml_path.name
+            and route_map["image"] == image_path.name
+            and math.isclose(route_map["resolution"], _validate_positive(metadata.get("resolution"), "map yaml.resolution"), abs_tol=1e-12)
+            and len(metadata.get("origin", [])) == 3
+            and all(math.isclose(route_map["origin"][index], _require_number(metadata["origin"][index], f"map yaml.origin[{index}]"), abs_tol=1e-12) for index in range(3))
+            and route_map["width"] == width
+            and route_map["height"] == height
+            and route_map["image_sha256"] == hashlib.sha256(image_path.read_bytes()).hexdigest()
+        )
+    except (OSError, TypeError, ValueError, yaml.YAMLError) as exc:
+        raise ValueError(f"invalid map binding: {exc}") from exc
+    if not matches:
+        raise ValueError(MAP_BINDING_ERROR)
+    return route
 
 
 def get_route(data: Dict[str, Any], route_id: str) -> Dict[str, Any]:

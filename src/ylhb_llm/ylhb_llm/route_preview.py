@@ -12,7 +12,7 @@ try:
         expand_route_targets,
         get_route,
         load_route_file,
-        resolve_route_file_path,
+        validate_route_map_binding,
     )
 except ModuleNotFoundError:
     bridge_package = Path(__file__).resolve().parents[2] / "ylhb_mobile_bridge"
@@ -22,7 +22,7 @@ except ModuleNotFoundError:
         expand_route_targets,
         get_route,
         load_route_file,
-        resolve_route_file_path,
+        validate_route_map_binding,
     )
 
 
@@ -258,9 +258,11 @@ def _draw_preview(
     for index, target in enumerate(ordered, start=1):
         pose = target.get("pose") or {}
         px, py = scaled_pixel(pose.get("x", 0.0), pose.get("y", 0.0))
+        target_status = (target.get("safety") or {}).get("validation_status", "ok")
+        marker_color = "#DC2626" if target_status == "unsafe" else "#EAB308" if target_status == "warning" else "#22C55E"
         draw.ellipse(
             [px - 8, py - 8, px + 8, py + 8],
-            fill="#22C55E",
+            fill=marker_color,
             outline="#111827",
             width=2,
         )
@@ -271,6 +273,32 @@ def _draw_preview(
             fill="#111827",
             width=2,
         )
+
+    for zone in route_data.get("keepout_zones", []):
+        if zone.get("enabled") is True and zone.get("type") == "hard_keepout":
+            points = [scaled_pixel(point["x"], point["y"]) for point in zone.get("polygon", [])]
+            if len(points) >= 3:
+                draw.polygon(points, fill="#FCA5A5", outline="#991B1B")
+
+    footprint = [
+        (0.18650, 0.00000), (0.16543, 0.10591), (0.10544, 0.19569), (0.01566, 0.25568),
+        (-0.09025, 0.27675), (-0.19616, 0.25568), (-0.28594, 0.19569), (-0.34593, 0.10591),
+        (-0.36700, 0.00000), (-0.34593, -0.10591), (-0.28594, -0.19569), (-0.19616, -0.25568),
+        (-0.09025, -0.27675), (0.01566, -0.25568), (0.10544, -0.19569), (0.16543, -0.10591),
+    ]
+    for pose, status in [(start_pose, (route_data.get("safety") or {}).get("validation_status", "ok"))] + [
+        (target.get("pose") or {}, (target.get("safety") or {}).get("validation_status", "ok")) for target in ordered
+    ]:
+        yaw = float(pose.get("yaw", 0.0))
+        cosine, sine = math.cos(yaw), math.sin(yaw)
+        points = [
+            scaled_pixel(
+                float(pose.get("x", 0.0)) + (x + (0.01 if x > 0 else -0.01 if x < 0 else 0.0)) * cosine - (y + (0.01 if y > 0 else -0.01 if y < 0 else 0.0)) * sine,
+                float(pose.get("y", 0.0)) + (x + (0.01 if x > 0 else -0.01 if x < 0 else 0.0)) * sine + (y + (0.01 if y > 0 else -0.01 if y < 0 else 0.0)) * cosine,
+            )
+            for x, y in footprint
+        ]
+        draw.line(points + [points[0]], fill="#DC2626" if status == "unsafe" else "#EAB308" if status == "warning" else "#16A34A", width=2)
 
     overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
     overlay_draw = ImageDraw.Draw(overlay)
@@ -297,8 +325,12 @@ def _draw_preview(
             pass
 
 
-def generate_route_preview(map_yaml_path: Path = DEFAULT_MAP_YAML, force: bool = False) -> Dict[str, Any]:
-    map_yaml = Path(map_yaml_path).expanduser()
+def generate_route_preview(
+    map_yaml_path: Path = DEFAULT_MAP_YAML,
+    force: bool = False,
+    route_file_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    map_yaml = Path(map_yaml_path).expanduser().resolve()
     base_failure = {
         "ok": False,
         "preview_type": "route_overlay",
@@ -317,18 +349,16 @@ def generate_route_preview(map_yaml_path: Path = DEFAULT_MAP_YAML, force: bool =
         "route_name": "",
         "target_count": 0,
         "targets": [],
+        "map_identity": {},
+        "keepout_count": 0,
+        "safety_warnings": [],
     }
-    try:
-        route_path = resolve_route_file_path("auto", map_yaml.parent)
-    except ValueError:
-        return {
-            **base_failure,
-            "message": "未找到正式巡逻路线文件",
-        }
+    route_path = (Path(route_file_path).expanduser() if route_file_path else map_yaml.parent / "route_patrol_001.json").resolve()
     try:
         map_info = _parse_map_yaml(map_yaml)
         width, height = _read_pgm_size(map_info["image"])
         route_data = load_route_file(str(route_path))
+        route_data = validate_route_map_binding(route_data, map_yaml)
         active_route_id = str(route_data.get("active_route_id") or "")
         if not active_route_id and route_data.get("routes"):
             active_route_id = str(route_data["routes"][0]["id"])
@@ -388,6 +418,9 @@ def generate_route_preview(map_yaml_path: Path = DEFAULT_MAP_YAML, force: bool =
             "route_name": str(route.get("name") or active_route_id),
             "target_count": len(targets),
             "targets": targets,
+            "map_identity": route_data.get("map", {}),
+            "keepout_count": sum(1 for zone in route_data.get("keepout_zones", []) if zone.get("enabled") is True and zone.get("type") == "hard_keepout"),
+            "safety_warnings": list((route_data.get("safety") or {}).get("warnings", [])),
         }
     except Exception as exc:
         return {

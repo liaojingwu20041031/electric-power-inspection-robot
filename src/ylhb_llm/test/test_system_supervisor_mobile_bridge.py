@@ -358,11 +358,13 @@ def test_start_patrol_mode_does_not_wait_for_patrol_status_but_forwards_start():
     )
 
 
-def test_patrol_control_commands_are_forwarded_by_system_supervisor():
+def test_patrol_control_commands_are_forwarded_but_reload_is_blocked_while_running():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.publish_patrol_command = Mock()
     node.set_result = Mock()
     node.is_patrol_executor_ready = Mock(return_value=False)
+    node.patrol_mode_state = 'running'
+    node.startup_step = 'patrol_started'
 
     node.handle_command('pause_patrol', {})
     node.handle_command('resume_patrol', {})
@@ -373,9 +375,24 @@ def test_patrol_control_commands_are_forwarded_by_system_supervisor():
         'pause',
         'resume',
         'cancel',
-        'reload',
     ]
-    assert node.set_result.call_count == 4
+    node.set_result.assert_called_with('reload_patrol_route', False, '巡逻运行中，请先取消巡逻。')
+
+
+def test_reload_patrol_route_refreshes_assets_before_executor_reload():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'idle'
+    node.startup_step = ''
+    node.processes = {'navigation': FakeProcess(running=False)}
+    node.prepare_patrol_navigation_assets = Mock(return_value=True)
+    node.publish_patrol_command = Mock()
+    node.set_result = Mock()
+
+    node.handle_command('reload_patrol_route', {})
+
+    node.prepare_patrol_navigation_assets.assert_called_once_with()
+    node.publish_patrol_command.assert_called_once_with('reload')
+    node.set_result.assert_called_with('reload_patrol_route', True, '路线与禁行区已整体刷新')
 
 
 def test_duplicate_inflight_long_command_does_not_start_second_handler(monkeypatch):

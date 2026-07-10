@@ -38,6 +38,8 @@ core.*
 frames_*.gv
 frames_*.pdf
 runs/
+# Derived from the current map and complete patrol annotation at patrol startup.
+maps/keepout/
 
 # Local secrets and machine-specific configuration
 .env

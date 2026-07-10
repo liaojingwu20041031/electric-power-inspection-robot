@@ -72,7 +72,7 @@ def generate_launch_description():
 
     declare_enable_keepout_cmd = DeclareLaunchArgument(
         'enable_keepout',
-        default_value='false',
+        default_value='true',
         description='Enable global Nav2 keepout filter and keepout mask lifecycle nodes')
 
     declare_keepout_mask_cmd = DeclareLaunchArgument(

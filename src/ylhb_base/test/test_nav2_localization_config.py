@@ -66,6 +66,7 @@ def test_navigation_launch_uses_unified_keepout_entrypoint():
     assert "'keepout_mask'" in source
     assert "'config', 'nav2_params.yaml'" in source
     assert "nav2_params_keepout" not in source
+    assert "default_value='true'" in source
 
 
 def load_nav2_behavior_tree():
@@ -121,8 +122,11 @@ def test_map_thresholds_keep_205_gray_pixels_unknown():
     metadata = load_map_metadata()
     gray_205_occupancy = (255 - 205) / 255.0
 
+    assert metadata["resolution"] == 0.025
     assert metadata["mode"] == "trinary"
     assert metadata["negate"] == 0
+    assert metadata["free_thresh"] == 0.19
+    assert metadata["occupied_thresh"] == 0.65
     assert metadata["free_thresh"] < gray_205_occupancy < metadata["occupied_thresh"]
     assert nav2_trinary_cell_value(205, metadata) == -1
     assert nav2_trinary_cell_value(254, metadata) == 0
@@ -157,6 +161,8 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     local_footprint = ast.literal_eval(local["footprint"])
     global_footprint = ast.literal_eval(global_map["footprint"])
 
+    assert global_map["resolution"] == 0.025
+    assert local["resolution"] == 0.05
     assert local["width"] == 4
     assert local["height"] == 4
     assert local["footprint_padding"] == 0.01

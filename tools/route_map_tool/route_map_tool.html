@@ -529,7 +529,8 @@
         origin: [-2.89, -6.37, 0],
         negate: 0,
         occupiedThresh: 0.65,
-        freeThresh: 0.25
+        freeThresh: 0.25,
+        imageSha256: ""
       },
       zones: [],
       activeZoneId: null,
@@ -764,6 +765,20 @@
       fitToScreen();
     }
 
+    async function setPgmIdentity(buffer) {
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      state.map.imageSha256 = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+    }
+
+    function clearRouteAnnotations() {
+      state.targets = [];
+      state.zones = [];
+      state.activeZoneId = null;
+      state.selectedTargetId = null;
+      state.yawTarget = { kind: "start", id: null };
+      state.nextTargetNo = 1;
+    }
+
     function mapToPixel(x, y) {
       const ox = state.map.origin[0];
       const oy = state.map.origin[1];
@@ -816,13 +831,9 @@
     function paddedFootprint() {
       const footprint = robotFootprint();
       const padding = footprintPadding();
-      const center = footprint.reduce((sum, point) => ({
-        x: sum.x + point.x / footprint.length,
-        y: sum.y + point.y / footprint.length
-      }), { x: 0, y: 0 });
       return footprint.map((point) => ({
-        x: point.x + ((point.x - center.x) / Math.hypot(point.x - center.x, point.y - center.y)) * padding,
-        y: point.y + ((point.y - center.y) / Math.hypot(point.x - center.x, point.y - center.y)) * padding
+        x: point.x + (point.x > 0 ? padding : point.x < 0 ? -padding : 0),
+        y: point.y + (point.y > 0 ? padding : point.y < 0 ? -padding : 0)
       }));
     }
 
@@ -850,7 +861,13 @@
       function orient(p, q, r) {
         return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
       }
-      return orient(a, b, c) * orient(a, b, d) <= 0 && orient(c, d, a) * orient(c, d, b) <= 0;
+      function onSegment(p, q, r) {
+        return Math.abs(orient(p, q, r)) <= 1e-9
+          && r.x >= Math.min(p.x, q.x) - 1e-9 && r.x <= Math.max(p.x, q.x) + 1e-9
+          && r.y >= Math.min(p.y, q.y) - 1e-9 && r.y <= Math.max(p.y, q.y) + 1e-9;
+      }
+      const abC = orient(a, b, c), abD = orient(a, b, d), cdA = orient(c, d, a), cdB = orient(c, d, b);
+      return (abC * abD < -1e-9 && cdA * cdB < -1e-9) || onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
     }
 
     function polygonsIntersect(a, b) {
@@ -862,6 +879,18 @@
         }
       }
       return false;
+    }
+
+    function pointSegmentDistance(point, a, b) {
+      const dx = b.x - a.x, dy = b.y - a.y;
+      if (dx === 0 && dy === 0) return Math.hypot(point.x - a.x, point.y - a.y);
+      const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy)));
+      return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+    }
+
+    function polygonDistance(a, b) {
+      if (polygonsIntersect(a, b)) return 0;
+      return Math.min(...a.flatMap((point) => b.map((other, index) => pointSegmentDistance(point, other, b[(index + 1) % b.length]))));
     }
 
     function hardKeepoutZones() {
@@ -927,7 +956,29 @@
       if (!state.map.width || !state.map.height || !state.map.pixels) {
         return ["请先加载对应的 PGM 地图后再导出。"];
       }
+      if (!state.map.yamlName || !state.map.pgmName || state.map.image !== state.map.pgmName || !/^[0-9a-f]{64}$/.test(state.map.imageSha256 || "")) {
+        return ["当前地图身份不完整，请重新加载 YAML 和 PGM 后再导出。"];
+      }
       return collectRoutePointProblems();
+    }
+
+    function routeSafety() {
+      const problems = validateRouteForExport();
+      const zones = hardKeepoutZones();
+      const pointSafety = {};
+      const warnings = [];
+      const points = [{ id: "start_pose", x: numberValue(els.startX, 0), y: numberValue(els.startY, 0), yaw: numberValue(els.startYaw, 0) }, ...state.targets];
+      let minimum = null;
+      for (const point of points) {
+        const footprint = transformFootprint(point, paddedFootprint());
+        const distances = zones.map((zone) => polygonDistance(footprint, zone.polygon));
+        const distance = distances.length ? Math.min(...distances) : null;
+        if (distance !== null) minimum = minimum === null ? distance : Math.min(minimum, distance);
+        const pointWarnings = zones.filter((zone, index) => distances[index] < 0.20 && !polygonsIntersect(footprint, zone.polygon)).map((zone) => `${point.id} footprint is closer than 0.20m to ${zone.id}`);
+        warnings.push(...pointWarnings);
+        pointSafety[point.id] = { validation_status: problems.length ? "unsafe" : pointWarnings.length ? "warning" : "ok", min_keepout_distance_m: distance, warnings: pointWarnings };
+      }
+      return { validation_status: problems.length ? "unsafe" : warnings.length ? "warning" : "ok", min_keepout_distance_m: minimum, warnings: [...problems, ...warnings], pointSafety };
     }
 
     function getSelectedYawHit() {
@@ -1400,6 +1451,15 @@
       if (!route || ![2, 3].includes(route.version) || route.frame_id !== "map") {
         throw new Error("路线 JSON 必须是 version=2/3 且 frame_id=map。" );
       }
+      if (route.version === 3) {
+        const map = route.map || {};
+        if (!map.yaml || !map.image || !Number.isFinite(map.resolution) || !Array.isArray(map.origin) || map.origin.length !== 3 || !Number.isInteger(map.width) || !Number.isInteger(map.height) || !/^[0-9a-f]{64}$/.test(map.image_sha256 || "")) {
+          throw new Error("v3 路线缺少有效地图身份。");
+        }
+        if (state.map.width && (map.yaml !== state.map.yamlName || map.image !== state.map.image || state.map.image !== state.map.pgmName || map.resolution !== state.map.resolution || map.width !== state.map.width || map.height !== state.map.height || map.image_sha256 !== state.map.imageSha256 || map.origin.some((value, index) => value !== state.map.origin[index]))) {
+          throw new Error("当前巡逻标注不属于正在加载的地图，请使用路线标注工具在新地图上重新绘制起点、巡检点、路线和禁行区。");
+        }
+      }
       els.routeVersion.value = String(route.version);
       if (route.start_pose) {
         els.startName.value = route.start_pose.name || "初始起点";
@@ -1453,17 +1513,37 @@
     function buildRouteJson() {
       const routeId = els.routeId.value.trim() || "route_patrol_001";
       const version = Number(els.routeVersion.value) || 3;
+      const safety = typeof routeSafety === "function" ? routeSafety() : {
+        validation_status: "pending", min_keepout_distance_m: null, warnings: [], pointSafety: {}
+      };
       return {
         version,
         frame_id: "map",
+        ...(version === 3 ? { map: {
+          yaml: state.map.yamlName,
+          image: state.map.image,
+          resolution: state.map.resolution,
+          origin: state.map.origin.slice(0, 3),
+          width: state.map.width,
+          height: state.map.height,
+          image_sha256: state.map.imageSha256
+        } } : {}),
         active_route_id: els.activeRouteId.value.trim() || routeId,
         start_pose: {
           name: els.startName.value.trim() || "初始起点",
+          ...(version === 3 ? { frame_id: "map" } : {}),
           pose: {
             x: round3(numberValue(els.startX, 0)),
             y: round3(numberValue(els.startY, 0)),
             yaw: round3(numberValue(els.startYaw, 0))
           },
+          ...(version === 3 ? { location: {
+            type: "map_pose",
+            frame_id: "map",
+            x: round3(numberValue(els.startX, 0)),
+            y: round3(numberValue(els.startY, 0)),
+            yaw: round3(numberValue(els.startYaw, 0))
+          } } : {}),
           publish_initial_pose: els.publishInitialPose.checked,
           covariance: {
             x: numberValue(els.covX, 0.25),
@@ -1488,9 +1568,7 @@
                 ...pose
               },
               safety: {
-                validation_status: "pending",
-                min_keepout_distance_m: null,
-                warnings: []
+                ...safety.pointSafety[target.id]
               }
             } : {}),
             task_duration_sec: numberValue({ value: target.taskDuration }, 5)
@@ -1519,7 +1597,12 @@
           enabled: zone.enabled !== false,
           polygon: zone.polygon.map((point) => ({ x: round3(point.x), y: round3(point.y) }))
         })),
-        schedules: []
+        schedules: [],
+        safety: {
+          validation_status: safety.validation_status,
+          min_keepout_distance_m: safety.min_keepout_distance_m,
+          warnings: safety.warnings
+        }
       };
     }
 
@@ -1552,6 +1635,7 @@
       if (!file) return;
       state.map.yamlName = file.name;
       try {
+        clearRouteAnnotations();
         parseYaml(await file.text());
       } catch (error) {
         alert(error.message);
@@ -1563,7 +1647,10 @@
       if (!file) return;
       state.map.pgmName = file.name;
       try {
-        parsePgm(await file.arrayBuffer());
+        const buffer = await file.arrayBuffer();
+        clearRouteAnnotations();
+        await setPgmIdentity(buffer);
+        parsePgm(buffer);
       } catch (error) {
         alert(error.message);
       }
@@ -1830,13 +1917,17 @@
         if (/\.ya?ml$/i.test(file.name)) {
           state.map.yamlName = file.name;
           try {
+            clearRouteAnnotations();
             parseYaml(await file.text());
           } catch (error) {
             alert(error.message);
           }
         } else if (/\.pgm$/i.test(file.name)) {
           state.map.pgmName = file.name;
-          parsePgm(await file.arrayBuffer());
+          const buffer = await file.arrayBuffer();
+          clearRouteAnnotations();
+          await setPgmIdentity(buffer);
+          parsePgm(buffer);
         } else if (/\.json$/i.test(file.name)) {
           loadRouteJson(JSON.parse(await file.text()));
         }
