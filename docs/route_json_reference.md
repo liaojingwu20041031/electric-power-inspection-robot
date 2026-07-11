@@ -52,6 +52,17 @@
 
 ## 兼容性与工具边界
 
+## 巡逻路线文件与默认路线
+
+巡逻执行器通过 launch 参数 `route_file_path` 选择路线文件：
+
+- 默认值是 `auto`，在 `/home/nvidia/ros2_DL/maps` 搜索 `route_patrol_*.json`。
+- 文件名符合 `route_patrol_<数字>.json` 时，选择数字最大的文件；例如 `route_patrol_010.json` 优先于 `route_patrol_002.json`。
+- 没有可解析编号时，选择修改时间最新的匹配文件。
+- 需要固定某一份路线时，传入绝对路径，例如 `route_file_path:=/home/nvidia/ros2_DL/maps/route_patrol_001.json`。
+
+文件加载后，未在 `start` 命令中指定 `route_id` 时，执行器使用顶层 `active_route_id`；它就是该路线文件的默认路线名称（正式文件当前为 `route_patrol_001`）。如果 `start` 明确带 `route_id`，则覆盖 `active_route_id`，但该 id 必须存在于 `routes[]`。
+
 v2 没有完整地图身份；缺少 `mask_padding_m` 被允许，字段存在时只校验其为有限非负数。运行前实际地图的边界由后续 checker 判断。v3 缺少 `mask_padding_m` 会规范化为 `map.resolution` 并显式写出。
 
 路线工具保存原始 v3 模板，在导出时保留未编辑的合法扩展字段；但它明确拒绝多 route 文件和非空 `schedules`，避免只取第一条路线或静默清空调度。不要把 `mask_padding_m` 当作最终避障距离：二值墙后的 InflationLayer 才定义实际避让外观。
