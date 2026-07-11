@@ -55,7 +55,7 @@
       },
       "safety": {
         "validation_status": "ok",
-        "min_keepout_distance_m": 0.31638903824802456,
+        "min_keepout_distance_m": null,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -77,7 +77,7 @@
       },
       "safety": {
         "validation_status": "ok",
-        "min_keepout_distance_m": 2.048650892585853,
+        "min_keepout_distance_m": null,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -99,7 +99,7 @@
       },
       "safety": {
         "validation_status": "ok",
-        "min_keepout_distance_m": 3.2690556872173895,
+        "min_keepout_distance_m": null,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -121,7 +121,7 @@
       },
       "safety": {
         "validation_status": "ok",
-        "min_keepout_distance_m": 1.10132653040707,
+        "min_keepout_distance_m": null,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -148,36 +148,11 @@
       "failure_policy": "abort_and_return_home"
     }
   ],
-  "keepout_zones": [
-    {
-      "id": "keepout_001",
-      "name": "禁行区1",
-      "type": "hard_keepout",
-      "enabled": true,
-      "polygon": [
-        {
-          "x": -1.271,
-          "y": -0.426
-        },
-        {
-          "x": -1.133,
-          "y": -0.434
-        },
-        {
-          "x": -1.202,
-          "y": -0.923
-        },
-        {
-          "x": -1.321,
-          "y": -0.901
-        }
-      ]
-    }
-  ],
+  "keepout_zones": [],
   "schedules": [],
   "safety": {
     "validation_status": "ok",
-    "min_keepout_distance_m": 0.31638903824802456,
+    "min_keepout_distance_m": null,
     "warnings": []
   }
 }

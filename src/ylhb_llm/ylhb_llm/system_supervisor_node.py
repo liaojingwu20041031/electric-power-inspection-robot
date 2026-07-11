@@ -17,7 +17,7 @@ from nav_msgs.msg import Odometry
 from nav2_msgs.srv import ManageLifecycleNodes, SetInitialPose
 from sensor_msgs.msg import LaserScan
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from std_msgs.msg import String
 from std_srvs.srv import Empty
@@ -423,7 +423,9 @@ class SystemSupervisorNode(Node):
             patrol_status_qos_profile(),
         )
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        self.create_subscription(
+            LaserScan, '/scan', self.scan_callback, qos_profile_sensor_data
+        )
         self.create_subscription(
             PoseWithCovarianceStamped, '/amcl_pose', self.amcl_pose_callback, 10
         )

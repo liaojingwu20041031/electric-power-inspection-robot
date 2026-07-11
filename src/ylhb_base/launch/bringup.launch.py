@@ -1,11 +1,14 @@
 import os
 import errno
 import glob
+import signal
 import subprocess
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, EmitEvent, LogInfo, OpaqueFunction, RegisterEventHandler
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration, Command
 from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
@@ -18,6 +21,23 @@ LIDAR_VENDOR_ID = '10c4'
 LIDAR_PRODUCT_ID = 'ea60'
 N300_VENDOR_ID = '1a86'
 N300_PRODUCT_ID = '55d4'
+
+
+def critical_exit_handler(node, name):
+    def on_exit(event, _context):
+        if event.returncode in (0, -signal.SIGINT, -signal.SIGTERM):
+            return []
+        return [
+            LogInfo(msg=f'ERROR: critical bringup node {name} exited; shutting down bringup.'),
+            EmitEvent(event=Shutdown(reason=f'critical bringup node {name} exited')),
+        ]
+
+    return RegisterEventHandler(
+        OnProcessExit(
+            target_action=node,
+            on_exit=on_exit,
+        )
+    )
 
 
 def _read_sysfs_text(path):
@@ -218,7 +238,7 @@ def serial_nodes(context, *args, **kwargs):
                 f'ERROR: invalid imu_baud_rate={imu_baud_rate_text}; using 115200.'
             )))
             imu_baud_rate = 115200
-        actions.append(Node(
+        imu_node = Node(
             package='hipnuc_imu',
             executable='talker',
             name='IMU_publisher',
@@ -229,7 +249,8 @@ def serial_nodes(context, *args, **kwargs):
                 {'frame_id': imu_frame_id},
                 {'imu_topic': imu_topic}
             ]
-        ))
+        )
+        actions.extend((imu_node, critical_exit_handler(imu_node, 'IMU_publisher')))
 
     try:
         lidar_baudrate = int(lidar_baudrate_text)
@@ -240,7 +261,7 @@ def serial_nodes(context, *args, **kwargs):
         lidar_baudrate = 115200
 
     if os.path.exists(lidar_port):
-        actions.append(Node(
+        lidar_node = Node(
             package='rplidar_ros',
             executable='rplidar_node',
             name='rplidar_node',
@@ -253,7 +274,8 @@ def serial_nodes(context, *args, **kwargs):
                 'inverted': False,
                 'angle_compensate': True
             }]
-        ))
+        )
+        actions.extend((lidar_node, critical_exit_handler(lidar_node, 'rplidar_node')))
 
     return actions
 
@@ -413,5 +435,9 @@ def generate_launch_description():
         zlac_base_node,
         stm32_base_node,
         ekf_node,
-        rtk_node
+        rtk_node,
+        critical_exit_handler(robot_state_publisher_node, 'robot_state_publisher'),
+        critical_exit_handler(zlac_base_node, 'zlac8015d_canopen_controller'),
+        critical_exit_handler(stm32_base_node, 'base_controller'),
+        critical_exit_handler(ekf_node, 'ekf_filter_node'),
     ])

@@ -40,10 +40,13 @@ def main(args: Optional[List[str]] = None) -> None:
 
     rclpy.init(args=args)
     app = QGuiApplication(sys.argv[:1])
-    signal.signal(signal.SIGINT, lambda *_args: app.quit())
-    signal.signal(signal.SIGTERM, lambda *_args: app.quit())
+    shutdown_requested = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_args: shutdown_requested.set())
+    signal.signal(signal.SIGTERM, lambda *_args: shutdown_requested.set())
     signal_timer = QTimer(app)
-    signal_timer.timeout.connect(lambda: None)
+    signal_timer.timeout.connect(
+        lambda: app.quit() if shutdown_requested.is_set() else None
+    )
     signal_timer.start(100)
     signals = UiSignals()
     bridge = InspectionDisplayRosBridge(signals)
@@ -97,8 +100,8 @@ def main(args: Optional[List[str]] = None) -> None:
         app.exec_()
     finally:
         backend.shutdown()
-        executor.shutdown()
-        executor_thread.join(timeout=2.0)
+        executor.shutdown(timeout_sec=1.0)
+        executor_thread.join(timeout=1.0)
         try:
             executor.remove_node(bridge)
         except Exception:
