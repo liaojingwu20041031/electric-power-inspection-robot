@@ -153,13 +153,15 @@ def main():
     radius = max(math.hypot(float(x), float(y)) for x, y in footprint)
     resolution = float(map_data["resolution"])
     origin = map_data["origin"]
-    local_padding = {
+    requested_padding = {
         zone["id"]: float(zone.get("mask_padding_m", 0.05)) for zone in zones
     }
-    global_padding = {
+    configuration_padding = {
         zone_id: radius + footprint_padding + padding + resolution
-        for zone_id, padding in local_padding.items()
+        for zone_id, padding in requested_padding.items()
     }
+    global_padding = dict(configuration_padding)
+    local_padding = dict(configuration_padding)
 
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -184,6 +186,8 @@ def main():
         "circumscribed_radius_m": radius,
         "zones": {
             zone["id"]: {
+                "requested_clearance_m": requested_padding[zone["id"]],
+                "configuration_padding_m": configuration_padding[zone["id"]],
                 "local_padding_m": local_padding[zone["id"]],
                 "global_padding_m": global_padding[zone["id"]],
             }
@@ -215,10 +219,12 @@ def main():
     if zones:
         for zone in zones:
             zone_id = zone["id"]
-            print(
-                f"{zone_id}: local={local_padding[zone_id]:.3f} m, "
-                f"global={global_padding[zone_id]:.3f} m"
-            )
+            print(f"{zone_id}:")
+            print(f"requested clearance = {requested_padding[zone_id]:.3f} m")
+            print(f"robot radius = {radius:.3f} m")
+            print(f"footprint padding = {footprint_padding:.3f} m")
+            print(f"raster margin = {resolution:.3f} m")
+            print(f"configuration padding = {configuration_padding[zone_id]:.3f} m")
     else:
         print("no enabled hard_keepout zones; generated all-free global/local masks")
     print(outputs["global_yaml"])

@@ -67,11 +67,12 @@ def main():
     map_path = Path(args.map_yaml).expanduser()
     route_path = Path(args.route).expanduser()
     nav2_path = Path(args.nav2_params).expanduser()
+    normal_nav2_path = nav2_path.with_name("nav2_params.yaml")
     output_dir = Path(args.output_dir).expanduser()
     global_yaml_path = output_dir / "keepout_global_mask.yaml"
     local_yaml_path = output_dir / "keepout_local_mask.yaml"
     metadata_path = output_dir / "keepout_masks.metadata.json"
-    for path in (map_path, route_path, nav2_path, global_yaml_path, local_yaml_path, metadata_path):
+    for path in (map_path, route_path, nav2_path, normal_nav2_path, global_yaml_path, local_yaml_path, metadata_path):
         require(path.exists(), f"missing {path}")
 
     map_meta = yaml.safe_load(map_path.read_text(encoding="utf-8"))
@@ -116,41 +117,29 @@ def main():
     )
 
     params = yaml.safe_load(nav2_path.read_text(encoding="utf-8"))
-    obstacle_scale = float(
-        params[
-            "controller_server"
-        ][
-            "ros__parameters"
-        ][
-            "FollowPath"
-        ][
-            "ObstacleFootprint.scale"
-        ]
-    )
+    normal_params = yaml.safe_load(normal_nav2_path.read_text(encoding="utf-8"))
+    follow = params["controller_server"]["ros__parameters"]["FollowPath"]
+    normal_follow = normal_params["controller_server"]["ros__parameters"]["FollowPath"]
+    require(follow == normal_follow, "Keepout FollowPath differs from normal")
+    critics = follow["critics"]
+    require("BaseObstacle" in critics, "BaseObstacle critic missing")
+    require("ObstacleFootprint" not in critics, "ObstacleFootprint critic must be absent")
     require(
-        0.0 < obstacle_scale <= 0.10,
-        "ObstacleFootprint.scale is too large; "
-        "inflation costs will behave like hard obstacles",
+        follow["BaseObstacle.scale"] == normal_follow["BaseObstacle.scale"],
+        "BaseObstacle.scale differs from normal",
     )
-    critics = params[
-        "controller_server"
-    ][
-        "ros__parameters"
-    ][
-        "FollowPath"
-    ][
-        "critics"
-    ]
-    require(
-        "ObstacleFootprint" in critics,
-        "ObstacleFootprint critic missing",
-    )
-    require(
-        "BaseObstacle" not in critics,
-        "BaseObstacle must not replace full footprint collision checking",
-    )
+    normal_bt = normal_params["bt_navigator"]["ros__parameters"]
+    keepout_bt = params["bt_navigator"]["ros__parameters"]
+    expected_bt = dict(normal_bt)
+    expected_bt.update({
+        "default_bt_xml_filename": keepout_bt["default_bt_xml_filename"],
+        "default_nav_to_pose_bt_xml": keepout_bt["default_nav_to_pose_bt_xml"],
+    })
+    require(keepout_bt == expected_bt, "Keepout BT settings differ from normal")
     global_params = params["global_costmap"]["global_costmap"]["ros__parameters"]
     local_params = params["local_costmap"]["local_costmap"]["ros__parameters"]
+    normal_global_params = normal_params["global_costmap"]["global_costmap"]["ros__parameters"]
+    normal_local_params = normal_params["local_costmap"]["local_costmap"]["ros__parameters"]
     footprint = ast.literal_eval(global_params["footprint"])
     require(footprint == ast.literal_eval(local_params["footprint"]), "global/local footprint differs")
     footprint_padding = float(global_params.get("footprint_padding", 0.0))
@@ -159,13 +148,20 @@ def main():
     require(math.isclose(generated["circumscribed_radius_m"], radius), "footprint radius metadata is stale")
     resolution = float(map_meta["resolution"])
     for zone in zones:
-        padding = float(zone.get("mask_padding_m", 0.05))
+        requested_clearance = float(zone.get("mask_padding_m", 0.05))
+        configuration_padding = radius + footprint_padding + requested_clearance + resolution
         zone_meta = generated["zones"][zone["id"]]
-        require(math.isclose(zone_meta["local_padding_m"], padding), f"{zone['id']} local padding differs")
-        require(math.isclose(zone_meta["global_padding_m"], radius + footprint_padding + padding + resolution), f"{zone['id']} global padding differs")
+        require(math.isclose(zone_meta["requested_clearance_m"], requested_clearance), f"{zone['id']} requested clearance differs")
+        require(math.isclose(zone_meta["configuration_padding_m"], configuration_padding), f"{zone['id']} configuration padding differs")
+        require(
+            math.isclose(zone_meta["global_padding_m"], zone_meta["local_padding_m"]),
+            f"{zone['id']} global/local configuration padding differs",
+        )
+        require(math.isclose(zone_meta["global_padding_m"], configuration_padding), f"{zone['id']} global padding differs")
 
     global_pixels = mask_pixels["global"]
     local_pixels = mask_pixels["local"]
+    require(global_pixels == local_pixels, "global/local configuration masks differ")
     if zones:
         require(0 in global_pixels, "global mask contains no keepout pixels")
         require(0 in local_pixels, "local mask contains no keepout pixels")
@@ -177,11 +173,21 @@ def main():
         "global": "/keepout_global_filter_info",
         "local": "/keepout_local_filter_info",
     }
-    for name, costmap in (("global", global_params), ("local", local_params)):
+    for name, costmap, normal_costmap in (
+        ("global", global_params, normal_global_params),
+        ("local", local_params, normal_local_params),
+    ):
         require("keepout_filter" in (costmap.get("filters") or []), f"{name} keepout filter missing")
         require(costmap["keepout_filter"]["filter_info_topic"] == expected_topics[name], f"{name} keepout topic differs")
-        require(float(costmap["inflation_layer"]["cost_scaling_factor"]) == 6.0, f"{name} inflation scaling changed")
-        require(float(costmap["inflation_layer"]["inflation_radius"]) == 0.20, f"{name} inflation radius changed")
+        comparable = dict(costmap)
+        comparable.pop("filters", None)
+        comparable.pop("keepout_filter", None)
+        require(comparable == normal_costmap, f"{name} non-filter settings differ from normal")
+    require(
+        params["velocity_smoother"]["ros__parameters"]
+        == normal_params["velocity_smoother"]["ros__parameters"],
+        "Keepout velocity smoother differs from normal",
+    )
     print("keepout setup OK")
 
 

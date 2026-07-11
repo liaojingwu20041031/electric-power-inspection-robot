@@ -67,7 +67,6 @@ bt_navigator:
     odom_topic: /odom
     # 行为树内部 TF 查询容忍时间；实车/Foxglove 目标时间戳会有几十毫秒抖动。
     transform_tolerance: 1.5
-    bt_loop_duration: 20
     # 默认行为树禁用恢复动作，失败时不再原地急转或后退。
     default_bt_xml_filename: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_keepout_safe.xml"
     default_nav_to_pose_bt_xml: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_keepout_safe.xml"
@@ -146,8 +145,7 @@ controller_server:
     FollowPath:
       # DWB 局部规划器：根据路径、障碍物和目标方向采样速度。
       plugin: "dwb_core::DWBLocalPlanner"
-      # 首轮实机验收输出 DWB 轨迹评分；验收完成后恢复 False。
-      debug_trajectory_details: True
+      debug_trajectory_details: False
       # 差速底盘不使用横向速度 y。
       min_vel_x: 0.0
       min_vel_y: 0.0
@@ -155,12 +153,10 @@ controller_server:
       max_vel_x: 0.12
       max_vel_y: 0.0
       # Nav2 输出角速度上限，给大角度掉头留出有效角速度。
-      max_vel_theta: 0.50
+      max_vel_theta: 0.40
       min_speed_xy: 0.0
       # 平面合速度上限，与 max_vel_x 保持一致。
       max_speed_xy: 0.12
-      # 恢复实机稳定下限；0.10 会选中约 0.109rad/s 的慢转轨迹，
-      # 大角度起步尚未平移就触发 18 秒 progress timeout。
       min_speed_theta: 0.18
       # 加速度/减速度限制，避免 /cmd_vel 突变。
       acc_lim_x: 0.30
@@ -169,7 +165,6 @@ controller_server:
       decel_lim_x: -0.30
       decel_lim_y: 0.0
       decel_lim_theta: -0.50
-      # 恢复 7 月 8 日稳定动态采样，避免过密的角速度采样压缩可行轨迹选择。
       vx_samples: 4
       vy_samples: 5
       vtheta_samples: 5
@@ -186,25 +181,12 @@ controller_server:
       # 低于该平移速度认为底盘已停止。
       trans_stopped_velocity: 0.03
       # 轨迹评分器：避障、贴近路径、朝向目标、抑制振荡等。
-      critics:
-        [
-          "RotateToGoal",
-          "Oscillation",
-          "ObstacleFootprint",
-          "GoalAlign",
-          "PathAlign",
-          "PathDist",
-          "GoalDist"
-        ]
-      # ObstacleFootprint 返回完整车体边界上的最大 cost，可能达到 253。
-      # scale 只影响 1～253 的软代价评分；实际障碍 254、未知区 255
-      # 仍由 critic 直接判定为非法轨迹。
-      # 不能沿用旧 BaseObstacle 的 5.0，否则普通膨胀区会被放大成近似硬墙。
-      ObstacleFootprint.scale: 0.02
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 5.0
       PathAlign.scale: 8.0
       PathAlign.forward_point_distance: 0.1
       PathDist.scale: 10.0
-      GoalAlign.scale: 0.0
+      GoalAlign.scale: 8.0
       GoalAlign.forward_point_distance: 0.1
       GoalDist.scale: 8.0
       RotateToGoal.scale: 20.0
@@ -221,9 +203,8 @@ controller_server:
     goal_checker:
       # 目标检查器：明确使用 SimpleGoalChecker，消除默认 goal checker 警告。
       plugin: "nav2_controller::SimpleGoalChecker"
-      # 保持位置精度，稍微放宽最终方向以减少到点振荡。
       xy_goal_tolerance: 0.08
-      yaw_goal_tolerance: 0.12
+      yaw_goal_tolerance: 0.08
       stateful: True
 
 local_costmap:
@@ -270,10 +251,9 @@ local_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.10
       inflation_layer:
-        # Keepout 模式使用完整 footprint 做碰撞检查；收窄软代价带，避免在开阔通道中被两侧膨胀区夹住。
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
-        inflation_radius: 0.20
+        inflation_radius: 0.35
 
 global_costmap:
   global_costmap:
@@ -321,10 +301,9 @@ global_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.10
       inflation_layer:
-        # 与 local costmap 使用同一窄软代价带，保证全局路径可在真实可通行区域内生成。
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
-        inflation_radius: 0.20
+        inflation_radius: 0.35
 
 map_server:
   ros__parameters:
@@ -398,9 +377,9 @@ velocity_smoother:
     # 开环平滑，不等待里程计反馈闭环修正。
     feedback: "OPEN_LOOP"
     # 平滑后的最大速度：[x, y, theta]，差速底盘 y 保持 0。
-    max_velocity: [0.12, 0.0, 0.50]
+    max_velocity: [0.12, 0.0, 0.40]
     # 允许很小倒车速度，角速度正负对称限幅。
-    min_velocity: [-0.05, 0.0, -0.50]
+    min_velocity: [-0.05, 0.0, -0.40]
     # 平滑器加速度/减速度限制，与 DWB 限制保持一致。
     max_accel: [0.30, 0.0, 0.50]
     max_decel: [-0.30, 0.0, -0.50]
