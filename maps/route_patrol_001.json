@@ -154,6 +154,7 @@
       "name": "禁行区1",
       "type": "hard_keepout",
       "enabled": true,
+      "mask_padding_m": 0.025,
       "polygon": [
         {
           "x": -1.271,

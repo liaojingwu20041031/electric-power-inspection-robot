@@ -156,7 +156,7 @@ def footprint_map_failures(polygon, metadata, width, height, pixels):
 
 def required_clearance(zone, goal_xy_tolerance, map_resolution, safety_margin):
     return (
-        float(zone.get("mask_padding_m", 0.05))
+        float(zone.get("mask_padding_m", map_resolution))
         + goal_xy_tolerance
         + map_resolution
         + safety_margin

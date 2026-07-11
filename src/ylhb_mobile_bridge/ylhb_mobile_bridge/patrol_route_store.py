@@ -10,7 +10,7 @@ import yaml
 
 
 FAILURE_POLICIES = {"abort", "abort_and_return_home"}
-SCHEDULE_MODES = {"interval", "daily"}
+SCHEDULE_MODES = {"interval"}
 DEFAULT_ROUTE_DIRECTORY = Path("/home/nvidia/ros2_DL/maps")
 ROUTE_FILE_PATTERN = "route_patrol_*.json"
 ROUTE_NUMBER_PATTERN = re.compile(r"^route_patrol_(\d+)\.json$")
@@ -227,7 +227,11 @@ def _polygon_self_intersects(polygon: List[Dict[str, float]]) -> bool:
     return False
 
 
-def _validate_keepout_zones(value: Any, field: str) -> List[Dict[str, Any]]:
+def _validate_keepout_zones(
+    value: Any,
+    field: str,
+    map_resolution: Union[float, None] = None,
+) -> List[Dict[str, Any]]:
     zones = _require_list(value, field)
     zone_ids = set()
     normalized = []
@@ -254,13 +258,30 @@ def _validate_keepout_zones(value: Any, field: str) -> List[Dict[str, Any]]:
             raise ValueError(f"{zone_field}.polygon self-intersects")
         if abs(_polygon_area(polygon)) <= 1e-9:
             raise ValueError(f"{zone_field}.polygon area must not be zero")
-        normalized.append({
+        mask_padding = None
+        if map_resolution is not None or "mask_padding_m" in zone:
+            mask_padding = _validate_nonnegative(
+                zone.get("mask_padding_m", map_resolution),
+                f"{zone_field}.mask_padding_m",
+            )
+            if (
+                map_resolution is not None
+                and mask_padding > map_resolution + 1e-12
+            ):
+                raise ValueError(
+                    f"{zone_field}.mask_padding_m "
+                    "must not exceed map.resolution"
+                )
+        normalized_zone = {
             **zone,
             "id": zone_id,
             "type": "hard_keepout",
             "enabled": _require_bool(zone.get("enabled"), f"{zone_field}.enabled"),
             "polygon": polygon,
-        })
+        }
+        if mask_padding is not None:
+            normalized_zone["mask_padding_m"] = mask_padding
+        normalized.append(normalized_zone)
     return normalized
 
 
@@ -526,6 +547,11 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
             f"{field}.enabled",
         )
         mode = schedule.get("mode")
+        if mode == "daily":
+            raise ValueError(
+                "daily schedule is not implemented; "
+                "use interval or remove this schedule"
+            )
         if mode not in SCHEDULE_MODES:
             raise ValueError(
                 f"{field}.mode must be one of {sorted(SCHEDULE_MODES)}"
@@ -544,15 +570,18 @@ def validate_route_file(data: Any) -> Dict[str, Any]:
             )
         normalized_schedules.append(normalized_schedule)
     normalized["schedules"] = normalized_schedules
+    map_resolution = normalized["map"]["resolution"] if version == 3 else None
     if version == 3:
         normalized["keepout_zones"] = _validate_keepout_zones(
             normalized.get("keepout_zones"),
             "keepout_zones",
+            map_resolution,
         )
     elif "keepout_zones" in normalized:
         normalized["keepout_zones"] = _validate_keepout_zones(
             normalized["keepout_zones"],
             "keepout_zones",
+            map_resolution,
         )
     if "site" in normalized:
         normalized["site"] = _require_dict(normalized["site"], "site")
