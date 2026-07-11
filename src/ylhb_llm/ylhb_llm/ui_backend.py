@@ -963,6 +963,12 @@ class UiBackend(QObject):
 
     def update_system_status(self, payload: Dict[str, Any]) -> None:
         self.state.system_status = payload
+        if (
+            payload.get('patrol_mode_state') == 'idle'
+            and payload.get('patrol_executor') == 'stopped'
+        ):
+            self.state.patrol_status = {'state': 'idle'}
+            self.patrolStatusChanged.emit()
         latest_mapping3d = payload.get('latest_mapping3d_status')
         if isinstance(latest_mapping3d, dict) and latest_mapping3d:
             self.state.mapping3d_status = latest_mapping3d

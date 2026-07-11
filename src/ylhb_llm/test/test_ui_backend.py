@@ -414,16 +414,30 @@ def test_patrol_display_properties_do_not_publish_commands():
 def test_stale_patrol_status_does_not_block_restart_after_executor_stops():
     backend = make_backend(lambda: 100.0)
     backend.update_system_status({
+        'patrol_mode_state': 'running',
+        'patrol_executor': 'running',
+        'patrol_readiness': {},
+    })
+    backend.update_patrol_status({
+        'state': 'waiting_loop',
+        'target_index': 2,
+        'target_count': 4,
+        'cycle_index': 3,
+        'loop_wait_remaining_sec': 30,
+    })
+    backend.update_system_status({
         'patrol_mode_state': 'idle',
         'patrol_executor': 'stopped',
         'patrol_readiness': {},
     })
-    backend.update_patrol_status({'state': 'paused'})
 
     assert backend.patrolCanStart is True
     assert backend.patrolActive is False
     assert backend.patrolCanResume is False
     assert backend.patrolCanCancel is False
+    assert backend.patrolMainStatusLabel == '空闲'
+    assert backend.patrolCycleLabel == ''
+    assert backend.patrolOverviewProgressLabel == '未开始'
 
 
 def test_patrol_controls_enabled_when_executor_running_or_status_seen():
