@@ -236,12 +236,14 @@ ros2 topic echo /gps/rtk_status --once
 - WTRTK980 RTK 当前是第一阶段接入，只发布 `/gps/fix`、`/gps/nmea_sentence` 和 `/gps/rtk_status`；不参与 AMCL、Nav2、`map -> odom` 或巡逻路线计算。
 - ZED 3D 输出是 PLY/OBJ/预览点云，用于展示、复盘和后续空间建模；不作为 Nav2 的二维 `map.yaml/pgm`。
 - AI Agent 当前用于任务级意图解析、状态查询、受控系统命令和基础运动技能调度；不直接开放 `/cmd_vel`、Nav2 goal、删图、改路线等高风险能力。
-- 当前仓库提供底盘、导航、感知、AI/语音、UI 和移动端调试框架；正式巡检业务协议、检查点检测服务、告警库和报告导出仍是后续扩展。
+- 当前仓库已提供 normal/keepout 自动选择的路线巡逻、二值虚拟墙膨胀、路线安全检查、返航/循环和 UI 状态刷新；正式巡检业务协议、检查点检测服务、告警库和报告导出仍是后续扩展。
 - mobile bridge 面向现场调试，不替代正式巡检任务系统；应只在可信局域网使用。
 
 ## 项目文档
 
 - [重点使用与调试文档](src/PROJECT_DOC_zh.md)：硬件接线、启动组合、数据流、巡逻、感知、RTK 和故障排查
+- [路线 JSON 字段参考](docs/route_json_reference.md)：v2/v3 兼容、地图绑定、keepout、循环与 schedule 契约
+- [二值 Keepout 操作](docs/safety_map_keepout.md)：mask 生成/checker、Profile、lifecycle 与现场验收
 - [Mobile Bridge APP 调试接口](docs/mobile_debug_api.md)：移动端状态、底盘控制、建图、巡逻和安全限制
 - [ZED 3D 双阶段建模流程](docs/3d_mapping_workflow.md)：SVO 采集、离线重建、QML 页面和 RViz 预览
 - [AI Agent 工程日志](docs/AI_AGENT_ENGINEERING_LOG.md)：mini-agent-core 风格本地运行时、工具策略、话题 schema 和测试入口
@@ -254,23 +256,32 @@ ros2 topic echo /gps/rtk_status --once
 
 本仓库用于机器人研发、联调与实验验证。启动底盘前应架空驱动轮或确保周围无人员和障碍物；
 修改轮径、轮距、CAN 映射、URDF 或 Nav2 footprint 后，应重新执行包测试并进行低速实车验证。
-# 安全地图、路线工具与 UI 自启动
+## 安全地图、路线工具与 UI 自启动
 
 Keepout 禁行区入口：
 
+带启用 `hard_keepout` 的路线会由 supervisor 自动选择 keepout Profile；普通路线选择 normal Profile。现场推荐从 `./scripts/run_on_jetson.sh inspection` 进入巡逻模式，不再使用旧 `enable_keepout` 或旧 mask 文件命令。
+
 ```bash
-python3 scripts/generate_keepout_mask.py --map maps/my_map.yaml --route maps/route_patrol_001.json
-python3 scripts/check_keepout_setup.py --map maps/my_map.yaml --route maps/route_patrol_001.json --mask maps/keepout/keepout_mask_power_room_a.yaml --nav2-params src/ylhb_base/config/nav2_params.yaml
-./scripts/run_on_jetson.sh navigation enable_keepout:=true keepout_mask:=maps/keepout/keepout_mask_power_room_a.yaml
+python3 scripts/generate_keepout_mask.py \
+  --map maps/my_map.yaml \
+  --route maps/route_patrol_001.json \
+  --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml \
+  --output-dir maps/keepout
+python3 scripts/check_keepout_setup.py \
+  --map maps/my_map.yaml \
+  --route maps/route_patrol_001.json \
+  --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml \
+  --output-dir maps/keepout
 ```
 
 路线安全检查：
 
 ```bash
-python3 scripts/validate_route_safety.py --route maps/route_patrol_001.json --nav2-params src/ylhb_base/config/nav2_params.yaml
+python3 scripts/validate_route_safety.py --map maps/my_map.yaml --route maps/route_patrol_001.json --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml --report
 ```
 
-PC 标注工具在 `tools/route_map_tool/route_map_tool.html`，禁行区直接保存在 route JSON 的 `keepout_zones`，默认导出 v3 路线。
+PC 标注工具在 `tools/route_map_tool/route_map_tool.html`，禁行区直接保存在 route JSON 的 `keepout_zones`，默认导出 v3 路线。`mask_padding_m` 默认 `0.025m`，只是二值墙栅格化边界补偿；最终避让由 InflationLayer `6.0 / 0.35` 负责。
 
 UI 自启动：
 
