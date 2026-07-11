@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -8,6 +9,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "scripts"
 NAV2_PARAMS = ROOT / "src" / "ylhb_base" / "config" / "nav2_params_keepout.yaml"
+
+
+def _checker_module():
+    spec = importlib.util.spec_from_file_location(
+        "check_keepout_setup", SCRIPTS / "check_keepout_setup.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _mask_pixels(path):
@@ -146,6 +156,23 @@ def _zone(route, polygon, zone_id="keepout_001"):
     return route
 
 
+def test_checker_preserves_raw_whitespace_weight(tmp_path):
+    pgm = tmp_path / "raw.pgm"
+    pgm.write_bytes(b"P5\n1 1\n255\n" + bytes([10]))
+
+    assert _checker_module().read_pgm(pgm)[2] == bytes([10])
+
+
+def test_checker_rejects_one_sided_weighted_zone():
+    checker = _checker_module()
+    local_pixels = bytes([0, 0, 0, 0, 100, 0, 0, 0, 0])
+    global_pixels = bytes([0, 1, 0, 0, 100, 0, 0, 0, 0])
+
+    assert not checker.weighted_zone_surrounds_hard_core(
+        global_pixels, local_pixels, 3, 3
+    )
+
+
 def test_empty_zones_generate_all_free(tmp_path):
     map_yaml = _copy_assets(tmp_path)
     route = _write_route(tmp_path, _base_route())
@@ -161,8 +188,7 @@ def test_empty_zones_generate_all_free(tmp_path):
     assert metadata["zones"] == {}
     for name in ("keepout_global_mask.pgm", "keepout_local_mask.pgm"):
         pixels = _mask_pixels(output / name)
-        assert set(pixels) == {254}
-        assert 0 not in pixels
+        assert set(pixels) == {0}
 
 
 def test_checker_accepts_empty_mask(tmp_path):
@@ -204,8 +230,7 @@ def test_no_stale_keepout_pixels_after_clearing(tmp_path):
     assert second.returncode == 0, second.stdout
     for name in ("keepout_global_mask.pgm", "keepout_local_mask.pgm"):
         pixels = _mask_pixels(output / name)
-        assert 0 not in pixels
-        assert set(pixels) == {254}
+        assert set(pixels) == {0}
 
     checked = _check(map_yaml, route_empty, output)
     assert checked.returncode == 0, checked.stdout
@@ -233,11 +258,16 @@ def test_nonempty_zones_remain_active(tmp_path):
     assert metadata["keepout_mode"] == "active"
     assert metadata["enabled_hard_keepout_count"] == 1
     assert set(metadata["zones"].keys()) == {"keepout_001"}
-    assert metadata["zones"]["keepout_001"]["global_padding_m"] > metadata["zones"]["keepout_001"]["local_padding_m"]
+    zone = metadata["zones"]["keepout_001"]
+    assert zone["soft_radius_m"] > zone["hard_padding_m"]
     global_pixels = _mask_pixels(output / "keepout_global_mask.pgm")
     local_pixels = _mask_pixels(output / "keepout_local_mask.pgm")
-    assert 0 in global_pixels
-    assert 0 in local_pixels
+    assert {0, 100} <= set(global_pixels)
+    assert any(1 <= value <= 99 for value in global_pixels)
+    assert set(local_pixels) <= {0, 100}
+    assert {0, 100} <= set(local_pixels)
+    assert metadata["global_mask"]["weighted_cells"] > 0
+    assert metadata["local_mask"]["weighted_cells"] == 0
 
     checked = _check(map_yaml, route, output)
     assert checked.returncode == 0, checked.stdout

@@ -181,8 +181,9 @@ controller_server:
       # 低于该平移速度认为底盘已停止。
       trans_stopped_velocity: 0.03
       # 轨迹评分器：避障、贴近路径、朝向目标、抑制振荡等。
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 5.0
+      ObstacleFootprint.scale: 0.02
       PathAlign.scale: 8.0
       PathAlign.forward_point_distance: 0.1
       PathDist.scale: 10.0

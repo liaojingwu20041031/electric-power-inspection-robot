@@ -88,31 +88,50 @@ def stage_write(path, data):
     return temporary
 
 
-def make_pixels(width, height, resolution, origin, zones, paddings):
-    pixels = bytearray([254] * (width * height))
+def make_pixels(width, height, resolution, origin, zones, hard_paddings, soft_radii=None):
+    pixels = bytearray(width * height)
     for py in range(height):
         y = origin[1] + (height - py - 0.5) * resolution
         for px in range(width):
             x = origin[0] + (px + 0.5) * resolution
+            pixel_value = 0
             for zone in zones:
                 polygon = zone["polygon"]
-                if point_in_polygon(x, y, polygon) or distance_to_polygon(
+                distance = 0.0 if point_in_polygon(x, y, polygon) else distance_to_polygon(
                     x, y, polygon
-                ) <= paddings[zone["id"]] + 1e-9:
-                    pixels[py * width + px] = 0
-                    break
+                )
+                hard_padding = hard_paddings[zone["id"]]
+                if distance <= hard_padding:
+                    zone_value = 100
+                elif soft_radii and distance < soft_radii[zone["id"]]:
+                    ratio = (soft_radii[zone["id"]] - distance) / (
+                        soft_radii[zone["id"]] - hard_padding
+                    )
+                    zone_value = max(1, min(99, int(round(99.0 * ratio))))
+                else:
+                    zone_value = 0
+                pixel_value = max(pixel_value, zone_value)
+            pixels[py * width + px] = pixel_value
     return pixels
 
 
-def mask_yaml(image, resolution, origin, free_thresh):
+def mask_yaml(image, resolution, origin):
     return {
         "image": image,
-        "mode": "trinary",
+        "mode": "raw",
         "resolution": resolution,
         "origin": [float(origin[0]), float(origin[1]), 0],
         "negate": 0,
         "occupied_thresh": 0.65,
-        "free_thresh": float(free_thresh),
+        "free_thresh": 0.25,
+    }
+
+
+def mask_stats(pixels):
+    return {
+        "hard_cells": pixels.count(100),
+        "weighted_cells": sum(1 for value in pixels if 1 <= value <= 99),
+        "free_cells": pixels.count(0),
     }
 
 
@@ -156,12 +175,12 @@ def main():
     requested_padding = {
         zone["id"]: float(zone.get("mask_padding_m", 0.05)) for zone in zones
     }
-    configuration_padding = {
-        zone_id: radius + footprint_padding + padding + resolution
-        for zone_id, padding in requested_padding.items()
+    local_hard_padding = dict(requested_padding)
+    global_hard_padding = dict(requested_padding)
+    global_soft_radius = {
+        zone_id: radius + footprint_padding + hard_padding + resolution
+        for zone_id, hard_padding in requested_padding.items()
     }
-    global_padding = dict(configuration_padding)
-    local_padding = dict(configuration_padding)
 
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -186,23 +205,31 @@ def main():
         "circumscribed_radius_m": radius,
         "zones": {
             zone["id"]: {
-                "requested_clearance_m": requested_padding[zone["id"]],
-                "configuration_padding_m": configuration_padding[zone["id"]],
-                "local_padding_m": local_padding[zone["id"]],
-                "global_padding_m": global_padding[zone["id"]],
+                "hard_padding_m": requested_padding[zone["id"]],
+                "soft_radius_m": global_soft_radius[zone["id"]],
             }
             for zone in zones
         },
     }
     metadata["keepout_mode"] = "active" if zones else "all_free"
     metadata["enabled_hard_keepout_count"] = len(zones)
-    global_pixels = make_pixels(width, height, resolution, origin, zones, global_padding)
-    local_pixels = make_pixels(width, height, resolution, origin, zones, local_padding)
+    global_pixels = make_pixels(
+        width, height, resolution, origin, zones, global_hard_padding, global_soft_radius
+    )
+    local_pixels = make_pixels(
+        width, height, resolution, origin, zones, local_hard_padding
+    )
+    metadata["global_mask"] = {
+        **mask_stats(global_pixels),
+        "max_weight": 100,
+        "min_nonzero_weight": 1,
+    }
+    metadata["local_mask"] = mask_stats(local_pixels)
     staged = [
         (stage_write(outputs["global_pgm"], f"P5\n{width} {height}\n255\n".encode() + global_pixels), outputs["global_pgm"]),
-        (stage_write(outputs["global_yaml"], yaml.safe_dump(mask_yaml(outputs["global_pgm"].name, resolution, origin, map_data["free_thresh"]), sort_keys=False).encode()), outputs["global_yaml"]),
+        (stage_write(outputs["global_yaml"], yaml.safe_dump(mask_yaml(outputs["global_pgm"].name, resolution, origin), sort_keys=False).encode()), outputs["global_yaml"]),
         (stage_write(outputs["local_pgm"], f"P5\n{width} {height}\n255\n".encode() + local_pixels), outputs["local_pgm"]),
-        (stage_write(outputs["local_yaml"], yaml.safe_dump(mask_yaml(outputs["local_pgm"].name, resolution, origin, map_data["free_thresh"]), sort_keys=False).encode()), outputs["local_yaml"]),
+        (stage_write(outputs["local_yaml"], yaml.safe_dump(mask_yaml(outputs["local_pgm"].name, resolution, origin), sort_keys=False).encode()), outputs["local_yaml"]),
         (stage_write(outputs["metadata"], (json.dumps(metadata, indent=2) + "\n").encode()), outputs["metadata"]),
     ]
     try:
@@ -220,11 +247,8 @@ def main():
         for zone in zones:
             zone_id = zone["id"]
             print(f"{zone_id}:")
-            print(f"requested clearance = {requested_padding[zone_id]:.3f} m")
-            print(f"robot radius = {radius:.3f} m")
-            print(f"footprint padding = {footprint_padding:.3f} m")
-            print(f"raster margin = {resolution:.3f} m")
-            print(f"configuration padding = {configuration_padding[zone_id]:.3f} m")
+            print(f"hard padding = {requested_padding[zone_id]:.3f} m")
+            print(f"soft radius = {global_soft_radius[zone_id]:.3f} m")
     else:
         print("no enabled hard_keepout zones; generated all-free global/local masks")
     print(outputs["global_yaml"])

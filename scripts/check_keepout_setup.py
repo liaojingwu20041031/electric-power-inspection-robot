@@ -49,11 +49,63 @@ def read_pgm(path):
 
     magic, width, height, maximum = token(), int(token()), int(token()), int(token())
     require(magic == "P5" and maximum == 255, f"invalid PGM: {path}")
-    while index < len(data) and chr(data[index]).isspace():
+    require(index < len(data) and chr(data[index]).isspace(), f"invalid PGM header: {path}")
+    if data[index:index + 2] == b"\r\n":
+        index += 2
+    else:
         index += 1
     pixels = data[index:]
     require(len(pixels) == width * height, f"invalid PGM pixel count: {path}")
     return width, height, pixels
+
+
+def mask_stats(pixels):
+    return {
+        "hard_cells": pixels.count(100),
+        "weighted_cells": sum(1 for value in pixels if 1 <= value <= 99),
+        "free_cells": pixels.count(0),
+    }
+
+
+def filter_info_parameters(launch_path):
+    tree = ast.parse(Path(launch_path).read_text(encoding="utf-8"))
+    result = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "LifecycleNode":
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        name = keywords.get("name")
+        values = keywords.get("parameters")
+        if not isinstance(name, ast.Constant) or not isinstance(values, ast.List) or not values.elts:
+            continue
+        item = values.elts[0]
+        if not isinstance(item, ast.Dict):
+            continue
+        result[name.value] = {
+            key.value: value.value
+            for key, value in zip(item.keys, item.values)
+            if isinstance(key, ast.Constant) and isinstance(value, ast.Constant)
+        }
+    return result
+
+
+def weighted_zone_surrounds_hard_core(global_pixels, local_pixels, width, height):
+    for index, value in enumerate(local_pixels):
+        if value != 100:
+            continue
+        row, column = divmod(index, width)
+        neighbors = [
+            (row + dy, column + dx)
+            for dy in (-1, 0, 1)
+            for dx in (-1, 0, 1)
+            if dy or dx
+            if 0 <= row + dy < height and 0 <= column + dx < width
+        ]
+        for neighbor_row, neighbor_column in neighbors:
+            neighbor = neighbor_row * width + neighbor_column
+            if local_pixels[neighbor] != 100 and not 1 <= global_pixels[neighbor] <= 99:
+                return False
+    return True
 
 
 def main():
@@ -68,6 +120,7 @@ def main():
     route_path = Path(args.route).expanduser()
     nav2_path = Path(args.nav2_params).expanduser()
     normal_nav2_path = nav2_path.with_name("nav2_params.yaml")
+    launch_path = ROOT / "src" / "ylhb_base" / "launch" / "navigation_keepout.launch.py"
     output_dir = Path(args.output_dir).expanduser()
     global_yaml_path = output_dir / "keepout_global_mask.yaml"
     local_yaml_path = output_dir / "keepout_local_mask.yaml"
@@ -96,6 +149,7 @@ def main():
         require((width, height) == (map_width, map_height), f"{name} mask size differs")
         require(float(meta["resolution"]) == float(map_meta["resolution"]), f"{name} mask resolution differs")
         require(meta["origin"][:2] == map_meta["origin"][:2], f"{name} mask origin differs")
+        require(meta.get("mode") == "raw", f"{name} mask mode must be raw")
         mask_pixels[name] = pixels
 
     require(generated["map_yaml_sha256"] == sha256(map_path), "map metadata is stale")
@@ -120,14 +174,16 @@ def main():
     normal_params = yaml.safe_load(normal_nav2_path.read_text(encoding="utf-8"))
     follow = params["controller_server"]["ros__parameters"]["FollowPath"]
     normal_follow = normal_params["controller_server"]["ros__parameters"]["FollowPath"]
-    require(follow == normal_follow, "Keepout FollowPath differs from normal")
-    critics = follow["critics"]
-    require("BaseObstacle" in critics, "BaseObstacle critic missing")
-    require("ObstacleFootprint" not in critics, "ObstacleFootprint critic must be absent")
-    require(
-        follow["BaseObstacle.scale"] == normal_follow["BaseObstacle.scale"],
-        "BaseObstacle.scale differs from normal",
-    )
+    expected_follow = dict(normal_follow)
+    expected_follow.update({
+        "critics": [
+            "RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint",
+            "GoalAlign", "PathAlign", "PathDist", "GoalDist",
+        ],
+        "BaseObstacle.scale": 5.0,
+        "ObstacleFootprint.scale": 0.02,
+    })
+    require(follow == expected_follow, "Keepout FollowPath differs from normal critics")
     normal_bt = normal_params["bt_navigator"]["ros__parameters"]
     keepout_bt = params["bt_navigator"]["ros__parameters"]
     expected_bt = dict(normal_bt)
@@ -149,36 +205,62 @@ def main():
     resolution = float(map_meta["resolution"])
     for zone in zones:
         requested_clearance = float(zone.get("mask_padding_m", 0.05))
-        configuration_padding = radius + footprint_padding + requested_clearance + resolution
+        soft_radius = radius + footprint_padding + requested_clearance + resolution
         zone_meta = generated["zones"][zone["id"]]
-        require(math.isclose(zone_meta["requested_clearance_m"], requested_clearance), f"{zone['id']} requested clearance differs")
-        require(math.isclose(zone_meta["configuration_padding_m"], configuration_padding), f"{zone['id']} configuration padding differs")
-        require(
-            math.isclose(zone_meta["global_padding_m"], zone_meta["local_padding_m"]),
-            f"{zone['id']} global/local configuration padding differs",
-        )
-        require(math.isclose(zone_meta["global_padding_m"], configuration_padding), f"{zone['id']} global padding differs")
+        require(math.isclose(zone_meta["hard_padding_m"], requested_clearance), f"{zone['id']} hard padding differs")
+        require(math.isclose(zone_meta["soft_radius_m"], soft_radius), f"{zone['id']} soft radius differs")
+        require(zone_meta["soft_radius_m"] > zone_meta["hard_padding_m"], f"{zone['id']} soft radius must exceed hard padding")
 
     global_pixels = mask_pixels["global"]
     local_pixels = mask_pixels["local"]
-    require(global_pixels == local_pixels, "global/local configuration masks differ")
+    require(set(global_pixels) <= set(range(101)), "global mask contains invalid raw cost")
+    require(set(local_pixels) <= {0, 100}, "local mask must contain only free and hard costs")
+    global_stats = mask_stats(global_pixels)
+    local_stats = mask_stats(local_pixels)
+    require(generated.get("global_mask") == {
+        **global_stats, "max_weight": 100, "min_nonzero_weight": 1,
+    }, "global mask metadata differs")
+    require(generated.get("local_mask") == local_stats, "local mask metadata differs")
     if zones:
-        require(0 in global_pixels, "global mask contains no keepout pixels")
-        require(0 in local_pixels, "local mask contains no keepout pixels")
+        require(global_stats["hard_cells"] > 0, "global mask contains no hard core")
+        require(global_stats["weighted_cells"] > 0, "global mask contains no weighted costs")
+        require(global_stats["free_cells"] > 0, "global mask contains no free cells")
+        require(local_stats["hard_cells"] > 0, "local mask contains no hard core")
+        require(local_stats["weighted_cells"] == 0, "local mask must not contain weighted costs")
+        require(local_stats["free_cells"] > 0, "local mask contains no free cells")
+        require(global_stats["hard_cells"] + global_stats["weighted_cells"] < len(global_pixels), "global mask is fully blocked")
+        require(
+            all(
+                (global_value == 100) == (local_value == 100)
+                for global_value, local_value in zip(global_pixels, local_pixels)
+            ),
+            "global/local hard cores differ",
+        )
+        require(
+            weighted_zone_surrounds_hard_core(
+                global_pixels, local_pixels, map_width, map_height
+            ),
+            "global weighted zone does not surround hard core",
+        )
     else:
-        require(set(global_pixels) == {254}, "global mask is not all-free for zoneless route")
-        require(set(local_pixels) == {254}, "local mask is not all-free for zoneless route")
+        require(set(global_pixels) == {0}, "global mask is not all-free for zoneless route")
+        require(set(local_pixels) == {0}, "local mask is not all-free for zoneless route")
 
     expected_topics = {
         "global": "/keepout_global_filter_info",
         "local": "/keepout_local_filter_info",
     }
+    filter_info = filter_info_parameters(launch_path)
     for name, costmap, normal_costmap in (
         ("global", global_params, normal_global_params),
         ("local", local_params, normal_local_params),
     ):
         require("keepout_filter" in (costmap.get("filters") or []), f"{name} keepout filter missing")
         require(costmap["keepout_filter"]["filter_info_topic"] == expected_topics[name], f"{name} keepout topic differs")
+        info = filter_info.get(f"keepout_{name}_filter_info_server", {})
+        require(info.get("type") == 0, f"{name} filter info type differs")
+        require(info.get("base") == 0.0, f"{name} filter info base differs")
+        require(info.get("multiplier") == 1.0, f"{name} filter info multiplier differs")
         comparable = dict(costmap)
         comparable.pop("filters", None)
         comparable.pop("keepout_filter", None)

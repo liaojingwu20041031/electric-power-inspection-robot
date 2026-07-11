@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import sys
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import rclpy
@@ -1407,7 +1408,8 @@ class SystemSupervisorNode(Node):
             self.patrol_error = ''
             return True
         if self.check_keepout_setup():
-            self._log_keepout_zone_status()
+            if not self._log_keepout_zone_status():
+                return False
             self.patrol_error = ''
             return True
         error = self.patrol_error
@@ -1426,14 +1428,40 @@ class SystemSupervisorNode(Node):
             return False
         if not self.check_keepout_setup():
             return False
-        self._log_keepout_zone_status()
+        if not self._log_keepout_zone_status():
+            return False
         self.patrol_error = ''
         return True
 
-    def _log_keepout_zone_status(self) -> None:
-        self.log_info(
-            f'keepout profile enabled hard_keepout count={self.active_hard_keepout_count}'
+    def _log_keepout_zone_status(self) -> bool:
+        metadata_path = os.path.join(
+            os.path.dirname(self.keepout_global_mask_path), 'keepout_masks.metadata.json'
         )
+        try:
+            metadata = json.loads(Path(metadata_path).read_text(encoding='utf-8'))
+            zones = metadata.get('zones') or {}
+            global_mask = metadata['global_mask']
+            local_mask = metadata['local_mask']
+            hard_padding = ','.join(
+                f"{zone['hard_padding_m']:.3f}" for zone in zones.values()
+            ) or 'n/a'
+            soft_radius = ','.join(
+                f"{zone['soft_radius_m']:.3f}" for zone in zones.values()
+            ) or 'n/a'
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            self.patrol_error = f'keepout mask metadata invalid: {exc}'
+            return False
+        if zones and global_mask.get('weighted_cells', 0) == 0:
+            self.patrol_error = 'keepout global mask has no weighted cells'
+            return False
+        self.log_info(
+            'keepout masks ready: '
+            f'zones={len(zones)} hard_padding={hard_padding}m soft_radius={soft_radius}m '
+            f"global_hard_cells={global_mask.get('hard_cells', 0)} "
+            f"global_weighted_cells={global_mask.get('weighted_cells', 0)} "
+            f"local_hard_cells={local_mask.get('hard_cells', 0)}"
+        )
+        return True
 
     def run_route_safety_check(self, mode: Optional[str] = None) -> str:
         nav2_params_name = self.navigation_params_file_name(mode)
