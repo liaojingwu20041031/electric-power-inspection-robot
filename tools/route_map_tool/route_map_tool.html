@@ -483,6 +483,8 @@
               <label>类型<input id="zoneType" data-zone-field="type" value="hard_keepout"></label>
             </div>
             <label class="check-line"><input id="zoneEnabled" type="checkbox" data-zone-field="enabled" checked>启用</label>
+            <label>虚拟墙边界补偿（m）<input id="zoneMaskPadding" type="number" data-zone-field="maskPaddingM" min="0" step="0.025"></label>
+            <p class="status">仅用于禁行 polygon 栅格化边界补偿。机器人与禁行区的最终避让距离由 Nav2 InflationLayer 的 6.0 / 0.35 参数产生。</p>
             <div class="grid-2" style="margin-bottom: 8px;">
               <button id="deleteZonePointBtn" type="button">删除最后顶点</button>
               <button id="clearZonePointsBtn" class="danger" type="button">清空 polygon</button>
@@ -544,7 +546,8 @@
       yawPreview: null,
       hoverPixel: null,
       drag: null,
-      nextTargetNo: 1
+      nextTargetNo: 1,
+      importedRouteTemplate: null
     };
 
     const els = {
@@ -583,6 +586,7 @@
       zoneId: document.getElementById("zoneId"),
       zoneType: document.getElementById("zoneType"),
       zoneEnabled: document.getElementById("zoneEnabled"),
+      zoneMaskPadding: document.getElementById("zoneMaskPadding"),
       zonePointsList: document.getElementById("zonePointsList"),
       zonesStatus: document.getElementById("zonesStatus"),
       targetsList: document.getElementById("targetsList"),
@@ -623,6 +627,12 @@
 
     function round3(value) {
       return Math.round(Number(value) * 1000) / 1000;
+    }
+
+    function cloneRoute(value) {
+      return typeof structuredClone === "function"
+        ? structuredClone(value)
+        : JSON.parse(JSON.stringify(value));
     }
 
     function numberValue(el, fallback) {
@@ -699,6 +709,9 @@
         name: zone.name || zone.id || `禁行区${index + 1}`,
         type: zone.type || "hard_keepout",
         enabled: zone.enabled !== false,
+        maskPaddingM: Number.isFinite(Number(zone.mask_padding_m))
+          ? Math.min(state.map.resolution, Math.max(0, Number(zone.mask_padding_m)))
+          : state.map.resolution,
         polygon: Array.isArray(zone.polygon)
           ? zone.polygon.map((point) => ({ x: Number(point.x), y: Number(point.y) })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
           : []
@@ -777,6 +790,7 @@
       state.selectedTargetId = null;
       state.yawTarget = { kind: "start", id: null };
       state.nextTargetNo = 1;
+      state.importedRouteTemplate = null;
     }
 
     function mapToPixel(x, y) {
@@ -1272,6 +1286,16 @@
 
     function getPointHit(px, py) {
       const threshold = 12 / state.view.scale;
+      if (state.mode === "keepout") {
+        for (const zone of state.zones) {
+          for (let index = 0; index < zone.polygon.length; index += 1) {
+            const point = mapToPixel(zone.polygon[index].x, zone.polygon[index].y);
+            if (Math.hypot(px - point.x, py - point.y) <= threshold) {
+              return { kind: "zonePoint", id: zone.id, index };
+            }
+          }
+        }
+      }
       const startP = mapToPixel(numberValue(els.startX, 0), numberValue(els.startY, 0));
       if (Math.hypot(px - startP.x, py - startP.y) <= threshold) return { kind: "start" };
       for (const target of state.targets) {
@@ -1309,7 +1333,7 @@
     function addZonePointFromPixel(px, py) {
       if (!state.activeZoneId) {
         const id = `keepout_${String(state.zones.length + 1).padStart(3, "0")}`;
-        state.zones.push({ id, name: `禁行区${state.zones.length + 1}`, type: "hard_keepout", enabled: true, polygon: [] });
+        state.zones.push({ id, name: `禁行区${state.zones.length + 1}`, type: "hard_keepout", enabled: true, maskPaddingM: state.map.resolution, polygon: [] });
         state.activeZoneId = id;
       }
       const zone = state.zones.find((item) => item.id === state.activeZoneId);
@@ -1374,6 +1398,10 @@
         els.zoneId.value = zone.id || "";
         els.zoneType.value = zone.type || "hard_keepout";
         els.zoneEnabled.checked = zone.enabled !== false;
+        els.zoneMaskPadding.min = "0";
+        els.zoneMaskPadding.max = String(state.map.resolution);
+        els.zoneMaskPadding.step = String(state.map.resolution);
+        els.zoneMaskPadding.value = zone.maskPaddingM;
       }
       els.zonePointsList.innerHTML = "";
       if (zone) {
@@ -1451,6 +1479,15 @@
       if (!route || ![2, 3].includes(route.version) || route.frame_id !== "map") {
         throw new Error("路线 JSON 必须是 version=2/3 且 frame_id=map。" );
       }
+      if (!Array.isArray(route.routes) || route.routes.length !== 1) {
+        throw new Error("当前路线工具只支持单路线文件。该文件包含多个 routes，为避免丢失数据，未加载。");
+      }
+      if (!Array.isArray(route.schedules)) {
+        throw new Error("路线 JSON 的 schedules 必须是数组。");
+      }
+      if (route.schedules.length > 0) {
+        throw new Error("当前路线工具不编辑 schedules。为避免导出后丢失调度配置，未加载该文件。");
+      }
       if (route.version === 3) {
         const map = route.map || {};
         if (!map.yaml || !map.image || !Number.isFinite(map.resolution) || !Array.isArray(map.origin) || map.origin.length !== 3 || !Number.isInteger(map.width) || !Number.isInteger(map.height) || !/^[0-9a-f]{64}$/.test(map.image_sha256 || "")) {
@@ -1471,7 +1508,7 @@
         els.covY.value = route.start_pose.covariance?.y ?? 0.25;
         els.covYaw.value = route.start_pose.covariance?.yaw ?? 0.0685;
       }
-      const firstRoute = Array.isArray(route.routes) ? route.routes[0] : null;
+      const firstRoute = route.routes[0];
       if (firstRoute) {
         els.routeId.value = firstRoute.id || "route_patrol_001";
         els.activeRouteId.value = route.active_route_id || firstRoute.id || "route_patrol_001";
@@ -1507,6 +1544,7 @@
       state.yawTarget = state.selectedTargetId ? { kind: "target", id: state.selectedTargetId } : { kind: "start", id: null };
       state.zones = normalizeKeepoutZones(route.keepout_zones);
       state.activeZoneId = state.zones[0]?.id || null;
+      state.importedRouteTemplate = cloneRoute(route);
       renderAll();
     }
 
@@ -1516,7 +1554,13 @@
       const safety = typeof routeSafety === "function" ? routeSafety() : {
         validation_status: "pending", min_keepout_distance_m: null, warnings: [], pointSafety: {}
       };
+      const template = state.importedRouteTemplate ? cloneRoute(state.importedRouteTemplate) : {};
+      const importedStart = template.start_pose || {};
+      const importedTargets = new Map((template.targets || []).map((target) => [target.id, target]));
+      const importedRoute = template.routes?.[0] || {};
+      const importedZones = new Map((template.keepout_zones || []).map((zone) => [zone.id, zone]));
       return {
+        ...template,
         version,
         frame_id: "map",
         ...(version === 3 ? { map: {
@@ -1530,6 +1574,7 @@
         } } : {}),
         active_route_id: els.activeRouteId.value.trim() || routeId,
         start_pose: {
+          ...importedStart,
           name: els.startName.value.trim() || "初始起点",
           ...(version === 3 ? { frame_id: "map" } : {}),
           pose: {
@@ -1558,6 +1603,7 @@
             yaw: round3(target.yaw || 0)
           };
           return {
+            ...importedTargets.get(target.id),
             id: target.id,
             name: target.name || target.id,
             pose,
@@ -1566,16 +1612,15 @@
                 type: "map_pose",
                 frame_id: "map",
                 ...pose
-              },
-              safety: {
-                ...safety.pointSafety[target.id]
               }
             } : {}),
+            safety: { ...safety.pointSafety[target.id] },
             task_duration_sec: numberValue({ value: target.taskDuration }, 5)
           };
         }),
         routes: [
           {
+            ...importedRoute,
             id: routeId,
             name: els.routeName.value.trim() || "本地巡逻路线",
             target_ids: state.targets.map((target) => target.id),
@@ -1591,10 +1636,12 @@
           }
         ],
         keepout_zones: state.zones.map((zone) => ({
+          ...importedZones.get(zone.id),
           id: zone.id,
           name: zone.name,
           type: zone.type || "hard_keepout",
           enabled: zone.enabled !== false,
+          mask_padding_m: Math.min(state.map.resolution, Math.max(0, Number(zone.maskPaddingM) || 0)),
           polygon: zone.polygon.map((point) => ({ x: round3(point.x), y: round3(point.y) }))
         })),
         schedules: [],
@@ -1687,6 +1734,12 @@
         }
         return;
       }
+      if (hit?.kind === "zonePoint") {
+        state.activeZoneId = hit.id;
+        state.drag = hit;
+        renderAll();
+        return;
+      }
       if (hit && state.mode !== "pan" && state.mode !== "keepout") {
         state.drag = { type: hit.kind, id: hit.id || null };
         if (hit.kind === "target") {
@@ -1734,6 +1787,11 @@
         const map = pixelToMap(p.x, p.y);
         target.x = map.x;
         target.y = map.y;
+        renderAll();
+      } else if (state.drag.type === "zonePoint") {
+        const zone = state.zones.find((item) => item.id === state.drag.id);
+        if (!zone?.polygon[state.drag.index]) return;
+        zone.polygon[state.drag.index] = pixelToMap(p.x, p.y);
         renderAll();
       } else if (state.drag.type === "yaw") {
         state.drag.moved = true;
@@ -1822,7 +1880,7 @@
     document.getElementById("modePanBtn").addEventListener("click", () => setMode("pan"));
     document.getElementById("addZoneBtn").addEventListener("click", () => {
       const id = `keepout_${String(state.zones.length + 1).padStart(3, "0")}`;
-      state.zones.push({ id, name: `禁行区${state.zones.length + 1}`, type: "hard_keepout", enabled: true, polygon: [] });
+      state.zones.push({ id, name: `禁行区${state.zones.length + 1}`, type: "hard_keepout", enabled: true, maskPaddingM: state.map.resolution, polygon: [] });
       state.activeZoneId = id;
       setMode("keepout");
       renderAll();
@@ -1842,7 +1900,10 @@
         const oldId = zone.id;
         const field = input.dataset.zoneField;
         if (field === "enabled") zone.enabled = input.checked;
-        else zone[field] = input.value.trim();
+        else if (field === "maskPaddingM") {
+          zone.maskPaddingM = Math.min(state.map.resolution, Math.max(0, numberValue(input, state.map.resolution)));
+          input.value = zone.maskPaddingM;
+        } else zone[field] = input.value.trim();
         if (field === "id" && state.activeZoneId === oldId) state.activeZoneId = zone.id;
       } else if (input.dataset.zonePoint) {
         const point = zone.polygon[Number(input.dataset.zonePoint)];

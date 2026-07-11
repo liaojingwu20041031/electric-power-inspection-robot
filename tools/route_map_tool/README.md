@@ -6,7 +6,7 @@
 
 1. 选择或拖入建图后的 `.yaml` 文件，例如 `my_map.yaml`。
 2. 选择或拖入对应的 `.pgm` 文件，例如 `my_map.pgm`。
-3. 可选：选择或拖入已有路线 `.json`，继续编辑之前标过的点；支持 v2/v3。
+3. 可选：选择或拖入已有路线 `.json`，继续编辑之前标过的点；支持 v2/v3。工具只加载单路线且 `schedules` 为空的文件。
 4. 在右上方选择模式：
    - `起点`：点击地图设置 `start_pose`。
    - `巡检点`：点击地图追加多个 `targets`。
@@ -16,7 +16,7 @@
 5. 拖动已有点位可以微调坐标。
 6. 巡检点列表里的 `↑` / `↓` 会改变导航顺序，也就是 `routes[].target_ids` 的顺序。
 7. 巡检点列表里的 `↗` 会把该点设为当前方向点，并切到方向模式。
-8. 禁行区列表可新增、选择、重命名、启用/禁用、删除禁区，并编辑当前 polygon 顶点。
+8. 禁行区列表可新增、选择、重命名、启用/禁用、删除禁区，并编辑、拖动或删除当前 polygon 顶点。
 9. 点击 `下载 route.json` 生成巡检执行器可加载的路线文件；默认导出 v3，可切换 v2。
 
 下载前工具会检查起点和全部巡检点：
@@ -27,6 +27,32 @@
 - 如果点位不安全，工具会阻止下载并提示具体点位。
 
 禁行区只保存在 route JSON 顶层 `keepout_zones`。Nav2 keepout mask 需要运行时生成，不在 `maps/` 里维护第二份禁区 JSON。
+
+## `mask_padding_m`
+
+每个 `hard_keepout` 都有“虚拟墙边界补偿（m）”，对应 `keepout_zones[].mask_padding_m`。
+
+- 默认值是当前地图 resolution；当前 `my_map` 为 `0.025m`。
+- 可填范围是 `0` 到当前地图 resolution，步进也是当前地图 resolution。
+- 它只补偿 polygon 栅格化的二值虚拟墙边界，不是机器人半径、InflationLayer 半径或最终避障距离。
+- 最终避让由 Nav2 InflationLayer 的 `cost_scaling_factor: 6.0` 与 `inflation_radius: 0.35` 产生。
+
+导入旧路线缺少该字段时，工具在内存中按当前地图 resolution 补齐；导出会显式写入。
+
+## 导入与导出边界
+
+导入 v3 后，工具会保留原始 JSON 模板，并只覆盖实际可编辑的地图、起点、目标 pose/location、目标顺序、禁行区、活动路线和重新计算的 `safety`。因此会保留 `site`、`areas`、目标 aliases/area_id/inspection_items、路线 aliases/description 与其他合法扩展字段。
+
+为避免静默丢数据，遇到下列文件会拒绝加载：
+
+- `routes.length !== 1`：当前工具只支持单路线文件。
+- `schedules.length > 0`：当前工具不编辑 schedules。
+
+编辑点位、方向或禁行区后，旧 `safety` 结果不会沿用，JSON 预览会按工具现有安全检查重新生成。
+
+## 浏览器人工验收
+
+加载 `maps/my_map.yaml`、`maps/my_map.pgm` 与 `maps/route_patrol_001.json` 后，确认起点、四个巡检点、yaw 箭头、目标顺序、禁行 polygon 和 `mask_padding_m=0.025` 正常。拖动一个巡检点或禁行顶点后恢复正式坐标，下载 JSON 并重新导入，确认点位、polygon、顺序和扩展字段仍在。不要提交人工验收期间的临时坐标。
 
 ## 多地图尺寸处理
 
