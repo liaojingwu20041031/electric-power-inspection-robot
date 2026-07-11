@@ -116,6 +116,39 @@ def main():
     )
 
     params = yaml.safe_load(nav2_path.read_text(encoding="utf-8"))
+    obstacle_scale = float(
+        params[
+            "controller_server"
+        ][
+            "ros__parameters"
+        ][
+            "FollowPath"
+        ][
+            "ObstacleFootprint.scale"
+        ]
+    )
+    require(
+        0.0 < obstacle_scale <= 0.10,
+        "ObstacleFootprint.scale is too large; "
+        "inflation costs will behave like hard obstacles",
+    )
+    critics = params[
+        "controller_server"
+    ][
+        "ros__parameters"
+    ][
+        "FollowPath"
+    ][
+        "critics"
+    ]
+    require(
+        "ObstacleFootprint" in critics,
+        "ObstacleFootprint critic missing",
+    )
+    require(
+        "BaseObstacle" not in critics,
+        "BaseObstacle must not replace full footprint collision checking",
+    )
     global_params = params["global_costmap"]["global_costmap"]["ros__parameters"]
     local_params = params["local_costmap"]["local_costmap"]["ros__parameters"]
     footprint = ast.literal_eval(global_params["footprint"])

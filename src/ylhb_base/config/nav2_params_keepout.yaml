@@ -196,7 +196,11 @@ controller_server:
           "PathDist",
           "GoalDist"
         ]
-      ObstacleFootprint.scale: 5.0
+      # ObstacleFootprint 返回完整车体边界上的最大 cost，可能达到 253。
+      # scale 只影响 1～253 的软代价评分；实际障碍 254、未知区 255
+      # 仍由 critic 直接判定为非法轨迹。
+      # 不能沿用旧 BaseObstacle 的 5.0，否则普通膨胀区会被放大成近似硬墙。
+      ObstacleFootprint.scale: 0.02
       PathAlign.scale: 8.0
       PathAlign.forward_point_distance: 0.1
       PathDist.scale: 10.0
