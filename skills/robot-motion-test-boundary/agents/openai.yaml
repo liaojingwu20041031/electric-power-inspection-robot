@@ -1,0 +1,4 @@
+interface:
+  display_name: "YLHB 实机运动测试边界"
+  short_description: "明确用户实机运动、路线测试与 Agent 只读诊断职责边界"
+  default_prompt: "Use $robot-motion-test-boundary to prepare a safe robot validation plan without starting physical motion."

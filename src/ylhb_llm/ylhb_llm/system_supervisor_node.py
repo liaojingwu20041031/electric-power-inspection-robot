@@ -1719,14 +1719,19 @@ class SystemSupervisorNode(Node):
             if client is None:
                 client = self.create_client(ManageLifecycleNodes, service_name)
                 self.lifecycle_manager_clients[service_name] = client
-            if not client.wait_for_service(timeout_sec=min(timeout_sec, 1.0)):
+            deadline = time.monotonic() + timeout_sec
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if client.wait_for_service(timeout_sec=min(remaining, 1.0)):
+                    break
+                time.sleep(0.1)
+            else:
                 if required:
                     self.patrol_error = f'lifecycle manager 服务不可用: {service_name}'
                 return False
             request = ManageLifecycleNodes.Request()
             request.command = command
             future = client.call_async(request)
-            deadline = time.monotonic() + timeout_sec
             while time.monotonic() < deadline:
                 if future.done():
                     response = future.result()

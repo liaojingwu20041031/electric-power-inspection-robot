@@ -146,8 +146,8 @@ controller_server:
     FollowPath:
       # DWB 局部规划器：根据路径、障碍物和目标方向采样速度。
       plugin: "dwb_core::DWBLocalPlanner"
-      # 关闭轨迹调试，降低控制循环日志和计算开销。
-      debug_trajectory_details: False
+      # 首轮实机验收输出 DWB 轨迹评分；验收完成后恢复 False。
+      debug_trajectory_details: True
       # 差速底盘不使用横向速度 y。
       min_vel_x: 0.0
       min_vel_y: 0.0
@@ -155,7 +155,7 @@ controller_server:
       max_vel_x: 0.12
       max_vel_y: 0.0
       # Nav2 输出角速度上限，给大角度掉头留出有效角速度。
-      max_vel_theta: 0.40
+      max_vel_theta: 0.50
       min_speed_xy: 0.0
       # 平面合速度上限，与 max_vel_x 保持一致。
       max_speed_xy: 0.12
@@ -169,13 +169,13 @@ controller_server:
       decel_lim_x: -0.30
       decel_lim_y: 0.0
       decel_lim_theta: -0.50
-      # 完整 footprint 与 keepout 检查需要足够的中间速度样本。
-      vx_samples: 6
-      vy_samples: 1
-      vtheta_samples: 12
+      # 恢复 7 月 8 日稳定动态采样，避免过密的角速度采样压缩可行轨迹选择。
+      vx_samples: 4
+      vy_samples: 5
+      vtheta_samples: 5
       # DWB 前向仿真时间和采样分辨率。
-      sim_time: 1.5
-      linear_granularity: 0.04
+      sim_time: 1.7
+      linear_granularity: 0.05
       angular_granularity: 0.025
       # 控制器查询 TF 的容忍时间。
       transform_tolerance: 1.5
@@ -204,7 +204,7 @@ controller_server:
       PathAlign.scale: 8.0
       PathAlign.forward_point_distance: 0.1
       PathDist.scale: 10.0
-      GoalAlign.scale: 8.0
+      GoalAlign.scale: 0.0
       GoalAlign.forward_point_distance: 0.1
       GoalDist.scale: 8.0
       RotateToGoal.scale: 20.0
@@ -212,10 +212,11 @@ controller_server:
       RotateToGoal.lookahead_time: 0.4
 
     progress_checker:
-      # 只有实际平移才算进展，原地旋转不能无限刷新超时。
-      plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.04
-      movement_time_allowance: 18.0
+      # 平移或转向任一满足阈值都算进展，避免起步转向被误判卡住。
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.05
+      required_movement_angle: 0.12
+      movement_time_allowance: 12.0
 
     goal_checker:
       # 目标检查器：明确使用 SimpleGoalChecker，消除默认 goal checker 警告。
@@ -397,9 +398,9 @@ velocity_smoother:
     # 开环平滑，不等待里程计反馈闭环修正。
     feedback: "OPEN_LOOP"
     # 平滑后的最大速度：[x, y, theta]，差速底盘 y 保持 0。
-    max_velocity: [0.12, 0.0, 0.40]
+    max_velocity: [0.12, 0.0, 0.50]
     # 允许很小倒车速度，角速度正负对称限幅。
-    min_velocity: [-0.05, 0.0, -0.40]
+    min_velocity: [-0.05, 0.0, -0.50]
     # 平滑器加速度/减速度限制，与 DWB 限制保持一致。
     max_accel: [0.30, 0.0, 0.50]
     max_decel: [-0.30, 0.0, -0.50]

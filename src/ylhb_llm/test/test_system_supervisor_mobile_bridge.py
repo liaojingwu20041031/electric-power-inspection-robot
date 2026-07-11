@@ -109,6 +109,41 @@ def test_navigation_exit_stops_lifecycle_readiness_wait_immediately():
     assert 'exit code=2' in node.patrol_error
 
 
+def test_manage_lifecycle_nodes_waits_for_new_manager_after_stale_discovery():
+    class Future:
+        def done(self):
+            return True
+
+        def result(self):
+            return type('Response', (), {'success': True})()
+
+    class DelayedManager:
+        def __init__(self):
+            self.wait_calls = 0
+            self.request = None
+
+        def wait_for_service(self, timeout_sec):
+            self.wait_calls += 1
+            return self.wait_calls == 2
+
+        def call_async(self, request):
+            self.request = request
+            return Future()
+
+    manager = DelayedManager()
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.lifecycle_manager_clients = {}
+    node.patrol_error = ''
+    node.create_client = Mock(return_value=manager)
+
+    assert node.manage_lifecycle_nodes(
+        '/lifecycle_manager_localization/manage_nodes',
+        system_supervisor_node.ManageLifecycleNodes.Request.STARTUP,
+        timeout_sec=1.0,
+    )
+    assert manager.wait_calls == 2
+
+
 def test_patrol_stops_before_executor_when_navigation_is_not_ready():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.patrol_mode_state = 'idle'
