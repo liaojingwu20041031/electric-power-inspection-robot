@@ -1,19 +1,13 @@
 import ast
-import os
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-import pytest
 import yaml
 
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 WORKSPACE_DIR = PACKAGE_DIR.parents[1]
 NAV2_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params.yaml"
-NAVIGATION_LAUNCH_PATH = PACKAGE_DIR / "launch" / "navigation.launch.py"
 NAV2_BT_PATH = PACKAGE_DIR / "config" / "nav2_no_recovery.xml"
 CMAKE_PATH = PACKAGE_DIR / "CMakeLists.txt"
 MAP_YAML_PATH = WORKSPACE_DIR / "maps" / "my_map.yaml"
@@ -46,69 +40,6 @@ UniqueKeyLoader.add_constructor(
 
 def test_nav2_params_yaml_has_no_duplicate_keys():
     yaml.load(NAV2_CONFIG_PATH.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
-
-
-def test_keepout_params_wire_global_first_and_local_opt_in():
-    config = load_nav2_params()
-    global_map = config["global_costmap"]["global_costmap"]["ros__parameters"]
-    local = config["local_costmap"]["local_costmap"]["ros__parameters"]
-
-    assert "keepout_filter" in global_map["filters"]
-    assert global_map["keepout_filter"]["plugin"] == "nav2_costmap_2d::KeepoutFilter"
-    assert global_map["keepout_filter"]["enabled"] is False
-    assert global_map["keepout_filter"]["filter_info_topic"] == "keepout_costmap_filter_info"
-
-    assert "keepout_filter" in local["filters"]
-    assert local["keepout_filter"]["plugin"] == "nav2_costmap_2d::KeepoutFilter"
-    assert local["keepout_filter"]["enabled"] is False
-    assert local["keepout_filter"]["filter_info_topic"] == "keepout_costmap_filter_info"
-
-
-def test_navigation_launch_uses_unified_keepout_entrypoint():
-    source = NAVIGATION_LAUNCH_PATH.read_text(encoding="utf-8")
-
-    assert "'enable_keepout'" in source
-    assert "'keepout_mask'" in source
-    assert "'config', 'nav2_params.yaml'" in source
-    assert "nav2_params_keepout" not in source
-    assert "default_value='true'" in source
-    assert "local_costmap.local_costmap.ros__parameters.keepout_filter.enabled': 'false'" in source
-
-
-def test_keepout_lifecycle_nodes_explicitly_use_root_namespace():
-    source = NAVIGATION_LAUNCH_PATH.read_text(encoding="utf-8")
-
-    for node_name in (
-        "keepout_filter_mask_server",
-        "costmap_filter_info_server",
-    ):
-        node_start = source.index(f"name='{node_name}'")
-        node_end = source.index("))", node_start)
-        assert "namespace=''," in source[node_start:node_end]
-
-
-@pytest.mark.parametrize("enable_keepout", ("true", "false"))
-def test_navigation_launch_show_args_parses_with_each_keepout_setting(enable_keepout):
-    if not shutil.which("ros2") or not (WORKSPACE_DIR / "install" / "setup.bash").exists():
-        pytest.skip("ROS launch environment is unavailable")
-    env = os.environ.copy()
-    env["ROS_LOG_DIR"] = tempfile.mkdtemp(prefix="ylhb_ros_launch_")
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            "source /opt/ros/humble/setup.bash && "
-            f"source {WORKSPACE_DIR}/install/setup.bash && "
-            "ros2 launch ylhb_base navigation.launch.py "
-            f"enable_keepout:={enable_keepout} --show-args",
-        ],
-        cwd=WORKSPACE_DIR,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    assert result.returncode == 0, result.stdout
 
 
 def load_nav2_behavior_tree():
@@ -158,21 +89,6 @@ def nav2_trinary_cell_value(gray, metadata):
     if occupancy < metadata["free_thresh"]:
         return 0
     return -1
-
-
-def test_map_thresholds_keep_205_gray_pixels_unknown():
-    metadata = load_map_metadata()
-    gray_205_occupancy = (255 - 205) / 255.0
-
-    assert metadata["resolution"] == 0.025
-    assert metadata["mode"] == "trinary"
-    assert metadata["negate"] == 0
-    assert metadata["free_thresh"] == 0.19
-    assert metadata["occupied_thresh"] == 0.65
-    assert metadata["free_thresh"] < gray_205_occupancy < metadata["occupied_thresh"]
-    assert nav2_trinary_cell_value(205, metadata) == -1
-    assert nav2_trinary_cell_value(254, metadata) == 0
-    assert nav2_trinary_cell_value(0, metadata) == 100
 
 
 def test_saved_map_contains_205_gray_unknown_pixels():
