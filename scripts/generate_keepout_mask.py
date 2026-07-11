@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import ast
 import hashlib
 import json
 import math
@@ -88,7 +87,7 @@ def stage_write(path, data):
     return temporary
 
 
-def make_pixels(width, height, resolution, origin, zones, hard_paddings, soft_radii=None):
+def make_pixels(width, height, resolution, origin, zones, hard_paddings):
     pixels = bytearray(width * height)
     for py in range(height):
         y = origin[1] + (height - py - 0.5) * resolution
@@ -103,11 +102,6 @@ def make_pixels(width, height, resolution, origin, zones, hard_paddings, soft_ra
                 hard_padding = hard_paddings[zone["id"]]
                 if distance <= hard_padding:
                     zone_value = 100
-                elif soft_radii and distance < soft_radii[zone["id"]]:
-                    ratio = (soft_radii[zone["id"]] - distance) / (
-                        soft_radii[zone["id"]] - hard_padding
-                    )
-                    zone_value = max(1, min(99, int(round(99.0 * ratio))))
                 else:
                     zone_value = 0
                 pixel_value = max(pixel_value, zone_value)
@@ -159,27 +153,10 @@ def main():
         if zone.get("enabled") is True and zone.get("type") == "hard_keepout"
     ]
 
-    nav2 = yaml.safe_load(nav2_path.read_text(encoding="utf-8"))
-    global_params = nav2["global_costmap"]["global_costmap"]["ros__parameters"]
-    local_params = nav2["local_costmap"]["local_costmap"]["ros__parameters"]
-    footprint = ast.literal_eval(global_params["footprint"])
-    local_footprint = ast.literal_eval(local_params["footprint"])
-    footprint_padding = float(global_params.get("footprint_padding", 0.0))
-    if footprint != local_footprint or footprint_padding != float(
-        local_params.get("footprint_padding", 0.0)
-    ):
-        raise ValueError("global/local footprint settings differ")
-    radius = max(math.hypot(float(x), float(y)) for x, y in footprint)
     resolution = float(map_data["resolution"])
     origin = map_data["origin"]
     requested_padding = {
-        zone["id"]: float(zone.get("mask_padding_m", 0.05)) for zone in zones
-    }
-    local_hard_padding = dict(requested_padding)
-    global_hard_padding = dict(requested_padding)
-    global_soft_radius = {
-        zone_id: radius + footprint_padding + hard_padding + resolution
-        for zone_id, hard_padding in requested_padding.items()
+        zone["id"]: float(zone.get("mask_padding_m", resolution)) for zone in zones
     }
 
     output_dir = Path(args.output_dir).expanduser()
@@ -200,13 +177,9 @@ def main():
         "height": height,
         "resolution_m": resolution,
         "origin": [float(origin[0]), float(origin[1]), 0.0],
-        "footprint": footprint,
-        "footprint_padding_m": footprint_padding,
-        "circumscribed_radius_m": radius,
         "zones": {
             zone["id"]: {
                 "hard_padding_m": requested_padding[zone["id"]],
-                "soft_radius_m": global_soft_radius[zone["id"]],
             }
             for zone in zones
         },
@@ -214,16 +187,12 @@ def main():
     metadata["keepout_mode"] = "active" if zones else "all_free"
     metadata["enabled_hard_keepout_count"] = len(zones)
     global_pixels = make_pixels(
-        width, height, resolution, origin, zones, global_hard_padding, global_soft_radius
+        width, height, resolution, origin, zones, requested_padding
     )
     local_pixels = make_pixels(
-        width, height, resolution, origin, zones, local_hard_padding
+        width, height, resolution, origin, zones, requested_padding
     )
-    metadata["global_mask"] = {
-        **mask_stats(global_pixels),
-        "max_weight": 100,
-        "min_nonzero_weight": 1,
-    }
+    metadata["global_mask"] = mask_stats(global_pixels)
     metadata["local_mask"] = mask_stats(local_pixels)
     staged = [
         (stage_write(outputs["global_pgm"], f"P5\n{width} {height}\n255\n".encode() + global_pixels), outputs["global_pgm"]),
@@ -239,8 +208,6 @@ def main():
         for temporary, _final in staged:
             temporary.unlink(missing_ok=True)
 
-    print(f"circumscribed radius: {radius:.3f} m")
-    print(f"footprint padding: {footprint_padding:.3f} m")
     print(f"keepout mode: {metadata['keepout_mode']}")
     print(f"enabled hard keepout zones: {metadata['enabled_hard_keepout_count']}")
     if zones:
@@ -248,7 +215,6 @@ def main():
             zone_id = zone["id"]
             print(f"{zone_id}:")
             print(f"hard padding = {requested_padding[zone_id]:.3f} m")
-            print(f"soft radius = {global_soft_radius[zone_id]:.3f} m")
     else:
         print("no enabled hard_keepout zones; generated all-free global/local masks")
     print(outputs["global_yaml"])

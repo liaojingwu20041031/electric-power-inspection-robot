@@ -3,7 +3,6 @@ import argparse
 import ast
 import hashlib
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -89,25 +88,6 @@ def filter_info_parameters(launch_path):
     return result
 
 
-def weighted_zone_surrounds_hard_core(global_pixels, local_pixels, width, height):
-    for index, value in enumerate(local_pixels):
-        if value != 100:
-            continue
-        row, column = divmod(index, width)
-        neighbors = [
-            (row + dy, column + dx)
-            for dy in (-1, 0, 1)
-            for dx in (-1, 0, 1)
-            if dy or dx
-            if 0 <= row + dy < height and 0 <= column + dx < width
-        ]
-        for neighbor_row, neighbor_column in neighbors:
-            neighbor = neighbor_row * width + neighbor_column
-            if local_pixels[neighbor] != 100 and not 1 <= global_pixels[neighbor] <= 99:
-                return False
-    return True
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--map", required=True, dest="map_yaml")
@@ -174,24 +154,12 @@ def main():
     normal_params = yaml.safe_load(normal_nav2_path.read_text(encoding="utf-8"))
     follow = params["controller_server"]["ros__parameters"]["FollowPath"]
     normal_follow = normal_params["controller_server"]["ros__parameters"]["FollowPath"]
-    expected_follow = dict(normal_follow)
-    expected_follow.update({
-        "critics": [
-            "RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint",
-            "GoalAlign", "PathAlign", "PathDist", "GoalDist",
-        ],
-        "BaseObstacle.scale": 5.0,
-        "ObstacleFootprint.scale": 0.02,
-    })
-    require(follow == expected_follow, "Keepout FollowPath differs from normal critics")
-    normal_bt = normal_params["bt_navigator"]["ros__parameters"]
-    keepout_bt = params["bt_navigator"]["ros__parameters"]
-    expected_bt = dict(normal_bt)
-    expected_bt.update({
-        "default_bt_xml_filename": keepout_bt["default_bt_xml_filename"],
-        "default_nav_to_pose_bt_xml": keepout_bt["default_nav_to_pose_bt_xml"],
-    })
-    require(keepout_bt == expected_bt, "Keepout BT settings differ from normal")
+    require(follow == normal_follow, "Keepout FollowPath differs from normal")
+    require(
+        params["bt_navigator"]["ros__parameters"]
+        == normal_params["bt_navigator"]["ros__parameters"],
+        "Keepout BT settings differ from normal",
+    )
     global_params = params["global_costmap"]["global_costmap"]["ros__parameters"]
     local_params = params["local_costmap"]["local_costmap"]["ros__parameters"]
     normal_global_params = normal_params["global_costmap"]["global_costmap"]["ros__parameters"]
@@ -200,48 +168,30 @@ def main():
     require(footprint == ast.literal_eval(local_params["footprint"]), "global/local footprint differs")
     footprint_padding = float(global_params.get("footprint_padding", 0.0))
     require(footprint_padding == float(local_params.get("footprint_padding", 0.0)), "global/local footprint padding differs")
-    radius = max(math.hypot(float(x), float(y)) for x, y in footprint)
-    require(math.isclose(generated["circumscribed_radius_m"], radius), "footprint radius metadata is stale")
     resolution = float(map_meta["resolution"])
     for zone in zones:
-        requested_clearance = float(zone.get("mask_padding_m", 0.05))
-        soft_radius = radius + footprint_padding + requested_clearance + resolution
+        requested_clearance = float(zone.get("mask_padding_m", resolution))
         zone_meta = generated["zones"][zone["id"]]
-        require(math.isclose(zone_meta["hard_padding_m"], requested_clearance), f"{zone['id']} hard padding differs")
-        require(math.isclose(zone_meta["soft_radius_m"], soft_radius), f"{zone['id']} soft radius differs")
-        require(zone_meta["soft_radius_m"] > zone_meta["hard_padding_m"], f"{zone['id']} soft radius must exceed hard padding")
+        require(zone_meta["hard_padding_m"] == requested_clearance, f"{zone['id']} hard padding differs")
+        require(0.0 <= requested_clearance <= resolution, f"{zone['id']} hard padding exceeds one map cell")
 
     global_pixels = mask_pixels["global"]
     local_pixels = mask_pixels["local"]
-    require(set(global_pixels) <= set(range(101)), "global mask contains invalid raw cost")
+    require(set(global_pixels) <= {0, 100}, "global mask must contain only free and hard costs")
     require(set(local_pixels) <= {0, 100}, "local mask must contain only free and hard costs")
     global_stats = mask_stats(global_pixels)
     local_stats = mask_stats(local_pixels)
-    require(generated.get("global_mask") == {
-        **global_stats, "max_weight": 100, "min_nonzero_weight": 1,
-    }, "global mask metadata differs")
+    require(generated.get("global_mask") == global_stats, "global mask metadata differs")
     require(generated.get("local_mask") == local_stats, "local mask metadata differs")
     if zones:
         require(global_stats["hard_cells"] > 0, "global mask contains no hard core")
-        require(global_stats["weighted_cells"] > 0, "global mask contains no weighted costs")
+        require(global_stats["weighted_cells"] == 0, "global mask must not contain weighted costs")
         require(global_stats["free_cells"] > 0, "global mask contains no free cells")
         require(local_stats["hard_cells"] > 0, "local mask contains no hard core")
         require(local_stats["weighted_cells"] == 0, "local mask must not contain weighted costs")
         require(local_stats["free_cells"] > 0, "local mask contains no free cells")
-        require(global_stats["hard_cells"] + global_stats["weighted_cells"] < len(global_pixels), "global mask is fully blocked")
-        require(
-            all(
-                (global_value == 100) == (local_value == 100)
-                for global_value, local_value in zip(global_pixels, local_pixels)
-            ),
-            "global/local hard cores differ",
-        )
-        require(
-            weighted_zone_surrounds_hard_core(
-                global_pixels, local_pixels, map_width, map_height
-            ),
-            "global weighted zone does not surround hard core",
-        )
+        require(global_stats["hard_cells"] < len(global_pixels), "global mask is fully blocked")
+        require(global_pixels == local_pixels, "global/local virtual walls differ")
     else:
         require(set(global_pixels) == {0}, "global mask is not all-free for zoneless route")
         require(set(local_pixels) == {0}, "local mask is not all-free for zoneless route")
@@ -255,7 +205,14 @@ def main():
         ("global", global_params, normal_global_params),
         ("local", local_params, normal_local_params),
     ):
-        require("keepout_filter" in (costmap.get("filters") or []), f"{name} keepout filter missing")
+        require("filters" not in costmap, f"{name} costmap must not declare filters")
+        normal_plugins = normal_costmap["plugins"]
+        inflation_index = normal_plugins.index("inflation_layer")
+        require(
+            costmap["plugins"]
+            == normal_plugins[:inflation_index] + ["keepout_filter"] + normal_plugins[inflation_index:],
+            f"{name} keepout plugin must precede inflation",
+        )
         require(costmap["keepout_filter"]["filter_info_topic"] == expected_topics[name], f"{name} keepout topic differs")
         info = filter_info.get(f"keepout_{name}_filter_info_server", {})
         require(info.get("type") == 0, f"{name} filter info type differs")
@@ -264,7 +221,10 @@ def main():
         comparable = dict(costmap)
         comparable.pop("filters", None)
         comparable.pop("keepout_filter", None)
-        require(comparable == normal_costmap, f"{name} non-filter settings differ from normal")
+        comparable.pop("plugins", None)
+        normal_comparable = dict(normal_costmap)
+        normal_comparable.pop("plugins", None)
+        require(comparable == normal_comparable, f"{name} non-keepout settings differ from normal")
     require(
         params["velocity_smoother"]["ros__parameters"]
         == normal_params["velocity_smoother"]["ros__parameters"],

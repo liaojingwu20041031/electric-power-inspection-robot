@@ -68,8 +68,8 @@ bt_navigator:
     # 行为树内部 TF 查询容忍时间；实车/Foxglove 目标时间戳会有几十毫秒抖动。
     transform_tolerance: 1.5
     # 默认行为树禁用恢复动作，失败时不再原地急转或后退。
-    default_bt_xml_filename: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_keepout_safe.xml"
-    default_nav_to_pose_bt_xml: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_keepout_safe.xml"
+    default_bt_xml_filename: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_no_recovery.xml"
+    default_nav_to_pose_bt_xml: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_no_recovery.xml"
     # 多点导航仍保留原文件，但当前只启用 navigate_to_pose。
     default_nav_through_poses_bt_xml: "/home/nvidia/ros2_DL/install/ylhb_base/share/ylhb_base/behavior_trees/navigate_through_poses_wait_recovery.xml"
     # 关闭 Groot 监控，减少无用端口和运行噪声。
@@ -180,10 +180,9 @@ controller_server:
       xy_goal_tolerance: 0.08
       # 低于该平移速度认为底盘已停止。
       trans_stopped_velocity: 0.03
-      # 轨迹评分器：避障、贴近路径、朝向目标、抑制振荡等。
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      # 与普通导航一致；虚拟墙由同一 InflationLayer 产生代价。
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 5.0
-      ObstacleFootprint.scale: 0.02
       PathAlign.scale: 8.0
       PathAlign.forward_point_distance: 0.1
       PathDist.scale: 10.0
@@ -228,14 +227,13 @@ local_costmap:
       footprint: "[ [0.18650, 0.00000], [0.16543, 0.10591], [0.10544, 0.19569], [0.01566, 0.25568], [-0.09025, 0.27675], [-0.19616, 0.25568], [-0.28594, 0.19569], [-0.34593, 0.10591], [-0.36700, 0.00000], [-0.34593, -0.10591], [-0.28594, -0.19569], [-0.19616, -0.25568], [-0.09025, -0.27675], [0.01566, -0.25568], [0.10544, -0.19569], [0.16543, -0.10591] ]"
       # 给实车圆柱外廓保留 10mm 参数边界；居中避障主要交给膨胀层软代价。
       footprint_padding: 0.01
-      # 局部地图也加载 keepout filter，阻止 DWB 局部轨迹切角进入禁行区。
-      filters: ["keepout_filter"]
+      # 虚拟墙作为普通 Layer，在 InflationLayer 前写入 lethal cells。
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
         enabled: True
         filter_info_topic: "/keepout_local_filter_info"
         transform_tolerance: 0.2
-      plugins: ["obstacle_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "keepout_filter", "inflation_layer"]
       obstacle_layer:
         # 激光障碍层：根据 /scan 标记和清除障碍。
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -273,15 +271,14 @@ global_costmap:
       footprint: "[ [0.18650, 0.00000], [0.16543, 0.10591], [0.10544, 0.19569], [0.01566, 0.25568], [-0.09025, 0.27675], [-0.19616, 0.25568], [-0.28594, 0.19569], [-0.34593, 0.10591], [-0.36700, 0.00000], [-0.34593, -0.10591], [-0.28594, -0.19569], [-0.19616, -0.25568], [-0.09025, -0.27675], [0.01566, -0.25568], [0.10544, -0.19569], [0.16543, -0.10591] ]"
       # 给实车圆柱外廓保留 10mm 参数边界，和 local_costmap 保持一致。
       footprint_padding: 0.01
-      # 全局 keepout filter：只在 keepout 导航模式下启用。
-      filters: ["keepout_filter"]
+      # 虚拟墙作为普通 Layer，在 InflationLayer 前写入 lethal cells。
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
         enabled: True
         filter_info_topic: "/keepout_global_filter_info"
         transform_tolerance: 0.1
-      # 全局地图使用静态地图、激光障碍层和膨胀层，让全局规划可绕开临时障碍。
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # 全局地图将虚拟墙与静态/激光障碍一起交给同一膨胀层。
+      plugins: ["static_layer", "obstacle_layer", "keepout_filter", "inflation_layer"]
       static_layer:
         # 从 map_server 订阅静态地图。
         plugin: "nav2_costmap_2d::StaticLayer"

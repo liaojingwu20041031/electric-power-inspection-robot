@@ -1445,20 +1445,19 @@ class SystemSupervisorNode(Node):
             hard_padding = ','.join(
                 f"{zone['hard_padding_m']:.3f}" for zone in zones.values()
             ) or 'n/a'
-            soft_radius = ','.join(
-                f"{zone['soft_radius_m']:.3f}" for zone in zones.values()
-            ) or 'n/a'
         except (KeyError, OSError, TypeError, ValueError) as exc:
             self.patrol_error = f'keepout mask metadata invalid: {exc}'
             return False
-        if zones and global_mask.get('weighted_cells', 0) == 0:
-            self.patrol_error = 'keepout global mask has no weighted cells'
+        if zones and (
+            global_mask.get('weighted_cells', 0) != 0
+            or local_mask.get('weighted_cells', 0) != 0
+        ):
+            self.patrol_error = 'keepout masks must not contain weighted cells'
             return False
         self.log_info(
             'keepout masks ready: '
-            f'zones={len(zones)} hard_padding={hard_padding}m soft_radius={soft_radius}m '
+            f'zones={len(zones)} hard_padding={hard_padding}m '
             f"global_hard_cells={global_mask.get('hard_cells', 0)} "
-            f"global_weighted_cells={global_mask.get('weighted_cells', 0)} "
             f"local_hard_cells={local_mask.get('hard_cells', 0)}"
         )
         return True

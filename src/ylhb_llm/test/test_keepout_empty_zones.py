@@ -149,7 +149,7 @@ def _zone(route, polygon, zone_id="keepout_001"):
             "name": zone_id,
             "type": "hard_keepout",
             "enabled": True,
-            "mask_padding_m": 0.05,
+            "mask_padding_m": 0.025,
             "polygon": polygon,
         }
     ]
@@ -161,16 +161,6 @@ def test_checker_preserves_raw_whitespace_weight(tmp_path):
     pgm.write_bytes(b"P5\n1 1\n255\n" + bytes([10]))
 
     assert _checker_module().read_pgm(pgm)[2] == bytes([10])
-
-
-def test_checker_rejects_one_sided_weighted_zone():
-    checker = _checker_module()
-    local_pixels = bytes([0, 0, 0, 0, 100, 0, 0, 0, 0])
-    global_pixels = bytes([0, 1, 0, 0, 100, 0, 0, 0, 0])
-
-    assert not checker.weighted_zone_surrounds_hard_core(
-        global_pixels, local_pixels, 3, 3
-    )
 
 
 def test_empty_zones_generate_all_free(tmp_path):
@@ -236,7 +226,7 @@ def test_no_stale_keepout_pixels_after_clearing(tmp_path):
     assert checked.returncode == 0, checked.stdout
 
 
-def test_nonempty_zones_remain_active(tmp_path):
+def test_nonempty_zones_generate_binary_virtual_walls(tmp_path):
     map_yaml = _copy_assets(tmp_path)
     output = tmp_path / "keepout"
 
@@ -259,14 +249,14 @@ def test_nonempty_zones_remain_active(tmp_path):
     assert metadata["enabled_hard_keepout_count"] == 1
     assert set(metadata["zones"].keys()) == {"keepout_001"}
     zone = metadata["zones"]["keepout_001"]
-    assert zone["soft_radius_m"] > zone["hard_padding_m"]
+    assert 0.0 <= zone["hard_padding_m"] <= 0.025
     global_pixels = _mask_pixels(output / "keepout_global_mask.pgm")
     local_pixels = _mask_pixels(output / "keepout_local_mask.pgm")
     assert {0, 100} <= set(global_pixels)
-    assert any(1 <= value <= 99 for value in global_pixels)
-    assert set(local_pixels) <= {0, 100}
+    assert set(global_pixels) <= {0, 100}
     assert {0, 100} <= set(local_pixels)
-    assert metadata["global_mask"]["weighted_cells"] > 0
+    assert global_pixels == local_pixels
+    assert metadata["global_mask"]["weighted_cells"] == 0
     assert metadata["local_mask"]["weighted_cells"] == 0
 
     checked = _check(map_yaml, route, output)

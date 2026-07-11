@@ -486,6 +486,21 @@ def test_navigation_command_uses_resolved_profile_not_capability_flag():
     )
 
 
+def test_keepout_status_accepts_binary_virtual_wall_metadata(tmp_path):
+    (tmp_path / 'keepout_masks.metadata.json').write_text(json.dumps({
+        'zones': {'keepout_001': {'hard_padding_m': 0.025}},
+        'global_mask': {'hard_cells': 1, 'weighted_cells': 0},
+        'local_mask': {'hard_cells': 1, 'weighted_cells': 0},
+    }), encoding='utf-8')
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.keepout_global_mask_path = str(tmp_path / 'keepout_global_mask.yaml')
+    node.patrol_error = ''
+    node.log_info = Mock()
+
+    assert node._log_keepout_zone_status() is True
+    assert node.patrol_error == ''
+
+
 def test_patrol_navigation_profile_selects_keepout_only_for_enabled_hard_zones():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.workspace_dir = '/ws'
