@@ -463,19 +463,56 @@ def test_start_patrol_mode_gates_start_on_nav2_action_server():
     )
 
 
-def test_navigation_command_adds_keepout_only_when_enabled():
+def test_navigation_command_uses_resolved_profile_not_capability_flag():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.workspace_dir = '/ws'
     node.default_navigation_map = '/ws/maps/my_map.yaml'
-    node.keepout_mask_path = '/ws/maps/keepout/keepout_mask_power_room_a.yaml'
-    node.enable_keepout_navigation = False
-
-    assert node.navigation_launch_command() == 'ros2 launch ylhb_base navigation.launch.py map:=/ws/maps/my_map.yaml'
-
+    node.keepout_global_mask_path = '/ws/maps/keepout/global.yaml'
+    node.keepout_local_mask_path = '/ws/maps/keepout/local.yaml'
+    node.active_patrol_navigation_mode = 'normal'
     node.enable_keepout_navigation = True
+
     assert node.navigation_launch_command() == (
         'ros2 launch ylhb_base navigation.launch.py map:=/ws/maps/my_map.yaml '
-        'enable_keepout:=true keepout_mask:=/ws/maps/keepout/keepout_mask_power_room_a.yaml'
+        'params_file:=/ws/src/ylhb_base/config/nav2_params.yaml autostart:=false'
     )
+
+    node.active_patrol_navigation_mode = 'keepout'
+    assert node.navigation_launch_command() == (
+        'ros2 launch ylhb_base navigation_keepout.launch.py map:=/ws/maps/my_map.yaml '
+        'params_file:=/ws/src/ylhb_base/config/nav2_params_keepout.yaml '
+        'keepout_global_mask:=/ws/maps/keepout/global.yaml '
+        'keepout_local_mask:=/ws/maps/keepout/local.yaml autostart:=false'
+    )
+
+
+def test_patrol_navigation_profile_selects_keepout_only_for_enabled_hard_zones():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.workspace_dir = '/ws'
+    node.default_navigation_map = '/ws/maps/my_map.yaml'
+    node.keepout_global_mask_path = '/ws/maps/keepout/global.yaml'
+    node.keepout_local_mask_path = '/ws/maps/keepout/local.yaml'
+    node.enable_keepout_navigation = True
+
+    node.patrol_navigation_profile = 'auto'
+    assert node.resolve_patrol_navigation_mode({'keepout_zones': []}) == 'normal'
+    assert node.resolve_patrol_navigation_mode({
+        'keepout_zones': [{'type': 'hard_keepout', 'enabled': False}],
+    }) == 'normal'
+    assert node.resolve_patrol_navigation_mode({
+        'keepout_zones': [{'type': 'hard_keepout', 'enabled': True}],
+    }) == 'keepout'
+
+    node.patrol_navigation_profile = 'normal'
+    with pytest.raises(ValueError, match='normal profile cannot ignore enabled hard_keepout zones'):
+        node.resolve_patrol_navigation_mode({
+            'keepout_zones': [{'type': 'hard_keepout', 'enabled': True}],
+        })
+
+    node.patrol_navigation_profile = 'keepout'
+    node.enable_keepout_navigation = False
+    with pytest.raises(ValueError, match='keepout profile requested but keepout capability is disabled'):
+        node.resolve_patrol_navigation_mode({'keepout_zones': []})
 
 
 def test_start_patrol_keepout_generation_failure_blocks_navigation_start():

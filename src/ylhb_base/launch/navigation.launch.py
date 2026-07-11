@@ -28,6 +28,7 @@ def generate_launch_description():
     map_yaml_file = LaunchConfiguration('map')
     use_sim_time = LaunchConfiguration('use_sim_time')
     params_file = LaunchConfiguration('params_file')
+    autostart = LaunchConfiguration('autostart')
 
     declare_map_yaml_cmd = DeclareLaunchArgument(
         'map',
@@ -43,6 +44,15 @@ def generate_launch_description():
         'params_file',
         default_value=os.path.join(pkg_dir, 'config', 'nav2_params.yaml'),
         description='Full path to the ROS2 parameters file to use for all launched nodes')
+
+    declare_autostart_cmd = DeclareLaunchArgument(
+        'autostart',
+        default_value='true',
+        description=(
+            'Automatically activate Nav2. Supervisor patrol startup passes '
+            'false and activates lifecycle nodes in order.'
+        ),
+    )
 
     bringup_reminder = LogInfo(
         msg=(
@@ -63,6 +73,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'map': map_yaml_file,
             'params_file': params_file,
+            'autostart': autostart,
         }.items()
     )
 
@@ -73,6 +84,7 @@ def generate_launch_description():
     ld.add_action(declare_map_yaml_cmd)
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_params_file_cmd)
+    ld.add_action(declare_autostart_cmd)
     ld.add_action(nav2_bringup_cmd)
 
     return ld

@@ -126,6 +126,9 @@ KEEPOUT_LIFECYCLE_NODES = (
     '/keepout_local_mask_server',
     '/keepout_local_filter_info_server',
 )
+NAVIGATION_PROFILE_AUTO = 'auto'
+NAVIGATION_PROFILE_NORMAL = 'normal'
+NAVIGATION_PROFILE_KEEPOUT = 'keepout'
 LIFECYCLE_MANAGER_LOCALIZATION = '/lifecycle_manager_localization/manage_nodes'
 LIFECYCLE_MANAGER_NAVIGATION = '/lifecycle_manager_navigation/manage_nodes'
 SHUTDOWN_ORDER = (
@@ -239,6 +242,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))
         self.declare_parameter('enable_keepout_navigation', True)
+        self.declare_parameter('patrol_navigation_profile', NAVIGATION_PROFILE_AUTO)
         self.declare_parameter('keepout_mask_path', workspace_path('maps', 'keepout', 'keepout_mask_power_room_a.yaml'))
         self.declare_parameter('patrol_route_path', '')
         self.declare_parameter('keepout_route_path', '')  # deprecated alias
@@ -276,6 +280,10 @@ class SystemSupervisorNode(Node):
         self.mapping3d_reconstruct_dir = os.path.expanduser(str(self.get_parameter('mapping3d_reconstruct_dir').value))
         self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
         self.enable_keepout_navigation = bool(self.get_parameter('enable_keepout_navigation').value)
+        self.patrol_navigation_profile = str(
+            self.get_parameter('patrol_navigation_profile').value
+            or NAVIGATION_PROFILE_AUTO
+        )
         self.keepout_mask_path = os.path.expanduser(str(self.get_parameter('keepout_mask_path').value))
         keepout_output_dir = os.path.dirname(self.keepout_mask_path)
         self.keepout_global_mask_path = os.path.join(
@@ -312,6 +320,9 @@ class SystemSupervisorNode(Node):
         self.patrol_mode_state = 'idle'
         self.patrol_error = ''
         self.patrol_warning = ''
+        self.active_patrol_navigation_mode = NAVIGATION_PROFILE_NORMAL
+        self.active_hard_keepout_count = 0
+        self.patrol_navigation_assets_prepared = False
         self.startup_step = ''
         self.last_patrol_status: Dict[str, Any] = {}
         self.last_patrol_status_received_at = 0.0
@@ -692,7 +703,7 @@ class SystemSupervisorNode(Node):
         return True
 
     def start_navigation_process(self) -> bool:
-        if not self.prepare_patrol_navigation_assets():
+        if not getattr(self, 'patrol_navigation_assets_prepared', False) and not self.prepare_patrol_navigation_assets():
             self.set_result('start_navigation', False, '导航资源准备失败: ' + self.patrol_error)
             return False
         return self.start_process_raw('navigation')
@@ -882,20 +893,82 @@ class SystemSupervisorNode(Node):
             return
         if navigation_running:
             self.stop_process('navigation')
+            self.startup_generation = getattr(self, 'startup_generation', 0) + 1
+            generation = self.startup_generation
+            self.startup_id = f'patrol_reload_{int(time.time() * 1000)}_{generation}'
+            self.startup_started_at = time.time()
+            self.patrol_start_cancel_event = threading.Event()
+            self.initial_pose_service_ok = False
+            self.initial_pose_confirmed_at = 0.0
+            self.localization_lifecycle_started = False
+            self.navigation_lifecycle_started = False
             if not self.start_process_raw('navigation'):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
-            if not self.wait_for_navigation_ready(self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)):
+            if not self.wait_for_lifecycle_manager_services(15.0):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
             if not self.wait_for_nav2_components_loaded(15.0):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
-            if not self.wait_for_keepout_runtime_ready(12.0):
+            if not self.manage_lifecycle_nodes(
+                LIFECYCLE_MANAGER_LOCALIZATION,
+                ManageLifecycleNodes.Request.STARTUP,
+                timeout_sec=10.0,
+            ):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: localization lifecycle 启动失败')
+                return
+            self.localization_lifecycle_started = True
+            if not self.wait_for_lifecycle_nodes_active(
+                LOCALIZATION_LIFECYCLE_NODES,
+                self.patrol_timeout('patrol_localization_timeout_sec', 25.0),
+            ):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: AMCL 尚未 active')
+                return
+            if not self.wait_for_navigation_ready(self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
+                return
+            if (
+                self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT
+                and not self.wait_for_lifecycle_nodes_active(
+                    KEEPOUT_LIFECYCLE_NODES, 12.0
+                )
+            ):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: Keepout lifecycle 尚未 active')
+                return
+            if not self.initialize_amcl_with_confirmation(generation):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: AMCL 初始定位失败')
+                return
+            if not self.wait_for_stable_map_to_odom(
+                timeout_sec=10.0,
+                stable_duration_sec=1.0,
+                after_amcl=self.initial_pose_request_sent_at,
+                generation=generation,
+            ):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: map->odom 未稳定')
+                return
+            if not self.manage_lifecycle_nodes(
+                LIFECYCLE_MANAGER_NAVIGATION,
+                ManageLifecycleNodes.Request.STARTUP,
+                timeout_sec=12.0,
+            ):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: navigation lifecycle 启动失败')
+                return
+            self.navigation_lifecycle_started = True
+            if not self.wait_for_lifecycle_nodes_active(
+                NAVIGATION_LIFECYCLE_NODES,
+                self.patrol_timeout('patrol_nav2_timeout_sec', 25.0),
+            ):
+                self.set_result('reload_patrol_route', False, '路线刷新失败: Nav2 节点尚未全部 active')
+                return
+            if (
+                self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT
+                and not self.wait_for_keepout_runtime_ready(12.0)
+            ):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
         self.publish_patrol_command('reload')
-        self.set_result('reload_patrol_route', True, '路线与禁行区已整体刷新')
+        self.set_result('reload_patrol_route', True, '巡逻路线已刷新')
 
     def start_patrol_mode(self, profile: str = 'navigation', route_id: str = '') -> None:
         profile = profile if profile in ('navigation', 'inspection') else 'navigation'
@@ -943,6 +1016,20 @@ class SystemSupervisorNode(Node):
         self.patrol_mode_state = 'starting'
         self.patrol_error = ''
         self.patrol_warning = ''
+        self.patrol_navigation_assets_prepared = False
+        if not self.prepare_patrol_navigation_assets():
+            self.fail_patrol_start(self.patrol_error or '导航资源准备失败', generation=generation)
+            return
+        self.patrol_navigation_assets_prepared = True
+        self.log_info(
+            'patrol navigation '
+            f'profile={self.patrol_navigation_profile} '
+            f'mode={self.active_patrol_navigation_mode} '
+            f'enabled hard_keepout count={self.active_hard_keepout_count} '
+            f'launch={os.path.basename(self.navigation_launch_file())} '
+            f'params={self.navigation_params_file_name()} '
+            f'keepout required={self.keepout_required()}'
+        )
         self.log_info('start_patrol_mode: 按手动流程启动巡逻')
 
         def gate(ok: bool, error: str) -> bool:
@@ -1009,12 +1096,13 @@ class SystemSupervisorNode(Node):
             '地图或 initialpose 订阅尚未就绪',
         ):
             return
-        # 9. keepout mask lifecycle active
-        if not gate(
-            self.wait_for_lifecycle_nodes_active(KEEPOUT_LIFECYCLE_NODES, 12.0),
-            'Keepout lifecycle 尚未 active',
-        ):
-            return
+        # 9. Keepout lifecycle is only part of the keepout profile.
+        if self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT:
+            if not gate(
+                self.wait_for_lifecycle_nodes_active(KEEPOUT_LIFECYCLE_NODES, 12.0),
+                'Keepout lifecycle 尚未 active',
+            ):
+                return
         # 10. AMCL initial pose via /set_initial_pose service
         if not gate(
             self.initialize_amcl_with_confirmation(generation),
@@ -1052,12 +1140,13 @@ class SystemSupervisorNode(Node):
             'Nav2 节点尚未全部 active',
         ):
             return
-        # 14. global/local costmap received keepout mask
-        if not gate(
-            self.wait_for_keepout_runtime_ready(12.0),
-            'global/local costmap 尚未收到 keepout info 和 mask',
-        ):
-            return
+        # 14. Keepout runtime data is only required by the keepout profile.
+        if self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT:
+            if not gate(
+                self.wait_for_keepout_runtime_ready(12.0),
+                'global/local costmap 尚未收到 keepout info 和 mask',
+            ):
+                return
         # 15. patrol executor (no auto initial pose)
         self.startup_step = 'starting_executor'
         started_at = time.time()
@@ -1224,17 +1313,66 @@ class SystemSupervisorNode(Node):
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.patrol_command_pub.publish(msg)
 
-    def navigation_launch_command(self) -> str:
-        default_map = getattr(self, 'default_navigation_map', workspace_path('maps', 'my_map.yaml'))
-        if getattr(self, 'enable_keepout_navigation', False):
+    def active_hard_keepout_zones(self, route: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return [
+            zone
+            for zone in route.get('keepout_zones', [])
+            if zone.get('enabled') is True and zone.get('type') == 'hard_keepout'
+        ]
+
+    def resolve_patrol_navigation_mode(self, route: Dict[str, Any]) -> str:
+        requested = str(
+            getattr(self, 'patrol_navigation_profile', NAVIGATION_PROFILE_AUTO)
+            or NAVIGATION_PROFILE_AUTO
+        )
+        zones = self.active_hard_keepout_zones(route)
+        if requested == NAVIGATION_PROFILE_AUTO:
+            return NAVIGATION_PROFILE_KEEPOUT if zones else NAVIGATION_PROFILE_NORMAL
+        if requested == NAVIGATION_PROFILE_NORMAL:
+            if zones:
+                raise ValueError('normal profile cannot ignore enabled hard_keepout zones')
+            return NAVIGATION_PROFILE_NORMAL
+        if requested == NAVIGATION_PROFILE_KEEPOUT:
+            if not getattr(self, 'enable_keepout_navigation', False):
+                raise ValueError('keepout profile requested but keepout capability is disabled')
+            return NAVIGATION_PROFILE_KEEPOUT
+        raise ValueError(f'invalid patrol_navigation_profile: {requested}')
+
+    def keepout_required(self, mode: Optional[str] = None) -> bool:
+        return (mode or getattr(self, 'active_patrol_navigation_mode', '')) == NAVIGATION_PROFILE_KEEPOUT
+
+    def navigation_launch_file(self, mode: Optional[str] = None) -> str:
+        return (
+            'navigation_keepout.launch.py'
+            if self.keepout_required(mode)
+            else 'navigation.launch.py'
+        )
+
+    def navigation_params_file_name(self, mode: Optional[str] = None) -> str:
+        return (
+            'nav2_params_keepout.yaml'
+            if self.keepout_required(mode)
+            else 'nav2_params.yaml'
+        )
+
+    def navigation_launch_command(self, mode: Optional[str] = None) -> str:
+        mode = mode or getattr(self, 'active_patrol_navigation_mode', NAVIGATION_PROFILE_NORMAL)
+        default_map = self.default_navigation_map
+        if mode == NAVIGATION_PROFILE_KEEPOUT:
             return (
-                f'ros2 launch ylhb_base navigation_keepout.launch.py '
+                'ros2 launch ylhb_base navigation_keepout.launch.py '
                 f'map:={default_map} '
+                f'params_file:={self.workspace_dir}/src/ylhb_base/config/nav2_params_keepout.yaml '
                 f'keepout_global_mask:={self.keepout_global_mask_path} '
                 f'keepout_local_mask:={self.keepout_local_mask_path} '
                 'autostart:=false'
             )
-        return f'ros2 launch ylhb_base navigation.launch.py map:={default_map}'
+        return (
+            'ros2 launch ylhb_base navigation.launch.py '
+            f'map:={default_map} '
+            f'params_file:={self.workspace_dir}/src/ylhb_base/config/nav2_params.yaml '
+            'autostart:=false'
+        )
 
     def prepare_keepout_navigation(self) -> bool:
         if not hasattr(self, 'default_navigation_map'):
@@ -1242,8 +1380,6 @@ class SystemSupervisorNode(Node):
         return self.prepare_patrol_navigation_assets()
 
     def prepare_patrol_navigation_assets(self) -> bool:
-        if getattr(self, 'processes', None) and 'navigation' in self.processes:
-            self.processes['navigation'].command = self.navigation_launch_command()
         try:
             if not os.path.isfile(self.default_navigation_map):
                 raise ValueError(f'map yaml missing: {self.default_navigation_map}')
@@ -1251,16 +1387,22 @@ class SystemSupervisorNode(Node):
                 raise ValueError(f'patrol route missing: {self.patrol_route_path}')
             route = load_route_file(self.patrol_route_path)
             validate_route_map_binding(route, self.default_navigation_map)
+            mode = self.resolve_patrol_navigation_mode(route)
         except Exception as exc:
             self.patrol_error = str(exc)
             return False
-        safety = self.run_route_safety_check()
+        self.active_patrol_navigation_mode = mode
+        self.active_hard_keepout_count = len(self.active_hard_keepout_zones(route))
+        if getattr(self, 'processes', None) and 'navigation' in self.processes:
+            self.processes['navigation'].command = self.navigation_launch_command(mode)
+        safety = self.run_route_safety_check(mode)
         if safety == 'unsafe':
             self.patrol_error = '巡逻路线安全校验失败'
             return False
         if safety == 'error':
             return False
-        if not getattr(self, 'enable_keepout_navigation', False):
+        if mode == NAVIGATION_PROFILE_NORMAL:
+            self.patrol_error = ''
             return True
         if self.check_keepout_setup():
             self._log_keepout_zone_status()
@@ -1287,26 +1429,12 @@ class SystemSupervisorNode(Node):
         return True
 
     def _log_keepout_zone_status(self) -> None:
-        try:
-            route = load_route_file(self.patrol_route_path)
-            zones = [
-                zone for zone in route.get('keepout_zones', [])
-                if zone.get('enabled') is True and zone.get('type') == 'hard_keepout'
-            ]
-        except Exception:
-            return
-        if not zones:
-            self.log_info(
-                'keepout route contains no enabled zones; '
-                'using all-free global/local masks'
-            )
-
-    def run_route_safety_check(self) -> str:
-        nav2_params_name = (
-            'nav2_params_keepout.yaml'
-            if self.enable_keepout_navigation
-            else 'nav2_params.yaml'
+        self.log_info(
+            f'keepout profile enabled hard_keepout count={self.active_hard_keepout_count}'
         )
+
+    def run_route_safety_check(self, mode: Optional[str] = None) -> str:
+        nav2_params_name = self.navigation_params_file_name(mode)
         command = [
             'python3', os.path.join(self.workspace_dir, 'scripts', 'validate_route_safety.py'),
             '--map', self.default_navigation_map,
@@ -1502,6 +1630,10 @@ class SystemSupervisorNode(Node):
         bringup = processes.get('bringup')
         navigation = processes.get('navigation')
         sensors = self.core_sensor_status()
+        keepout_required = self.keepout_required()
+        keepout_lifecycle_active = self.lifecycle_nodes_cached_active(
+            KEEPOUT_LIFECYCLE_NODES
+        )
         readiness = {
             'bringup': bool(bringup and bringup.is_running()),
             'navigation': bool(navigation and navigation.is_running()),
@@ -1520,8 +1652,10 @@ class SystemSupervisorNode(Node):
             'nav2_components_loaded': self.nav2_components_loaded(),
             'nav2_action_discovered': self.has_nav2_action(),
             'nav2_active': self.compute_nav2_active(),
-            'keepout_active': self.lifecycle_nodes_cached_active(
-                KEEPOUT_LIFECYCLE_NODES
+            'keepout_required': keepout_required,
+            'keepout_lifecycle_active': keepout_lifecycle_active,
+            'keepout_ready': not keepout_required or (
+                keepout_lifecycle_active and self.has_keepout_runtime_ready()
             ),
 
             'patrol_status': self.topic_has_publishers('/patrol/status'),
@@ -1545,6 +1679,7 @@ class SystemSupervisorNode(Node):
         bringup = processes.get('bringup')
         navigation = processes.get('navigation')
         executor = processes.get('patrol_executor')
+        keepout_required = self.keepout_required()
         return {
             'bringup': bool(bringup and bringup.is_running()),
             'navigation': bool(navigation and navigation.is_running()),
@@ -1560,7 +1695,9 @@ class SystemSupervisorNode(Node):
             'nav2_components_loaded': False,
             'nav2_action_discovered': False,
             'nav2_active': False,
-            'keepout_active': False,
+            'keepout_required': keepout_required,
+            'keepout_lifecycle_active': False,
+            'keepout_ready': not keepout_required,
             'patrol_status': False,
             'initial_pose_published': False,
             'set_initial_pose_service': False,
@@ -1779,12 +1916,11 @@ class SystemSupervisorNode(Node):
         )
 
     def wait_for_keepout_active_ready(self, timeout_sec: float = 12.0) -> bool:
-        if not getattr(self, 'enable_keepout_navigation', False):
+        if not self.keepout_required():
             return True
-        return self.wait_for_readiness_keys(
-            ('keepout_active',),
+        return self.wait_for_lifecycle_nodes_active(
+            KEEPOUT_LIFECYCLE_NODES,
             timeout_sec,
-            error_prefix='Keepout lifecycle 未激活',
         )
 
     def wait_for_patrol_executor_ready(self, timeout_sec: float = 15.0) -> bool:
@@ -2168,11 +2304,13 @@ class SystemSupervisorNode(Node):
         )
 
     def has_keepout_runtime_ready(self) -> bool:
-        if not getattr(self, 'enable_keepout_navigation', False):
+        if not self.keepout_required():
             return True
         return all(self.keepout_subscription_status().values())
 
     def keepout_subscription_status(self) -> Dict[str, bool]:
+        if not self.keepout_required():
+            return {}
         global_info = '/keepout_global_filter_info'
         global_mask = '/keepout_global_mask'
         local_info = '/keepout_local_filter_info'
@@ -2213,7 +2351,7 @@ class SystemSupervisorNode(Node):
         self,
         timeout_sec: float = 12.0,
     ) -> bool:
-        if not getattr(self, 'enable_keepout_navigation', False):
+        if not self.keepout_required():
             return True
         deadline = time.monotonic() + timeout_sec
 
@@ -2395,6 +2533,17 @@ class SystemSupervisorNode(Node):
             patrol_readiness = self.build_patrol_readiness()
         else:
             patrol_readiness = self.build_light_patrol_readiness()
+        keepout_required = self.keepout_required()
+        keepout_lifecycle_active = self.lifecycle_nodes_cached_active(
+            KEEPOUT_LIFECYCLE_NODES
+        ) if keepout_required else False
+        keepout_status = {
+            'required': keepout_required,
+            'ready': not keepout_required or self.has_keepout_runtime_ready(),
+            'lifecycle_active': keepout_lifecycle_active,
+        }
+        if keepout_required:
+            keepout_status.update(self.keepout_subscription_status())
         payload.update({
             'mobile_bridge_http': self.mobile_bridge_http,
             'mobile_bridge_url': self.mobile_bridge_url,
@@ -2403,6 +2552,18 @@ class SystemSupervisorNode(Node):
             'patrol_readiness': patrol_readiness,
             'patrol_error': getattr(self, 'patrol_error', ''),
             'patrol_warning': getattr(self, 'patrol_warning', ''),
+            'patrol_navigation_profile': getattr(
+                self, 'patrol_navigation_profile', NAVIGATION_PROFILE_AUTO
+            ),
+            'patrol_navigation_mode': getattr(
+                self, 'active_patrol_navigation_mode', NAVIGATION_PROFILE_NORMAL
+            ),
+            'enabled_hard_keepout_count': getattr(self, 'active_hard_keepout_count', 0),
+            'navigation_launch_file': self.navigation_launch_file(),
+            'nav2_params_file': self.navigation_params_file_name(),
+            'keepout_required': keepout_required,
+            'keepout_ready': keepout_status['ready'],
+            'keepout_lifecycle_active': keepout_lifecycle_active,
             'lifecycle': {
                 name.lstrip('/'): self.lifecycle_states.get(name, 'unknown')
                 for name in (
@@ -2418,7 +2579,7 @@ class SystemSupervisorNode(Node):
                 'map_to_laser': self.has_transform('map', 'laser_link'),
                 'map_to_odom_stable_sec': self.map_to_odom_stable_sec(),
             },
-            'keepout': self.keepout_subscription_status(),
+            'keepout': keepout_status,
             'startup_step': getattr(self, 'startup_step', ''),
             'startup_step_label': STARTUP_STEP_LABELS.get(
                 getattr(self, 'startup_step', ''),

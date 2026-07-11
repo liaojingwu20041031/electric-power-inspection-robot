@@ -143,6 +143,7 @@ controller_server:
     goal_checker_plugins: ["goal_checker"]
 
     FollowPath:
+      # 旧控制器基线 + 当前 2.5cm 地图实机膨胀适配见 costmap InflationLayer。
       # DWB 局部规划器：根据路径、障碍物和目标方向采样速度。
       plugin: "dwb_core::DWBLocalPlanner"
       # 关闭轨迹调试，降低控制循环日志和计算开销。
@@ -249,10 +250,10 @@ local_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.10
       inflation_layer:
-        # 障碍膨胀层扩大动态障碍安全距离，低速下优先绕行或停车。
+        # 旧控制器基线 + 当前地图实机膨胀适配；6.0/0.20 已在 2.5cm 地图验证。
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.35
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.20
 
 global_costmap:
   global_costmap:
@@ -264,6 +265,7 @@ global_costmap:
       robot_base_frame: base_footprint
       use_sim_time: False
       transform_tolerance: 1.5
+      # 全局 costmap 保持与当前 2.5cm 静态地图一致，不下采样。
       resolution: 0.025
       # 未知区域保留为未知，规划器是否可穿越由 allow_unknown 控制。
       track_unknown_space: true
@@ -293,10 +295,10 @@ global_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.10
       inflation_layer:
-        # 障碍膨胀层扩大静态地图安全距离，和 local_costmap 保持一致。
+        # 旧控制器基线 + 当前地图实机膨胀适配；和 local_costmap 保持一致。
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.35
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.20
 
 map_server:
   ros__parameters:
