@@ -2,6 +2,8 @@ import json
 import time
 from typing import Any, Dict
 
+from .agent_protocol import TOOL_RESULT_STATUSES
+
 
 ALLOWED_TOOLS = {
     'get_system_status',
@@ -20,7 +22,6 @@ DANGEROUS_TOOLS = {'/cmd_vel', 'cmd_vel', 'nav2_goal', 'delete_map', 'edit_route
 MOTION_COMMANDS = {'前进', '后退', '左转', '右转', '停止'}
 RESPONSE_TYPES = {'tool_call', 'final_answer', 'status_reply', 'reject', 'ignore'}
 SAFETY_LEVELS = {'emergency', 'normal', 'requires_confirm', 'blocked'}
-RESULT_STATUSES = {'sent', 'done', 'rejected', 'failed', 'timeout', 'ok'}
 LEGACY_RESPONSE_TYPES = {'tool': 'tool_call', 'final': 'final_answer'}
 LEGACY_SAFETY_LEVELS = {'critical': 'emergency', 'safe': 'normal'}
 REQUIRED_DECISION_FIELDS = {
@@ -155,7 +156,7 @@ def tool_result(
     data: Dict[str, Any] | None = None,
     error_code: str = '',
 ) -> Dict[str, Any]:
-    if str(status) not in RESULT_STATUSES:
+    if str(status) not in TOOL_RESULT_STATUSES:
         raise SchemaError('invalid tool result status')
     return {
         'schema_version': '1.0',

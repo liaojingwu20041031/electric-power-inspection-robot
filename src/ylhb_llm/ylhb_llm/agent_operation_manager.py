@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import time
+import threading
 import uuid
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict
 
+from .agent_protocol import (
+    LEGACY_OPERATION_STATES,
+    OPERATION_STATES,
+    OPERATION_TRANSITIONS,
+    TERMINAL_OPERATION_STATES,
+)
 
-TERMINAL_STATES = {'succeeded', 'failed', 'canceled', 'timeout'}
-OPERATION_STATES = {'created', 'sent', 'accepted', 'running'} | TERMINAL_STATES
+TERMINAL_STATES = TERMINAL_OPERATION_STATES
 
 
 @dataclass
@@ -28,9 +35,14 @@ class AgentOperation:
 class AgentOperationManager:
     """In-memory operation ledger; ROS callbacks provide all state changes."""
 
-    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, max_operations: int = 128, clock: Callable[[], float] = time.time) -> None:
         self.clock = clock
+        self.max_operations = max(1, int(max_operations))
         self._operations: Dict[str, AgentOperation] = {}
+        self._order: deque[str] = deque()
+        self._by_run_tool: Dict[tuple[str, str], str] = {}
+        self._lock = threading.RLock()
+        self._changed = threading.Condition(self._lock)
 
     def create(
         self,
@@ -55,7 +67,16 @@ class AgentOperationManager:
             timeout_sec=float(timeout_sec),
             result={'ok': True, 'status': 'created', 'message': '操作已创建'},
         )
-        self._operations[operation.operation_id] = operation
+        with self._changed:
+            while len(self._order) >= self.max_operations:
+                old_id = self._order.popleft()
+                old = self._operations.pop(old_id, None)
+                if old is not None:
+                    self._by_run_tool.pop((old.run_id, old.tool_call_id), None)
+            self._operations[operation.operation_id] = operation
+            self._order.append(operation.operation_id)
+            self._by_run_tool[(run_id, tool_call_id)] = operation.operation_id
+            self._changed.notify_all()
         return operation
 
     def mark_sent(self, operation_id: str, now: float | None = None) -> AgentOperation:
@@ -68,42 +89,54 @@ class AgentOperationManager:
         result: dict | None = None,
         now: float | None = None,
     ) -> AgentOperation:
+        state = LEGACY_OPERATION_STATES.get(state, state)
         if state not in OPERATION_STATES:
             raise ValueError(f'unknown operation state: {state}')
-        operation = self._operations[operation_id]
-        if operation.state in TERMINAL_STATES:
+        with self._changed:
+            operation = self._operations[operation_id]
+            if operation.state in TERMINAL_STATES:
+                return operation
+            if state != operation.state and state not in OPERATION_TRANSITIONS.get(operation.state, set()):
+                raise ValueError(f'invalid operation transition: {operation.state} -> {state}')
+            timestamp = self.clock() if now is None else now
+            operation.state = state
+            if state in {'accepted', 'running'} and operation.accepted_at is None:
+                operation.accepted_at = timestamp
+            if state in TERMINAL_STATES:
+                operation.finished_at = timestamp
+            if result is not None:
+                operation.result = dict(result)
+            self._changed.notify_all()
             return operation
-        timestamp = self.clock() if now is None else now
-        operation.state = state
-        if state in {'accepted', 'running'} and operation.accepted_at is None:
-            operation.accepted_at = timestamp
-        if state in TERMINAL_STATES:
-            operation.finished_at = timestamp
-        if result is not None:
-            operation.result = dict(result)
-        return operation
 
     def get(self, operation_id: str, now: float | None = None) -> dict:
-        operation = self._operations[operation_id]
-        self._expire(operation, self.clock() if now is None else now)
-        return asdict(operation)
+        with self._changed:
+            operation = self._operations[operation_id]
+            self._expire(operation, self.clock() if now is None else now)
+            return asdict(operation)
 
     def list_active(self, now: float | None = None) -> list[dict]:
         timestamp = self.clock() if now is None else now
-        return [
-            asdict(operation)
-            for operation in self._operations.values()
-            if not self._expire(operation, timestamp) and operation.state not in TERMINAL_STATES
-        ]
+        with self._changed:
+            return [
+                asdict(operation)
+                for operation in self._operations.values()
+                if not self._expire(operation, timestamp) and operation.state not in TERMINAL_STATES
+            ]
+
+    def find(self, run_id: str, tool_call_id: str) -> dict | None:
+        with self._lock:
+            operation_id = self._by_run_tool.get((run_id, tool_call_id))
+            return self.get(operation_id) if operation_id else None
 
     def wait(self, operation_id: str, timeout_sec: float, poll_sec: float = 0.1) -> dict:
         deadline = time.monotonic() + max(0.0, timeout_sec)
-        while time.monotonic() < deadline:
-            operation = self.get(operation_id)
-            if operation['state'] in TERMINAL_STATES:
-                return operation
-            time.sleep(min(poll_sec, max(0.0, deadline - time.monotonic())))
-        return self.get(operation_id)
+        with self._changed:
+            while True:
+                operation = self.get(operation_id)
+                if operation['state'] in TERMINAL_STATES or time.monotonic() >= deadline:
+                    return operation
+                self._changed.wait(min(poll_sec, max(0.0, deadline - time.monotonic())))
 
     @staticmethod
     def _expire(operation: AgentOperation, now: float) -> bool:
