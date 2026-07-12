@@ -100,6 +100,15 @@ class AgentTools:
             self.publish_event(result)
             return result
 
+        schema = self.tool_schemas.get(name) or {}
+        if schema.get('side_effect', 'none') != 'none' and self.operation_manager is None:
+            result = tool_result(
+                name, False, 'failed', 'operation manager unavailable',
+                error_code='operation_manager_unavailable',
+            )
+            self.publish_event(result)
+            return result
+
         operation = self._create_operation(decision, args)
         if operation is not None:
             decision = {**decision, 'operation_id': operation.operation_id}
@@ -141,9 +150,11 @@ class AgentTools:
 
     def _create_operation(self, decision: Dict[str, Any], arguments: Dict[str, Any]):
         name = str((decision.get('tool_call') or {}).get('name') or '')
-        if self.operation_manager is None or name not in SYSTEM_TOOLS | BASE_SKILL_TOOLS | {'start_route', 'go_to_checkpoint'}:
+        if self.operation_manager is None:
             return None
         schema = self.tool_schemas.get(name) or {}
+        if schema.get('side_effect', 'none') == 'none':
+            return None
         return self.operation_manager.create(
             str(decision.get('run_id') or decision.get('decision_id') or ''),
             str(decision.get('tool_call_id') or ''),

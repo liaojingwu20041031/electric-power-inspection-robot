@@ -12,16 +12,21 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
+from sensor_msgs.msg import LaserScan
 
 from .agent_chat_schema import make_agent_chat
 from .agent_schema import SchemaError, tool_result
 from .agent_state import AgentState
 from .agent_tools import AgentTools
+from .agent_operation_manager import AgentOperationManager
 from .inspection_agent_runtime import InspectionAgentRuntime, decide_local
 from .inspection_agent_spec import InspectionAgentSpecBuilder
 from .openai_tool_client import OpenAIToolClient, OpenAIToolClientError
 from .route_toolpack import RouteCatalog, RouteToolPack
 from .skill_toolpack import SkillToolPack
+from .robot_status_aggregator import RobotStatusAggregator
 from ylhb_mobile_bridge.patrol_route_store import default_workspace_dir, resolve_route_file_path
 
 
@@ -48,6 +53,17 @@ class InspectionAgentNode(Node):
         self.declare_parameter('system_status_topic', '/inspection_ai/system_status')
         self.declare_parameter('patrol_status_topic', '/patrol/status')
         self.declare_parameter('voice_session_status_topic', '/inspection_ai/voice_session_status')
+        self.declare_parameter('base_skill_status_topic', '/inspection_ai/base_skill_status')
+        self.declare_parameter('zlac_status_topic', '/zlac8015d/status')
+        self.declare_parameter('odom_topic', '/odom')
+        self.declare_parameter('amcl_pose_topic', '/amcl_pose')
+        self.declare_parameter('scan_topic', '/scan')
+        self.declare_parameter('localized_objects_topic', '/perception/localized_objects')
+        self.declare_parameter('task_status_topic', '/inspection_ai/task_status')
+        self.declare_parameter('status_default_max_age_sec', 2.5)
+        self.declare_parameter('operation_history_limit', 128)
+        self.declare_parameter('operation_poll_sec', 0.1)
+        self.declare_parameter('operation_ack_timeout_sec', 8.0)
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
         self.declare_parameter('planner_provider_name', 'dashscope')
         self.declare_parameter('planner_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
@@ -70,6 +86,11 @@ class InspectionAgentNode(Node):
         self.declare_parameter('max_identical_tool_calls', 2)
 
         self.state = AgentState()
+        self.status_default_max_age_sec = float(self.get_parameter('status_default_max_age_sec').value)
+        self.operation_manager = AgentOperationManager(
+            max_operations=int(self.get_parameter('operation_history_limit').value),
+        )
+        self.status_aggregator = RobotStatusAggregator(self.status_default_max_age_sec)
         self.planner = OpenAIToolClient(
             provider_name=str(self.get_parameter('planner_provider_name').value),
             base_url=str(self.get_parameter('planner_base_url').value),
@@ -119,6 +140,8 @@ class InspectionAgentNode(Node):
             base_skill_pub=self.base_skill_pub,
             route_toolpack=self.route_toolpack,
             tool_schemas=self.tool_schemas,
+            operation_manager=self.operation_manager,
+            status_aggregator=self.status_aggregator,
         )
         self.agent_spec = InspectionAgentSpecBuilder(
             self.route_toolpack,
@@ -147,6 +170,13 @@ class InspectionAgentNode(Node):
         self.create_subscription(String, self.get_parameter('system_status_topic').value, self.system_status_callback, latched_qos())
         self.create_subscription(String, self.get_parameter('patrol_status_topic').value, self.patrol_status_callback, 10)
         self.create_subscription(String, self.get_parameter('voice_session_status_topic').value, self.voice_status_callback, latched_qos())
+        self.create_subscription(String, self.get_parameter('base_skill_status_topic').value, self.base_skill_status_callback, 10)
+        self.create_subscription(String, self.get_parameter('zlac_status_topic').value, self.chassis_status_callback, 10)
+        self.create_subscription(Odometry, self.get_parameter('odom_topic').value, self.odom_callback, 10)
+        self.create_subscription(PoseWithCovarianceStamped, self.get_parameter('amcl_pose_topic').value, self.amcl_pose_callback, 10)
+        self.create_subscription(LaserScan, self.get_parameter('scan_topic').value, self.scan_callback, 10)
+        self.create_subscription(String, self.get_parameter('localized_objects_topic').value, self.perception_callback, 10)
+        self.create_subscription(String, self.get_parameter('task_status_topic').value, self.task_status_callback, 10)
         self.publish_status()
         self.get_logger().info(
             'inspection agent node started: '
@@ -306,19 +336,62 @@ class InspectionAgentNode(Node):
 
     def system_status_callback(self, msg: String) -> None:
         self.state.system_status = self.parse_payload(msg.data)
+        self.status_aggregator.update('system_status', self.state.system_status)
+        self.update_operation_from_feedback(self.state.system_status)
         self.publish_status()
 
     def patrol_status_callback(self, msg: String) -> None:
         self.state.patrol_status = self.parse_payload(msg.data)
+        self.status_aggregator.update('patrol_status', self.state.patrol_status)
+        self.update_operation_from_feedback(self.state.patrol_status)
         self.publish_status()
 
     def voice_status_callback(self, msg: String) -> None:
         self.state.voice_status = self.parse_payload(msg.data)
+        self.status_aggregator.update('voice_status', self.state.voice_status)
         self.publish_status()
+
+    def base_skill_status_callback(self, msg: String) -> None:
+        payload = self.parse_payload(msg.data)
+        self.status_aggregator.update('base_skill_status', payload)
+        self.update_operation_from_feedback(payload)
+
+    def chassis_status_callback(self, msg: String) -> None:
+        self.status_aggregator.update('chassis_status', self.parse_payload(msg.data))
+
+    def odom_callback(self, msg: Odometry) -> None:
+        pose = msg.pose.pose
+        self.status_aggregator.update('odom', {'x': pose.position.x, 'y': pose.position.y})
+
+    def amcl_pose_callback(self, msg: PoseWithCovarianceStamped) -> None:
+        pose = msg.pose.pose
+        self.status_aggregator.update('amcl_pose', {'x': pose.position.x, 'y': pose.position.y})
+
+    def scan_callback(self, _msg: LaserScan) -> None:
+        self.status_aggregator.update('scan', {'state': 'ok'})
+
+    def perception_callback(self, msg: String) -> None:
+        self.status_aggregator.update('perception', self.parse_payload(msg.data))
+
+    def task_status_callback(self, msg: String) -> None:
+        self.status_aggregator.update('task_status', self.parse_payload(msg.data))
+
+    def update_operation_from_feedback(self, payload: Dict[str, Any]) -> None:
+        operation_id = str(payload.get('operation_id') or '')
+        state = str(payload.get('state') or payload.get('status') or '')
+        state = {'done': 'succeeded', 'cancelled': 'canceled', 'rejected': 'failed'}.get(state, state)
+        if not operation_id or not state:
+            return
+        try:
+            self.operation_manager.update(operation_id, state, payload)
+        except (KeyError, ValueError):
+            return
 
     def publish_status(self) -> None:
         msg = String()
         payload = self.state.snapshot()
+        payload['robot_summary'] = self.status_aggregator.summary()
+        payload['active_operations'] = self.operation_manager.list_active()
         payload['agent_spec_summary'] = self.agent_spec.summary() if hasattr(self, 'agent_spec') else {}
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.status_pub.publish(msg)

@@ -3,7 +3,9 @@ import queue
 from types import SimpleNamespace
 
 from ylhb_llm.agent_state import AgentState
+from ylhb_llm.agent_operation_manager import AgentOperationManager
 from ylhb_llm.inspection_agent_node import InspectionAgentNode, decide_local
+from ylhb_llm.robot_status_aggregator import RobotStatusAggregator
 
 
 class FakeRuntime:
@@ -59,6 +61,8 @@ def make_node(runtime=None, now=100.0):
     node.seen_request_ids = set()
     node.seen_request_order = __import__('collections').deque(maxlen=256)
     node.request_queue = queue.Queue()
+    node.operation_manager = AgentOperationManager(clock=lambda: now)
+    node.status_aggregator = RobotStatusAggregator(clock=lambda: now)
     node.last_error_tts = {}
     node.agent_spec = SimpleNamespace(summary=lambda: {'name': 'inspection_agent'})
     node.publish_status = lambda: InspectionAgentNode.publish_status(node)

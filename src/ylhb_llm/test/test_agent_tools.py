@@ -148,6 +148,7 @@ def test_side_effect_tool_creates_operation_and_forwards_correlation_ids():
         FakePub(), FakePub(), FakePub(), FakePub(),
         base_skill_pub=base_skill_pub,
         operation_manager=manager,
+        tool_schemas={'rotate_relative': {'side_effect': 'robot_motion', 'timeout_sec': 12.0}},
     )
     decision = {
         'decision_id': 'decision_1',
