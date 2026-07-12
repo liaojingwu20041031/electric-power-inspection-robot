@@ -28,8 +28,14 @@ inspection_agent_node:
     patrol_status_topic: /patrol/status
     voice_session_status_topic: /inspection_ai/voice_session_status
     say_text_topic: /inspection_ai/say_text
-    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    chat_model: qwen3.7-plus
+    planner_provider_name: dashscope
+    planner_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    planner_model: qwen3.7-plus
+    planner_api_key_env: DASHSCOPE_API_KEY
+    planner_api_key_required: true
+    planner_chat_path: /chat/completions
+    planner_models_path: /models
+    planner_extra_body_json: '{"enable_thinking": false}'
     request_timeout_sec: 12.0
     enable_llm_planner: true
     offline_safe_mode: true

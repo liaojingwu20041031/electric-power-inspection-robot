@@ -71,7 +71,7 @@ class ToolResult:
 class InspectionAgentRuntime:
     def __init__(
         self,
-        qwen,
+        planner,
         tools,
         state,
         spec,
@@ -84,7 +84,7 @@ class InspectionAgentRuntime:
         max_side_effect_tools_per_turn: int = 4,
         max_identical_tool_calls: int = 2,
     ) -> None:
-        self.qwen = qwen
+        self.planner = planner
         self.tools = tools
         self.state = state
         self.spec = spec
@@ -105,7 +105,7 @@ class InspectionAgentRuntime:
         if local:
             return self._execute_decision(local)
         text = str(request.get('text') or request.get('command') or '').strip()
-        if not self.enabled or not self.qwen.available():
+        if not self.enabled or not self.planner.available():
             return self._planner_unavailable(text)
 
         run_id = str(request.get('run_id') or f'run_{int(time.time() * 1000)}')
@@ -117,14 +117,13 @@ class InspectionAgentRuntime:
         previous_call_key = ''
         identical_call_count = 0
         for _ in range(max(1, self.max_steps)):
-            response = self.qwen.chat_tools(
+            response = self.planner.chat_tools(
                 model=self.model,
                 system_prompt=self.spec.system_prompt(),
                 messages=self.messages,
                 tools=self.openai_tools(),
                 timeout_sec=self.timeout_sec,
                 temperature=0.0,
-                extra_body={'enable_thinking': False},
             )
             assistant_message = response.get('message')
             if not isinstance(assistant_message, dict):

@@ -19,7 +19,7 @@ from .agent_state import AgentState
 from .agent_tools import AgentTools
 from .inspection_agent_runtime import InspectionAgentRuntime, decide_local
 from .inspection_agent_spec import InspectionAgentSpecBuilder
-from .qwen_client import QwenClient, QwenClientError
+from .openai_tool_client import OpenAIToolClient, OpenAIToolClientError
 from .route_toolpack import RouteCatalog, RouteToolPack
 from .skill_toolpack import SkillToolPack
 from ylhb_mobile_bridge.patrol_route_store import default_workspace_dir, resolve_route_file_path
@@ -49,8 +49,14 @@ class InspectionAgentNode(Node):
         self.declare_parameter('patrol_status_topic', '/patrol/status')
         self.declare_parameter('voice_session_status_topic', '/inspection_ai/voice_session_status')
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
-        self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
-        self.declare_parameter('chat_model', 'qwen3.7-plus')
+        self.declare_parameter('planner_provider_name', 'dashscope')
+        self.declare_parameter('planner_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+        self.declare_parameter('planner_model', 'qwen3.7-plus')
+        self.declare_parameter('planner_api_key_env', 'DASHSCOPE_API_KEY')
+        self.declare_parameter('planner_api_key_required', True)
+        self.declare_parameter('planner_chat_path', '/chat/completions')
+        self.declare_parameter('planner_models_path', '/models')
+        self.declare_parameter('planner_extra_body_json', '{"enable_thinking": false}')
         self.declare_parameter('request_timeout_sec', 12.0)
         self.declare_parameter('enable_llm_planner', False)
         self.declare_parameter('offline_safe_mode', True)
@@ -64,8 +70,16 @@ class InspectionAgentNode(Node):
         self.declare_parameter('max_identical_tool_calls', 2)
 
         self.state = AgentState()
-        self.qwen = QwenClient(str(self.get_parameter('dashscope_base_url').value))
-        self.chat_model = str(self.get_parameter('chat_model').value)
+        self.planner = OpenAIToolClient(
+            provider_name=str(self.get_parameter('planner_provider_name').value),
+            base_url=str(self.get_parameter('planner_base_url').value),
+            api_key_env=str(self.get_parameter('planner_api_key_env').value),
+            api_key_required=bool(self.get_parameter('planner_api_key_required').value),
+            chat_path=str(self.get_parameter('planner_chat_path').value),
+            models_path=str(self.get_parameter('planner_models_path').value),
+            extra_body_json=str(self.get_parameter('planner_extra_body_json').value),
+        )
+        self.planner_model = str(self.get_parameter('planner_model').value)
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.enable_llm_planner = bool(self.get_parameter('enable_llm_planner').value)
         self.offline_safe_mode = bool(self.get_parameter('offline_safe_mode').value)
@@ -92,6 +106,7 @@ class InspectionAgentNode(Node):
         self.base_skill_pub = self.create_publisher(String, self.get_parameter('base_skill_command_topic').value, 10)
         self.patrol_pub = self.create_publisher(String, self.get_parameter('patrol_command_topic').value, 10)
         self.say_pub = self.create_publisher(__import__('ylhb_interfaces.msg').msg.SayText, self.get_parameter('say_text_topic').value, 10)
+        self.capabilities_file = ''
         self.route_toolpack, self.tool_schemas = self.load_toolpacks()
         self.tools = AgentTools(
             self,
@@ -111,13 +126,13 @@ class InspectionAgentNode(Node):
             self.tools.registry,
         ).build()
         self.agent_runtime = InspectionAgentRuntime(
-            self.qwen,
+            self.planner,
             self.tools,
             self.state,
             self.agent_spec,
             self.tool_schemas,
             route_toolpack=self.route_toolpack,
-            model=self.chat_model,
+            model=self.planner_model,
             timeout_sec=self.request_timeout_sec,
             enabled=self.enable_llm_planner,
             max_steps=int(self.get_parameter('max_agent_steps').value),
@@ -133,7 +148,12 @@ class InspectionAgentNode(Node):
         self.create_subscription(String, self.get_parameter('patrol_status_topic').value, self.patrol_status_callback, 10)
         self.create_subscription(String, self.get_parameter('voice_session_status_topic').value, self.voice_status_callback, latched_qos())
         self.publish_status()
-        self.get_logger().info('inspection agent node started')
+        self.get_logger().info(
+            'inspection agent node started: '
+            f'planner provider={self.planner.provider_name} '
+            f'model={self.planner_model} base_url={self.planner.base_url} '
+            f'route_file={self.resolved_route_file} capabilities_file={self.capabilities_file}'
+        )
 
     def request_callback(self, msg: String) -> None:
         request = self.parse_payload(msg.data)
@@ -180,7 +200,7 @@ class InspectionAgentNode(Node):
             speak = (decision.get('speak') or {}).get('text')
             if speak:
                 self.tools.say(decision)
-        except (SchemaError, QwenClientError, ValueError, RuntimeError) as exc:
+        except (SchemaError, OpenAIToolClientError, ValueError, RuntimeError) as exc:
             error_text = self.format_exception(exc)
             self.state.last_error = error_text
             result = tool_result('inspection_agent', False, 'failed', error_text, error_code='agent_error')

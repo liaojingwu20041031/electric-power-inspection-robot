@@ -108,6 +108,9 @@ class RunOnJetsonTest(unittest.TestCase):
     def test_agent_preflight_reports_missing_key_without_echoing_environment(self):
         env = os.environ.copy()
         env.pop('DASHSCOPE_API_KEY', None)
+        env['PYTHONPATH'] = os.pathsep.join((
+            str(REPO_ROOT / 'src' / 'ylhb_llm'), str(REPO_ROOT / 'src' / 'ylhb_mobile_bridge'),
+        ))
         result = subprocess.run(
             [
                 'python3', str(PREFLIGHT),
@@ -130,6 +133,45 @@ class RunOnJetsonTest(unittest.TestCase):
         self.assertTrue(payload['route_catalog_available'])
         self.assertTrue(payload['capability_catalog_available'])
         self.assertNotIn('DASHSCOPE_API_KEY=', result.stdout + result.stderr)
+
+    def test_agent_preflight_accepts_keyless_local_provider_from_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'llm.yaml'
+            config.write_text(
+                'inspection_agent_node:\n'
+                '  ros__parameters:\n'
+                '    planner_provider_name: local\n'
+                '    planner_base_url: http://127.0.0.1:1234/v1\n'
+                '    planner_model: local-model\n'
+                '    planner_api_key_env: ""\n'
+                '    planner_api_key_required: false\n'
+                '    planner_models_path: /models\n'
+                '    planner_chat_path: /chat/completions\n'
+                '    route_file_path: auto\n',
+                encoding='utf-8',
+            )
+            result = subprocess.run(
+                [
+                    'python3', str(PREFLIGHT), '--config', str(config),
+                    '--skip-endpoint', '--skip-ros',
+                    '--route-directory', str(REPO_ROOT / 'maps'),
+                    '--capabilities-file', str(REPO_ROOT / 'src' / 'ylhb_llm' / 'config' / 'robot_capabilities.yaml'),
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, 'PYTHONPATH': os.pathsep.join((
+                    str(REPO_ROOT / 'src' / 'ylhb_llm'), str(REPO_ROOT / 'src' / 'ylhb_mobile_bridge'),
+                ))},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        payload = __import__('json').loads(result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(payload['provider'], 'local')
+        self.assertTrue(payload['planner_available'])
+        self.assertEqual(payload['model'], 'local-model')
 
     def test_zed_3d_mapping_mode_is_removed_from_help(self):
         help_result = self.run_script('help')

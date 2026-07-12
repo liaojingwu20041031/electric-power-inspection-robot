@@ -36,3 +36,13 @@ def test_agent_sources_do_not_embed_workspace_path():
     }
     for path, text in files.items():
         assert '/home/nvidia/ros2_DL' not in text, path
+
+
+def test_launch_does_not_override_planner_or_voice_model_defaults():
+    launch = read_repo_file('src/ylhb_llm/launch/llm.launch.py')
+
+    for parameter in (
+        'chat_model', 'planner_base_url', 'asr_model', 'tts_model',
+        'tts_voice', 'tts_language_type', 'vl_model',
+    ):
+        assert f"DeclareLaunchArgument('{parameter}'" not in launch

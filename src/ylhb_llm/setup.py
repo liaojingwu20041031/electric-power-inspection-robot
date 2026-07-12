@@ -42,6 +42,7 @@ setup(
             'voice_session_node = ylhb_llm.voice_session_node:main',
             'voice_output_node = ylhb_llm.voice_output_node:main',
             'system_supervisor_node = ylhb_llm.system_supervisor_node:main',
+            'check_agent_setup = ylhb_llm.check_agent_setup:main',
         ],
     },
 )
