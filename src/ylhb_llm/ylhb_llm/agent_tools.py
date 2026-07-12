@@ -6,16 +6,8 @@ from std_msgs.msg import String
 
 from .agent_schema import tool_result
 
-
-SYSTEM_TOOLS = {
-    'start_patrol_mode',
-    'pause_patrol',
-    'resume_patrol',
-    'cancel_patrol',
-    'emergency_stop',
-}
+SYSTEM_TOOLS = {'start_patrol_mode', 'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop'}
 BASE_SKILL_TOOLS = {'rotate_relative', 'move_relative', 'stop_motion'}
-
 
 @dataclass(frozen=True)
 class ToolDefinition:
@@ -77,18 +69,8 @@ class AgentTools:
             self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_system))
         for name in BASE_SKILL_TOOLS:
             self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_base_skill))
-        for name in {'go_to_checkpoint'}:
-            self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_patrol))
-        for name in {
-            'get_system_status',
-            'get_patrol_status',
-            'get_voice_status',
-            'generate_local_status_reply',
-            'list_routes',
-            'describe_route',
-            'list_checkpoints',
-            'inspect_checkpoint',
-        }:
+        self.registry.register(ToolDefinition('go_to_checkpoint', tool_schemas.get('go_to_checkpoint', {}), self._execute_patrol))
+        for name in {'get_system_status', 'get_patrol_status', 'get_voice_status', 'generate_local_status_reply', 'list_routes', 'describe_route', 'list_checkpoints', 'inspect_checkpoint'}:
             self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_local))
 
     def execute(self, decision: Dict[str, Any], policy) -> Dict[str, Any]:
@@ -117,13 +99,7 @@ class AgentTools:
             result = definition.handler(decision, args)
         elif name == 'send_motion_command':
             command = str(args.get('command') or '')
-            self.publish_json(self.motion_pub, {
-                'schema_version': '1.0',
-                'source': 'inspection_agent',
-                'command': command,
-                'request_id': str(decision.get('decision_id') or ''),
-                'timestamp': self.node.get_clock().now().nanoseconds / 1e9,
-            })
+            self.publish_json(self.motion_pub, {'schema_version': '1.0', 'source': 'inspection_agent', 'command': command, 'request_id': str(decision.get('decision_id') or ''), 'timestamp': self.node.get_clock().now().nanoseconds / 1e9})
             result = tool_result(name, True, 'sent', '已发送运动命令', {'command': command})
         elif name == 'get_system_status':
             result = tool_result(name, True, 'ok', 'system status', self.state.system_status)
@@ -149,11 +125,11 @@ class AgentTools:
         return result
 
     def _create_operation(self, decision: Dict[str, Any], arguments: Dict[str, Any]):
-        name = str((decision.get('tool_call') or {}).get('name') or '')
         if self.operation_manager is None:
             return None
+        name = str((decision.get('tool_call') or {}).get('name') or '')
         schema = self.tool_schemas.get(name) or {}
-        if schema.get('side_effect', 'none') == 'none':
+        if schema.get('side_effect', 'none') == 'none' and name not in SYSTEM_TOOLS | BASE_SKILL_TOOLS | {'start_route', 'go_to_checkpoint'}:
             return None
         return self.operation_manager.create(
             str(decision.get('run_id') or decision.get('decision_id') or ''),
@@ -174,7 +150,7 @@ class AgentTools:
 
     def _execute_system(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
         name = str(decision['tool_call']['name'])
-        command = 'start_patrol_mode' if name == 'start_route' else name
+        command = str((self.tool_schemas.get(name) or {}).get('command') or ('start_patrol_mode' if name == 'start_route' else name))
         payload = {'schema_version': '1.0', 'source': 'inspection_agent', **self._correlation_fields(decision)}
         payload.update({key: value for key, value in args.items() if key != 'command'})
         payload['command'] = command
@@ -190,7 +166,7 @@ class AgentTools:
         payload = {
             'schema_version': '1.0',
             'source': 'inspection_agent',
-            'command': 'go_to_target',
+            'command': str((self.tool_schemas.get('go_to_checkpoint') or {}).get('command') or 'go_to_target'),
             'target_id': target_id,
             **self._correlation_fields(decision),
         }
@@ -204,7 +180,7 @@ class AgentTools:
         payload = {
             'schema_version': '1.0',
             'source': 'inspection_agent',
-            'command': name,
+            'command': str((self.tool_schemas.get(name) or {}).get('command') or name),
             'arguments': args,
             **self._correlation_fields(decision),
         }

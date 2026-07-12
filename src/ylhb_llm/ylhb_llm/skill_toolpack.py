@@ -43,6 +43,8 @@ class SkillToolPack:
                 "description": str(capability.get("description") or f"Inspection robot tool: {name}"),
                 "risk_level": capability.get("risk_level", "normal"),
                 "executor": capability.get("executor", "local"),
+                "command": capability.get("command", name),
+                "topic_role": capability.get("topic_role", ""),
                 "side_effect": capability.get("side_effect", "none"),
                 "requires_confirmation": bool(capability.get("requires_confirmation", False)),
                 "preconditions": list(capability.get("preconditions") or []),

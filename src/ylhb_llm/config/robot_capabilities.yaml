@@ -3,6 +3,8 @@ capabilities:
     description: 立即请求系统急停，不依赖模型后续判断
     risk_level: emergency
     executor: system
+    command: emergency_stop
+    topic_role: system_command
     side_effect: robot_stop
     requires_confirmation: false
     preconditions: []
@@ -13,6 +15,8 @@ capabilities:
     description: 停止受限相对运动
     risk_level: emergency
     executor: base_skill
+    command: stop_motion
+    topic_role: base_skill_command
     side_effect: robot_stop
     requires_confirmation: false
     preconditions: []
@@ -23,6 +27,8 @@ capabilities:
     description: 在安全前提下相对旋转
     risk_level: reversible_motion
     executor: base_skill
+    command: rotate_relative
+    topic_role: base_skill_command
     side_effect: robot_motion
     requires_confirmation: true
     preconditions: [robot_ready, chassis_online, sensor_fresh]
@@ -36,6 +42,8 @@ capabilities:
     description: 在安全前提下小范围前后移动
     risk_level: reversible_motion
     executor: base_skill
+    command: move_relative
+    topic_role: base_skill_command
     side_effect: robot_motion
     requires_confirmation: true
     preconditions: [robot_ready, chassis_online, sensor_fresh]
@@ -48,7 +56,9 @@ capabilities:
   start_route:
     description: 启动一条已存在并通过安全校验的巡逻路线
     risk_level: mission
-    executor: route
+    executor: system
+    command: start_patrol_mode
+    topic_role: system_command
     side_effect: robot_navigation
     requires_confirmation: true
     preconditions: [robot_ready, chassis_online, no_active_patrol]
@@ -58,7 +68,9 @@ capabilities:
   go_to_checkpoint:
     description: 通过 PatrolExecutor 前往已存在的检查点
     risk_level: reversible_motion
-    executor: route
+    executor: patrol
+    command: go_to_target
+    topic_role: patrol_command
     side_effect: robot_navigation
     requires_confirmation: true
     preconditions: [robot_ready, chassis_online, sensor_fresh, no_active_patrol]
@@ -69,6 +81,8 @@ capabilities:
     description: 暂停正在运行的巡逻
     risk_level: reversible_motion
     executor: system
+    command: pause_patrol
+    topic_role: system_command
     side_effect: patrol_control
     requires_confirmation: false
     preconditions: [active_patrol]
@@ -79,6 +93,8 @@ capabilities:
     description: 恢复已暂停的巡逻
     risk_level: reversible_motion
     executor: system
+    command: resume_patrol
+    topic_role: system_command
     side_effect: patrol_control
     requires_confirmation: true
     preconditions: [paused_patrol, robot_ready]
@@ -89,6 +105,8 @@ capabilities:
     description: 取消正在运行或暂停的巡逻
     risk_level: emergency
     executor: system
+    command: cancel_patrol
+    topic_role: system_command
     side_effect: patrol_cancel
     requires_confirmation: false
     preconditions: []
