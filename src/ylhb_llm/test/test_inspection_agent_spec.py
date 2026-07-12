@@ -28,3 +28,11 @@ def test_spec_builder_summarizes_tools_routes_and_boundaries():
     assert 'active_route_id=route_1' in summary['project_context']
     assert 'target_003' in summary['project_context']
     assert any('/cmd_vel' in item for item in summary['boundaries'])
+
+
+def test_system_prompt_requires_evidence_and_feedback_after_actions():
+    spec = InspectionAgentSpecBuilder().build()
+    prompt = spec.system_prompt()
+
+    for requirement in ('动作前先查询必要状态', '不要把 sent 当成 completed', '工具失败时先查询状态', '没有证据时说“未知”'):
+        assert requirement in prompt

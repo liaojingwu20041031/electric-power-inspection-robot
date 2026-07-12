@@ -1,107 +1,177 @@
 capabilities:
   emergency_stop:
+    description: 立即请求系统急停，不依赖模型后续判断
     risk_level: emergency
     executor: system
+    side_effect: robot_stop
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: []
+    result_schema: {status: [accepted, succeeded, failed]}
+    argument_schema: {properties: {}, required: []}
   stop_motion:
-    risk_level: normal
+    description: 停止受限相对运动
+    risk_level: emergency
     executor: base_skill
+    side_effect: robot_stop
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: []
+    result_schema: {status: [accepted, succeeded, failed]}
+    argument_schema: {properties: {}, required: []}
   rotate_relative:
-    risk_level: normal
+    description: 在安全前提下相对旋转
+    risk_level: reversible_motion
     executor: base_skill
+    side_effect: robot_motion
+    requires_confirmation: true
+    preconditions: [robot_ready, chassis_online, sensor_fresh]
     timeout_sec: 12.0
+    result_schema: {status: [accepted, running, succeeded, failed, canceled, timeout]}
     argument_schema:
       properties:
-        angle_deg:
-          type: number
-          minimum: -180
-          maximum: 180
+        angle_deg: {type: number, minimum: -180, maximum: 180}
       required: [angle_deg]
   move_relative:
-    risk_level: normal
+    description: 在安全前提下小范围前后移动
+    risk_level: reversible_motion
     executor: base_skill
+    side_effect: robot_motion
+    requires_confirmation: true
+    preconditions: [robot_ready, chassis_online, sensor_fresh]
     timeout_sec: 12.0
+    result_schema: {status: [accepted, running, succeeded, failed, canceled, timeout]}
     argument_schema:
       properties:
-        distance_m:
-          type: number
-          minimum: -0.5
-          maximum: 0.5
+        distance_m: {type: number, minimum: -0.5, maximum: 0.5}
       required: [distance_m]
   start_route:
-    risk_level: normal
+    description: 启动一条已存在并通过安全校验的巡逻路线
+    risk_level: mission
     executor: route
-    timeout_sec: 3.0
-    argument_schema:
-      properties: {}
-      required: [route_id]
+    side_effect: robot_navigation
+    requires_confirmation: true
+    preconditions: [robot_ready, chassis_online, no_active_patrol]
+    timeout_sec: 45.0
+    result_schema: {status: [accepted, running, failed, timeout]}
+    argument_schema: {properties: {}, required: [route_id]}
   go_to_checkpoint:
-    risk_level: normal
+    description: 通过 PatrolExecutor 前往已存在的检查点
+    risk_level: reversible_motion
     executor: route
-    timeout_sec: 3.0
-    argument_schema:
-      properties: {}
-      required: [target_id]
+    side_effect: robot_navigation
+    requires_confirmation: true
+    preconditions: [robot_ready, chassis_online, sensor_fresh, no_active_patrol]
+    timeout_sec: 45.0
+    result_schema: {status: [accepted, running, succeeded, failed, canceled, timeout]}
+    argument_schema: {properties: {}, required: [target_id]}
+  pause_patrol:
+    description: 暂停正在运行的巡逻
+    risk_level: reversible_motion
+    executor: system
+    side_effect: patrol_control
+    requires_confirmation: false
+    preconditions: [active_patrol]
+    timeout_sec: 15.0
+    result_schema: {status: [accepted, succeeded, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
+  resume_patrol:
+    description: 恢复已暂停的巡逻
+    risk_level: reversible_motion
+    executor: system
+    side_effect: patrol_control
+    requires_confirmation: true
+    preconditions: [paused_patrol, robot_ready]
+    timeout_sec: 15.0
+    result_schema: {status: [accepted, running, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
+  cancel_patrol:
+    description: 取消正在运行或暂停的巡逻
+    risk_level: emergency
+    executor: system
+    side_effect: patrol_cancel
+    requires_confirmation: false
+    preconditions: []
+    timeout_sec: 15.0
+    result_schema: {status: [accepted, canceled, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
   inspect_checkpoint:
-    risk_level: normal
+    description: 查询检查点已配置的检测项目
+    risk_level: read_only
     executor: route_read
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: [target_id]
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: [target_id]}
   list_routes:
+    description: 列出路线目录中的路线
     risk_level: read_only
     executor: route_read
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: []
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: []}
   describe_route:
+    description: 读取一条路线及其检查点
     risk_level: read_only
     executor: route_read
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: [route_id]
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: [route_id]}
   list_checkpoints:
+    description: 列出路线中的检查点
     risk_level: read_only
     executor: route_read
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: [route_id]
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: [route_id]}
   get_system_status:
+    description: 读取 Supervisor 系统状态
     risk_level: read_only
     executor: local
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: []
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: []}
   get_patrol_status:
+    description: 读取 PatrolExecutor 状态
     risk_level: read_only
     executor: local
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: []
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: []}
   get_voice_status:
+    description: 读取语音会话状态
     risk_level: read_only
     executor: local
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: []
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: []}
   generate_local_status_reply:
+    description: 生成不执行动作的本地回复
     risk_level: read_only
     executor: local
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
     timeout_sec: 1.0
-    argument_schema:
-      properties: {}
-      required: []
+    result_schema: {status: [ok]}
+    argument_schema: {properties: {}, required: []}

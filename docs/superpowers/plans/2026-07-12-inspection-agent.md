@@ -1,0 +1,117 @@
+# Inspection Agent Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 将当前意图工具层改造成以真实 ROS 反馈闭环、支持审批和长操作查询的安全巡检 Agent。
+
+**Architecture:** Runtime 保持模型协议和会话；节点工作线程拥有 run/approval；操作管理器和状态聚合器作为小型纯 Python 组件。既有 Supervisor、PatrolExecutor、BaseSkill 仍是唯一执行器。
+
+**Tech Stack:** Python 3.10、rclpy、std_msgs/String JSON、现有 ylhb_interfaces、pytest。
+
+---
+
+### Task 1: 安全启动和 preflight
+
+**Files:**
+- Modify: `scripts/run_on_jetson.sh`
+- Create: `scripts/check_agent_setup.py`
+- Modify: `src/ylhb_llm/config/llm.yaml`
+- Test: `src/ylhb_llm/test/test_run_on_jetson.py`
+
+- [ ] 先写一个现有脚本静态测试，检查 `llm`/`inspection` 仅 source 默认 `~/.config/ylhb/agent.env`、检查缺 key 警告且不包含变量值。
+- [ ] 运行该测试，确认在实现前失败。
+- [ ] 在两个模式启动前加载 `AGENT_ENV_FILE`，inspection 缺 key 仅打印指定 WARN；preflight 用 stdlib/ROS graph 只读检查 key、route、capabilities、model、endpoint 和 topic/publisher。
+- [ ] 运行该测试与 `python3 -m py_compile scripts/check_agent_setup.py`。
+
+### Task 2: 合规 tool-calling 循环
+
+**Files:**
+- Modify: `src/ylhb_llm/ylhb_llm/qwen_client.py`
+- Modify: `src/ylhb_llm/ylhb_llm/inspection_agent_runtime.py`
+- Modify: `src/ylhb_llm/ylhb_llm/agent_schema.py`
+- Test: `src/ylhb_llm/test/test_inspection_agent_runtime.py`
+
+- [ ] 写失败测试：FakeQwen 返回 `id=call_1` 的 assistant message，断言下一请求保留原 assistant message，tool message 有同一 `tool_call_id`。
+- [ ] 写失败测试：第一次动作失败后 FakeQwen 返回 `get_robot_summary`，断言第二次模型调用发生；相同副作用调用第 3 次返回 `repeated_tool_call`。
+- [ ] 实现 `ToolCall(id, name, arguments)`、完整消息列表、`parallel_tool_calls=false`、8 步/4 副作用/2 相同调用保护与完整终止原因。
+- [ ] 运行两个测试文件；提交 `fix(agent): implement compliant tool calling loop`。
+
+### Task 3: 路线和 capability 契约
+
+**Files:**
+- Modify: `src/ylhb_llm/config/llm.yaml`
+- Modify: `src/ylhb_llm/config/robot_capabilities.yaml`
+- Modify: `src/ylhb_llm/ylhb_llm/route_toolpack.py`
+- Modify: `src/ylhb_llm/ylhb_llm/skill_toolpack.py`
+- Modify: `src/ylhb_llm/ylhb_llm/inspection_agent_spec.py`
+- Test: `src/ylhb_llm/test/test_route_toolpack.py`
+
+- [ ] 写失败测试：`auto` 使用 `resolve_route_file_path`，重载后旧 route/target 不可用；所有 exported JSON schemas 有 `additionalProperties: false`。
+- [ ] 实现动态目录装载/重载，扩展 metadata（description、side_effect、confirmation、preconditions、timeout、result schema）和真实状态优先系统提示。
+- [ ] 运行目标测试；提交 `feat(agent): strengthen route and capability contracts`。
+
+### Task 4: 状态聚合与 operation manager
+
+**Files:**
+- Create: `src/ylhb_llm/ylhb_llm/agent_operation_manager.py`
+- Create: `src/ylhb_llm/ylhb_llm/robot_status_aggregator.py`
+- Modify: `src/ylhb_llm/ylhb_llm/agent_tools.py`
+- Modify: `src/ylhb_llm/ylhb_llm/agent_state.py`
+- Test: `src/ylhb_llm/test/test_agent_operation_manager.py`
+
+- [ ] 写失败测试：sent 不是 succeeded；未得到终态的 operation 到 deadline 后是 timeout；旧状态超过阈值标为 stale。
+- [ ] 实现数据类、按 operation ID 查询/等待、每个 ROS topic 的 timestamp/fresh 记录、压缩 summary 和只读主机指标读取。
+- [ ] 让动作工具创建 operation，并只在收到对应反馈后改变状态。
+- [ ] 运行测试；提交 `feat(agent): await ROS operation results`。
+
+### Task 5: 节点队列、审批和会话
+
+**Files:**
+- Modify: `src/ylhb_llm/ylhb_llm/inspection_agent_node.py`
+- Modify: `src/ylhb_llm/ylhb_llm/agent_state.py`
+- Modify: `src/ylhb_llm/launch/llm.launch.py`
+- Test: `src/ylhb_llm/test/test_inspection_agent_node.py`
+
+- [ ] 写失败测试：request callback 只入队；等待审批时状态 topic 仍更新；相同 run/tool ID 批准才恢复；急停抢占动作 run。
+- [ ] 实现 bounded deque+set 去重、单动作 run 锁、worker、`MultiThreadedExecutor(4)`、审批 topic、12–20 条 session 历史和 JSONL run audit（不记录 secrets/thinking/base64）。
+- [ ] 运行测试；提交 `feat(agent): add asynchronous run manager`。
+
+### Task 6: 执行器关联反馈
+
+**Files:**
+- Modify: `src/ylhb_llm/ylhb_llm/base_motion_skill_node.py`
+- Modify: `src/ylhb_mobile_bridge/ylhb_mobile_bridge/patrol_executor_node.py`
+- Modify: `src/ylhb_llm/ylhb_llm/system_supervisor_node.py`
+- Test: `src/ylhb_llm/test/test_system_supervisor_mobile_bridge.py`
+- Test: `src/ylhb_mobile_bridge/test/test_patrol_executor_logic.py`
+
+- [ ] 写失败测试：输入的关联 ID 在 accepted/running/terminal event 或 status 中回显；pause/resume/cancel/go-to 只在目标状态完成 operation。
+- [ ] 以向后兼容 JSON 附加字段实现回显，绝不改变 Nav2 参数、地图或路线坐标。
+- [ ] 运行两组焦点测试；提交 `feat(agent): correlate supervisor and patrol feedback`。
+
+### Task 7: 检查点 inspection Action
+
+**Files:**
+- Create: `src/ylhb_interfaces/action/InspectionCheckpoint.action`
+- Modify: `src/ylhb_interfaces/CMakeLists.txt`
+- Modify: `src/ylhb_llm/setup.py`
+- Create: `src/ylhb_llm/ylhb_llm/inspection_task_dispatcher_node.py`
+- Modify: `src/ylhb_mobile_bridge/ylhb_mobile_bridge/patrol_executor_node.py`
+- Test: `src/ylhb_llm/test/test_inspection_task_dispatcher.py`
+
+- [ ] 写失败测试：配置 item 反馈 running/succeeded；无处理器映射返回 `unsupported`；取消返回 canceled；所有结果含 route/target/task status。
+- [ ] 定义 Action，dispatcher 订阅现有感知结果并以明确映射处理 item；Patrol 到点后等待 dispatcher action 终态才前进。
+- [ ] 只构建 `ylhb_interfaces`、`ylhb_mobile_bridge`、`ylhb_llm`（BUILD_TESTING=OFF）；运行 dispatcher 的离线测试；提交 `feat(agent): add checkpoint inspection dispatcher`。
+
+### Task 8: UI、文档与验收
+
+**Files:**
+- Modify: `src/ylhb_llm/qml/pages/VoiceAiPage.qml`
+- Modify: `src/ylhb_llm/ylhb_llm/ui_backend.py`
+- Modify: `src/ylhb_llm/ylhb_llm/ui_ros_bridge.py`
+- Modify: `docs/AI_AGENT_ENGINEERING_LOG.md`
+- Test: `src/ylhb_llm/test/test_ui_backend.py`
+
+- [ ] 写失败测试：审批卡通过 bridge 使用 run/tool ID 回复，UI 状态可区分 sent/accepted/running/succeeded/failed/timeout/canceled。
+- [ ] 显示 run、工具摘要、operation、审批卡、最终结果和最近错误；不移除既有巡逻控制按钮。
+- [ ] 运行 UI 目标测试和 Python 编译检查；提交 `feat(ui): show agent operations and approvals` 与 `docs(agent): document runtime and safety model`。

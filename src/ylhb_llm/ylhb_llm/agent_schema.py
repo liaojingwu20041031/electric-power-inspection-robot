@@ -124,6 +124,10 @@ def _validate_arguments(name: str, arguments: Dict[str, Any], schema: Dict[str, 
         if field not in arguments:
             raise SchemaError(f'{name}.{field} is required')
     properties = schema.get('properties') or {}
+    if schema.get('additionalProperties') is False:
+        unexpected = set(arguments) - set(properties)
+        if unexpected:
+            raise SchemaError(f'{name} has unexpected argument: {sorted(unexpected)[0]}')
     for field, rules in properties.items():
         if field not in arguments:
             continue

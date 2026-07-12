@@ -11,6 +11,15 @@ source_ros_setup() {
   set -u
 }
 
+load_agent_env() {
+  AGENT_ENV_FILE="${AGENT_ENV_FILE:-${HOME}/.config/ylhb/agent.env}"
+  if [ -f "${AGENT_ENV_FILE}" ]; then
+    set -a
+    source "${AGENT_ENV_FILE}"
+    set +a
+  fi
+}
+
 cd "${WS_DIR}"
 source_ros_setup "/opt/ros/${ROS_DISTRO}/setup.bash"
 if [ -f "${WS_DIR}/install/setup.bash" ]; then
@@ -151,12 +160,17 @@ case "${MODE}" in
     ;;
   llm)
     shift || true
+    load_agent_env
     require_ylhb_llm_executable inspection_agent_node
     require_ylhb_llm_executable base_motion_skill_node
     exec ros2 launch ylhb_llm llm.launch.py "$@"
     ;;
   inspection)
     shift || true
+    load_agent_env
+    if [ -z "${DASHSCOPE_API_KEY:-}" ]; then
+      echo "WARN: DASHSCOPE_API_KEY is missing; AI Agent planner will be unavailable. Local emergency stop remains available." >&2
+    fi
     for arg in "$@"; do
       case "${arg}" in
         enable_voice:=false|enable_voice_session:=false|enable_tts:=false)

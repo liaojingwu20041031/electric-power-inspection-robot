@@ -33,8 +33,11 @@ inspection_agent_node:
     request_timeout_sec: 12.0
     enable_llm_planner: true
     offline_safe_mode: true
-    route_file_path: /home/nvidia/ros2_DL/maps/route_patrol_001.json
+    route_file_path: auto
     robot_capabilities_file: /home/nvidia/ros2_DL/src/ylhb_llm/config/robot_capabilities.yaml
+    max_agent_steps: 8
+    max_side_effect_tools_per_turn: 4
+    max_identical_tool_calls: 2
 
 basic_motion_command_node:
   ros__parameters:

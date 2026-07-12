@@ -7,21 +7,27 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / 'scripts' / 'run_on_jetson.sh'
+PREFLIGHT = REPO_ROOT / 'scripts' / 'check_agent_setup.py'
 
 
 class RunOnJetsonTest(unittest.TestCase):
-    def run_script(self, *args):
+    def run_script(self, *args, agent_env=''):
         with tempfile.TemporaryDirectory() as tmp:
             fake_ros2 = Path(tmp) / 'ros2'
             fake_ros2.write_text(
                 '#!/usr/bin/env bash\n'
                 'printf "XAUTHORITY=%s\\n" "${XAUTHORITY:-}"\n'
+                'printf "AGENT_KEY_LOADED=%s\\n" "${DASHSCOPE_API_KEY:+yes}"\n'
                 'printf "%s\\n" "$@"\n',
                 encoding='utf-8',
             )
             fake_ros2.chmod(0o755)
             fake_home = Path(tmp) / 'home'
             fake_home.mkdir()
+            if agent_env:
+                agent_env_path = fake_home / '.config' / 'ylhb' / 'agent.env'
+                agent_env_path.parent.mkdir(parents=True)
+                agent_env_path.write_text(agent_env, encoding='utf-8')
             fake_xauthority = fake_home / '.Xauthority'
             fake_xauthority.write_text('cookie', encoding='utf-8')
             env = os.environ.copy()
@@ -30,6 +36,7 @@ class RunOnJetsonTest(unittest.TestCase):
             env['HOME'] = str(fake_home)
             env['DISPLAY'] = 'localhost:10.0'
             env['ENABLE_CHINESE_IME'] = 'false'
+            env.pop('DASHSCOPE_API_KEY', None)
             return subprocess.run(
                 ['bash', str(SCRIPT), *args],
                 cwd=REPO_ROOT,
@@ -62,6 +69,45 @@ class RunOnJetsonTest(unittest.TestCase):
 
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('inspection mode is the formal robot console', result.stderr)
+
+    def test_inspection_loads_default_agent_env_without_printing_key(self):
+        result = self.run_script('inspection', agent_env='DASHSCOPE_API_KEY=not-for-output\n')
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('AGENT_KEY_LOADED=yes', result.stdout)
+        self.assertNotIn('not-for-output', result.stdout + result.stderr)
+
+    def test_inspection_warns_when_agent_key_is_missing(self):
+        result = self.run_script('inspection')
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('WARN: DASHSCOPE_API_KEY is missing;', result.stderr)
+
+    def test_agent_preflight_reports_missing_key_without_echoing_environment(self):
+        env = os.environ.copy()
+        env.pop('DASHSCOPE_API_KEY', None)
+        result = subprocess.run(
+            [
+                'python3', str(PREFLIGHT),
+                '--skip-endpoint',
+                '--skip-ros',
+                '--route-file', str(REPO_ROOT / 'maps' / 'route_patrol_001.json'),
+                '--capabilities-file', str(REPO_ROOT / 'src' / 'ylhb_llm' / 'config' / 'robot_capabilities.yaml'),
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        payload = __import__('json').loads(result.stdout)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(payload['planner_available'])
+        self.assertTrue(payload['route_catalog_available'])
+        self.assertTrue(payload['capability_catalog_available'])
+        self.assertNotIn('DASHSCOPE_API_KEY=', result.stdout + result.stderr)
 
     def test_zed_3d_mapping_mode_is_removed_from_help(self):
         help_result = self.run_script('help')

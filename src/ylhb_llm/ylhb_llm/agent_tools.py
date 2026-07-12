@@ -54,6 +54,8 @@ class AgentTools:
         base_skill_pub=None,
         route_toolpack=None,
         tool_schemas: Dict[str, Any] | None = None,
+        operation_manager=None,
+        status_aggregator=None,
     ) -> None:
         self.node = node
         self.state = state
@@ -64,8 +66,11 @@ class AgentTools:
         self.patrol_pub = patrol_pub
         self.base_skill_pub = base_skill_pub
         self.route_toolpack = route_toolpack
+        self.operation_manager = operation_manager
+        self.status_aggregator = status_aggregator
+        self.tool_schemas = dict(tool_schemas or {})
         self.registry = ToolRegistry()
-        self._register_tools(tool_schemas or {})
+        self._register_tools(self.tool_schemas)
 
     def _register_tools(self, tool_schemas: Dict[str, Any]) -> None:
         for name in SYSTEM_TOOLS | {'start_route'}:
@@ -95,6 +100,9 @@ class AgentTools:
             self.publish_event(result)
             return result
 
+        operation = self._create_operation(decision, args)
+        if operation is not None:
+            decision = {**decision, 'operation_id': operation.operation_id}
         definition = self.registry.get(name)
         if definition:
             result = definition.handler(decision, args)
@@ -119,13 +127,44 @@ class AgentTools:
             answer = str(decision.get('final_answer') or speak.get('text') or '当前状态未知。')
             result = tool_result(name, True, 'ok', answer, {'answer': answer})
 
+        if operation is not None:
+            if result.get('ok'):
+                operation = self.operation_manager.mark_sent(operation.operation_id)
+            else:
+                operation = self.operation_manager.update(operation.operation_id, 'failed', result)
+            result = {
+                **result,
+                'data': {**(result.get('data') or {}), 'operation_id': operation.operation_id, 'operation_state': operation.state},
+            }
         self.publish_event(result)
         return result
 
-    def _execute_system(self, _decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
-        name = str(_decision['tool_call']['name'])
+    def _create_operation(self, decision: Dict[str, Any], arguments: Dict[str, Any]):
+        name = str((decision.get('tool_call') or {}).get('name') or '')
+        if self.operation_manager is None or name not in SYSTEM_TOOLS | BASE_SKILL_TOOLS | {'start_route', 'go_to_checkpoint'}:
+            return None
+        schema = self.tool_schemas.get(name) or {}
+        return self.operation_manager.create(
+            str(decision.get('run_id') or decision.get('decision_id') or ''),
+            str(decision.get('tool_call_id') or ''),
+            name,
+            arguments,
+            float(schema.get('timeout_sec') or 15.0),
+        )
+
+    @staticmethod
+    def _correlation_fields(decision: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'request_id': str(decision.get('request_id') or decision.get('decision_id') or ''),
+            'run_id': str(decision.get('run_id') or ''),
+            'operation_id': str(decision.get('operation_id') or ''),
+            'tool_call_id': str(decision.get('tool_call_id') or ''),
+        }
+
+    def _execute_system(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(decision['tool_call']['name'])
         command = 'start_patrol_mode' if name == 'start_route' else name
-        payload = {'schema_version': '1.0', 'source': 'inspection_agent'}
+        payload = {'schema_version': '1.0', 'source': 'inspection_agent', **self._correlation_fields(decision)}
         payload.update({key: value for key, value in args.items() if key != 'command'})
         payload['command'] = command
         self.publish_json(self.system_pub, payload)
@@ -142,7 +181,7 @@ class AgentTools:
             'source': 'inspection_agent',
             'command': 'go_to_target',
             'target_id': target_id,
-            'request_id': str(decision.get('decision_id') or ''),
+            **self._correlation_fields(decision),
         }
         self.publish_json(self.patrol_pub, payload)
         return tool_result('go_to_checkpoint', True, 'sent', '已发送目标点导航命令', {'target_id': target_id})
@@ -156,7 +195,7 @@ class AgentTools:
             'source': 'inspection_agent',
             'command': name,
             'arguments': args,
-            'request_id': str(decision.get('decision_id') or ''),
+            **self._correlation_fields(decision),
         }
         self.publish_json(self.base_skill_pub, payload)
         return tool_result(name, True, 'sent', '已发送基础运动技能命令', {'command': name, **args})

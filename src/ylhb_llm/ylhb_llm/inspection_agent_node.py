@@ -1,9 +1,13 @@
 import json
 import os
+import queue
+import threading
 import time
+from collections import deque
 from typing import Any, Dict
 
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -50,6 +54,9 @@ class InspectionAgentNode(Node):
         self.declare_parameter('offline_safe_mode', True)
         self.declare_parameter('route_file_path', os.path.expanduser('~/ros2_DL/maps/route_patrol_001.json'))
         self.declare_parameter('robot_capabilities_file', os.path.join(os.path.dirname(__file__), '..', 'config', 'robot_capabilities.yaml'))
+        self.declare_parameter('max_agent_steps', 8)
+        self.declare_parameter('max_side_effect_tools_per_turn', 4)
+        self.declare_parameter('max_identical_tool_calls', 2)
 
         self.state = AgentState()
         self.qwen = QwenClient(str(self.get_parameter('dashscope_base_url').value))
@@ -58,6 +65,9 @@ class InspectionAgentNode(Node):
         self.enable_llm_planner = bool(self.get_parameter('enable_llm_planner').value)
         self.offline_safe_mode = bool(self.get_parameter('offline_safe_mode').value)
         self.seen_request_ids: set[str] = set()
+        self.seen_request_order: deque[str] = deque(maxlen=256)
+        self.request_queue: queue.Queue = queue.Queue()
+        self._worker_stop = threading.Event()
         self.last_error_tts: Dict[str, float] = {}
 
         self.status_pub = self.create_publisher(String, self.get_parameter('agent_status_topic').value, latched_qos())
@@ -96,7 +106,13 @@ class InspectionAgentNode(Node):
             model=self.chat_model,
             timeout_sec=self.request_timeout_sec,
             enabled=self.enable_llm_planner,
+            max_steps=int(self.get_parameter('max_agent_steps').value),
+            max_side_effect_tools_per_turn=int(self.get_parameter('max_side_effect_tools_per_turn').value),
+            max_identical_tool_calls=int(self.get_parameter('max_identical_tool_calls').value),
         )
+
+        self._worker = threading.Thread(target=self.agent_worker, name='inspection-agent-worker', daemon=True)
+        self._worker.start()
 
         self.create_subscription(String, self.get_parameter('agent_request_topic').value, self.request_callback, 10)
         self.create_subscription(String, self.get_parameter('system_status_topic').value, self.system_status_callback, latched_qos())
@@ -111,12 +127,33 @@ class InspectionAgentNode(Node):
         if request_id and request_id in self.seen_request_ids:
             return
         if request_id:
+            if len(self.seen_request_order) == self.seen_request_order.maxlen:
+                self.seen_request_ids.discard(self.seen_request_order[0])
+            self.seen_request_order.append(request_id)
             self.seen_request_ids.add(request_id)
         self.state.latest_request = request
         turn_id = request_id or f'turn_{int(time.time() * 1000)}'
         client_msg_id = str(request.get('client_msg_id') or '')
         text = str(request.get('text') or request.get('command') or '')
         self.publish_chat(make_agent_chat('user', text, turn_id, client_msg_id, source=str(request.get('source') or 'user'), raw=request))
+        self.request_queue.put((request, turn_id, client_msg_id))
+
+    def agent_worker(self) -> None:
+        while not self._worker_stop.is_set():
+            item = self.request_queue.get()
+            if item is None:
+                return
+            self.process_request(*item)
+
+    def process_next_request(self) -> bool:
+        try:
+            item = self.request_queue.get_nowait()
+        except queue.Empty:
+            return False
+        self.process_request(*item)
+        return True
+
+    def process_request(self, request: Dict[str, Any], turn_id: str, client_msg_id: str) -> None:
         try:
             turn = self.agent_runtime.run_turn(request)
             decision = turn.get('decision') or {}
@@ -155,6 +192,11 @@ class InspectionAgentNode(Node):
                 )
             )
         self.publish_status()
+
+    def shutdown_worker(self) -> None:
+        self._worker_stop.set()
+        self.request_queue.put(None)
+        self._worker.join(timeout=1.0)
 
     def load_toolpacks(self):
         route_toolpack = None
@@ -246,11 +288,15 @@ class InspectionAgentNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = InspectionAgentNode()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        node.shutdown_worker()
+        executor.remove_node(node)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -57,6 +57,26 @@ def test_validate_decision_accepts_dynamic_tool_schema():
     assert result['tool_call']['name'] == 'rotate_relative'
 
 
+def test_validate_decision_rejects_extra_closed_schema_argument():
+    data = valid_decision(
+        intent='rotate',
+        tool_call={'name': 'rotate_relative', 'arguments': {'angle_deg': 90, 'unsafe': True}},
+    )
+
+    with pytest.raises(SchemaError, match='unexpected argument'):
+        validate_decision(
+            data,
+            {'rotate_relative'},
+            {
+                'rotate_relative': {
+                    'required': ['angle_deg'],
+                    'properties': {'angle_deg': {'type': 'number'}},
+                    'additionalProperties': False,
+                }
+            },
+        )
+
+
 def test_validate_decision_rejects_dangerous_tool_even_when_allowed():
     data = valid_decision(tool_call={'name': '/cmd_vel', 'arguments': {}})
 

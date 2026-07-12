@@ -20,9 +20,16 @@ class InspectionAgentSpecConfig:
     position: str = '运行在 ROS2 巡检车本地工作站内。'
     capabilities: List[str] = field(default_factory=list)
     boundaries: List[str] = field(default_factory=lambda: list(BOUNDARIES))
-    tool_policy: str = '需要动作时只调用给定 tools；不知道真实路线或目标时先查询，不猜。'
+    tool_policy: str = (
+        '执行动作前先查询必要状态；不知道真实路线或目标时先 list/describe，不猜；'
+        '不要把 sent 当成 completed；动作后必须读取 ToolResult；'
+        '工具失败时先查询状态，再决定重试或终止；不得重复执行相同有副作用工具。'
+    )
     project_context: str = ''
-    extra_instructions: str = '急停和停止由本地安全反射优先处理；普通问答可以直接回答。'
+    extra_instructions: str = (
+        '急停和停止由本地安全反射优先处理；不允许编造 route_id、target_id 或状态；'
+        '最终答案只能描述真实 ToolResult；没有证据时说“未知”，不能猜测。'
+    )
 
     def system_prompt(self) -> str:
         parts = [

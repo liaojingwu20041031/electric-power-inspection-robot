@@ -77,6 +77,7 @@ class QwenClient:
             'messages': payload_messages,
             'temperature': temperature,
             'tools': tools,
+            'parallel_tool_calls': False,
         }
         if extra_body:
             payload.update(extra_body)
@@ -100,9 +101,9 @@ class QwenClient:
         except Exception as exc:
             raise QwenClientError(f'Unexpected DashScope response: {body[:500]}') from exc
         return {
+            'message': message,
             'content': message.get('content') or '',
             'tool_calls': message.get('tool_calls') or [],
-            'raw': message,
         }
 
     def parse_inspection_command(self, text: str, model: str, timeout_sec: float) -> Dict[str, Any]:

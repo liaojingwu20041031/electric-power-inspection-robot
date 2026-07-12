@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from ylhb_llm.agent_policy import authorize
+from ylhb_llm.agent_operation_manager import AgentOperationManager
 from ylhb_llm.agent_tools import AgentTools
 from ylhb_llm.route_toolpack import RouteCatalog, RouteToolPack
 
@@ -136,3 +137,29 @@ def test_rotate_relative_publishes_base_skill_not_cmd_vel():
     assert base_skill_pub.messages[0]['command'] == 'rotate_relative'
     assert base_skill_pub.messages[0]['arguments'] == {'angle_deg': 180}
     assert motion_pub.messages == []
+
+
+def test_side_effect_tool_creates_operation_and_forwards_correlation_ids():
+    base_skill_pub = FakePub()
+    manager = AgentOperationManager(clock=lambda: 10.0)
+    tools = AgentTools(
+        SimpleNamespace(),
+        SimpleNamespace(system_status={}, patrol_status={}, voice_status={}),
+        FakePub(), FakePub(), FakePub(), FakePub(),
+        base_skill_pub=base_skill_pub,
+        operation_manager=manager,
+    )
+    decision = {
+        'decision_id': 'decision_1',
+        'run_id': 'run_1',
+        'tool_call_id': 'call_1',
+        'tool_call': {'name': 'rotate_relative', 'arguments': {'angle_deg': 10}},
+    }
+
+    result = tools.execute(decision, authorize(decision, {'patrol_state': 'idle'}))
+
+    operation_id = result['data']['operation_id']
+    assert result['status'] == 'sent'
+    assert manager.get(operation_id, now=10.0)['state'] == 'sent'
+    assert base_skill_pub.messages[0]['operation_id'] == operation_id
+    assert base_skill_pub.messages[0]['tool_call_id'] == 'call_1'

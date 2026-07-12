@@ -1,4 +1,5 @@
 import json
+import queue
 from types import SimpleNamespace
 
 from ylhb_llm.agent_state import AgentState
@@ -56,6 +57,8 @@ def make_node(runtime=None, now=100.0):
     node.chat_pub = FakePub()
     node.status_pub = FakePub()
     node.seen_request_ids = set()
+    node.seen_request_order = __import__('collections').deque(maxlen=256)
+    node.request_queue = queue.Queue()
     node.last_error_tts = {}
     node.agent_spec = SimpleNamespace(summary=lambda: {'name': 'inspection_agent'})
     node.publish_status = lambda: InspectionAgentNode.publish_status(node)
@@ -83,6 +86,7 @@ def test_request_callback_dedupes_client_msg_id_and_publishes_chat():
 
     InspectionAgentNode.request_callback(node, msg)
     InspectionAgentNode.request_callback(node, msg)
+    InspectionAgentNode.process_next_request(node)
 
     assert len(runtime.calls) == 1
     roles = [item['role'] for item in node.chat_pub.messages]
@@ -96,8 +100,19 @@ def test_request_id_is_used_for_voice_dedupe():
 
     InspectionAgentNode.request_callback(node, SimpleNamespace(data='{"text":"你好","request_id":"utt_1"}'))
     InspectionAgentNode.request_callback(node, SimpleNamespace(data='{"text":"你好","request_id":"utt_1"}'))
+    InspectionAgentNode.process_next_request(node)
 
     assert len(runtime.calls) == 1
+
+
+def test_request_callback_returns_before_planner_runs():
+    runtime = FakeRuntime()
+    node = make_node(runtime)
+
+    InspectionAgentNode.request_callback(node, SimpleNamespace(data='{"text":"查询状态","client_msg_id":"c3"}'))
+
+    assert runtime.calls == []
+    assert node.request_queue.qsize() == 1
 
 
 def test_same_agent_error_tts_is_throttled_for_three_seconds(monkeypatch):
@@ -116,6 +131,7 @@ def test_planner_exception_publishes_real_error_to_chat_status_and_log():
     node = make_node(RaisingRuntime())
 
     InspectionAgentNode.request_callback(node, SimpleNamespace(data='{"text":"自我介绍一下","client_msg_id":"c2"}'))
+    InspectionAgentNode.process_next_request(node)
 
     system_chat = node.chat_pub.messages[-1]
     assert system_chat['role'] == 'system'

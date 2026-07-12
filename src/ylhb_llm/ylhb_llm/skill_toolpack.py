@@ -26,17 +26,28 @@ class SkillToolPack:
 
     def tool_schemas(self) -> Dict[str, Dict[str, Any]]:
         schemas: Dict[str, Dict[str, Any]] = {}
-        for name, capability in self.capabilities.items():
+        for name in sorted(set(self.capabilities) | set(self.route_schemas)):
+            capability = self.capabilities.get(name) or {}
             argument_schema = dict(capability.get("argument_schema") or {})
             properties = dict(argument_schema.get("properties") or {})
             route_schema = self.route_schemas.get(name, {})
             properties.update(route_schema.get("properties") or {})
+            required = list(argument_schema.get("required") or [])
+            for field in route_schema.get("required") or []:
+                if field not in required:
+                    required.append(field)
             schemas[name] = {
                 "properties": properties,
-                "required": list(argument_schema.get("required") or route_schema.get("required") or []),
+                "required": required,
+                "additionalProperties": False,
+                "description": str(capability.get("description") or f"Inspection robot tool: {name}"),
                 "risk_level": capability.get("risk_level", "normal"),
                 "executor": capability.get("executor", "local"),
+                "side_effect": capability.get("side_effect", "none"),
+                "requires_confirmation": bool(capability.get("requires_confirmation", False)),
+                "preconditions": list(capability.get("preconditions") or []),
                 "constraints": capability.get("constraints") or {},
                 "timeout_sec": capability.get("timeout_sec"),
+                "result_schema": capability.get("result_schema") or {},
             }
         return schemas

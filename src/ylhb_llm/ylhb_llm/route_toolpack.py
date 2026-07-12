@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ylhb_mobile_bridge.patrol_route_store import load_route_file
+from ylhb_mobile_bridge.patrol_route_store import load_route_file, resolve_route_file_path
 
 
 def _key(value: str) -> str:
@@ -15,10 +15,16 @@ def _key(value: str) -> str:
 @dataclass(frozen=True)
 class RouteCatalog:
     data: Dict[str, Any]
+    route_file_path: str = ''
 
     @classmethod
-    def from_file(cls, path: str) -> "RouteCatalog":
-        return cls(load_route_file(str(Path(path).expanduser())))
+    def from_file(cls, path: str, route_directory: str | Path | None = None) -> "RouteCatalog":
+        resolved = (
+            resolve_route_file_path(path)
+            if route_directory is None
+            else resolve_route_file_path(path, route_directory)
+        )
+        return cls(load_route_file(str(resolved)), str(resolved))
 
     @property
     def route_ids(self) -> List[str]:
@@ -69,26 +75,31 @@ class RouteToolPack:
         route_enum = self.catalog.route_ids
         target_enum = self.catalog.target_ids
         return {
-            "list_routes": {"properties": {}, "required": []},
+            "list_routes": {"properties": {}, "required": [], "additionalProperties": False},
             "describe_route": {
                 "properties": {"route_id": {"type": "string", "enum": route_enum}},
                 "required": ["route_id"],
+                "additionalProperties": False,
             },
             "start_route": {
                 "properties": {"route_id": {"type": "string", "enum": route_enum}},
                 "required": ["route_id"],
+                "additionalProperties": False,
             },
             "list_checkpoints": {
                 "properties": {"route_id": {"type": "string", "enum": route_enum}},
                 "required": ["route_id"],
+                "additionalProperties": False,
             },
             "go_to_checkpoint": {
                 "properties": {"target_id": {"type": "string", "enum": target_enum}},
                 "required": ["target_id"],
+                "additionalProperties": False,
             },
             "inspect_checkpoint": {
                 "properties": {"target_id": {"type": "string", "enum": target_enum}},
                 "required": ["target_id"],
+                "additionalProperties": False,
             },
         }
 
