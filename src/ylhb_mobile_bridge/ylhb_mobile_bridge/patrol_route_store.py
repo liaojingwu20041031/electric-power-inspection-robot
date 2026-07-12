@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
@@ -11,7 +12,6 @@ import yaml
 
 FAILURE_POLICIES = {"abort", "abort_and_return_home"}
 SCHEDULE_MODES = {"interval"}
-DEFAULT_ROUTE_DIRECTORY = Path("/home/nvidia/ros2_DL/maps")
 ROUTE_FILE_PATTERN = "route_patrol_*.json"
 ROUTE_NUMBER_PATTERN = re.compile(r"^route_patrol_(\d+)\.json$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -285,9 +285,17 @@ def _validate_keepout_zones(
     return normalized
 
 
+def default_workspace_dir() -> Path:
+    return Path(os.environ.get("WS_DIR", Path.home() / "ros2_DL")).expanduser()
+
+
+def default_route_directory() -> Path:
+    return default_workspace_dir() / "maps"
+
+
 def resolve_route_file_path(
     route_file_path: str,
-    route_directory: Union[str, Path] = DEFAULT_ROUTE_DIRECTORY,
+    route_directory: Union[str, Path, None] = None,
 ) -> Path:
     requested_path = str(route_file_path).strip()
     if requested_path != "auto":
@@ -298,7 +306,11 @@ def resolve_route_file_path(
             )
         return explicit_path
 
-    directory = Path(route_directory).expanduser()
+    directory = (
+        default_route_directory()
+        if route_directory in (None, "")
+        else Path(route_directory).expanduser()
+    )
     candidates = list(directory.glob(ROUTE_FILE_PATTERN))
     if not candidates:
         raise ValueError(

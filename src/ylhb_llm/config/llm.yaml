@@ -33,8 +33,11 @@ inspection_agent_node:
     request_timeout_sec: 12.0
     enable_llm_planner: true
     offline_safe_mode: true
-    route_file_path: auto
-    robot_capabilities_file: /home/nvidia/ros2_DL/src/ylhb_llm/config/robot_capabilities.yaml
+    workspace_dir: ""
+    route_directory: ""
+    patrol_route_path: auto
+    route_file_path: auto  # deprecated alias; patrol_route_path takes precedence
+    robot_capabilities_file: robot_capabilities.yaml
     max_agent_steps: 8
     max_side_effect_tools_per_turn: 4
     max_identical_tool_calls: 2
@@ -103,12 +106,14 @@ system_supervisor_node:
     system_status_topic: /inspection_ai/system_status
     system_mode_topic: /inspection_ai/system_mode
     cmd_vel_topic: /cmd_vel
-    workspace_dir: /home/nvidia/ros2_DL
+    workspace_dir: ""
+    route_directory: ""
+    patrol_route_path: auto
     ros_distro: humble
-    map_output_dir: /home/nvidia/ros2_DL/maps
-    mapping3d_output_dir: /home/nvidia/ros2_DL/runs/3d_capture
-    default_navigation_map: /home/nvidia/ros2_DL/maps/my_map.yaml
-    perception_model_path: /home/nvidia/ros2_DL/src/ylhb_perception/models/yolo26.engine
+    map_output_dir: ""
+    mapping3d_output_dir: ""
+    default_navigation_map: ""
+    perception_model_path: ""
     embedded_task_layer: true
     enable_voice: false
     enable_voice_session: false

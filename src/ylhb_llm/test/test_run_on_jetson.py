@@ -11,13 +11,16 @@ PREFLIGHT = REPO_ROOT / 'scripts' / 'check_agent_setup.py'
 
 
 class RunOnJetsonTest(unittest.TestCase):
-    def run_script(self, *args, agent_env=''):
+    def run_script(self, *args, agent_env='', robot_env=''):
         with tempfile.TemporaryDirectory() as tmp:
             fake_ros2 = Path(tmp) / 'ros2'
             fake_ros2.write_text(
                 '#!/usr/bin/env bash\n'
                 'printf "XAUTHORITY=%s\\n" "${XAUTHORITY:-}"\n'
                 'printf "AGENT_KEY_LOADED=%s\\n" "${DASHSCOPE_API_KEY:+yes}"\n'
+                'printf "YLHB_AUDIO_INPUT_DEVICE=%s\\n" "${YLHB_AUDIO_INPUT_DEVICE:-}"\n'
+                'printf "YLHB_AUDIO_OUTPUT_DEVICE=%s\\n" "${YLHB_AUDIO_OUTPUT_DEVICE:-}"\n'
+                'printf "YLHB_TTS_VOICE=%s\\n" "${YLHB_TTS_VOICE:-}"\n'
                 'printf "%s\\n" "$@"\n',
                 encoding='utf-8',
             )
@@ -28,6 +31,10 @@ class RunOnJetsonTest(unittest.TestCase):
                 agent_env_path = fake_home / '.config' / 'ylhb' / 'agent.env'
                 agent_env_path.parent.mkdir(parents=True)
                 agent_env_path.write_text(agent_env, encoding='utf-8')
+            if robot_env:
+                robot_env_path = fake_home / '.config' / 'ylhb' / 'robot.env'
+                robot_env_path.parent.mkdir(parents=True, exist_ok=True)
+                robot_env_path.write_text(robot_env, encoding='utf-8')
             fake_xauthority = fake_home / '.Xauthority'
             fake_xauthority.write_text('cookie', encoding='utf-8')
             env = os.environ.copy()
@@ -82,6 +89,21 @@ class RunOnJetsonTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('WARN: DASHSCOPE_API_KEY is missing;', result.stderr)
+
+    def test_inspection_reads_audio_devices_from_robot_env(self):
+        result = self.run_script(
+            'inspection',
+            robot_env=(
+                'YLHB_AUDIO_INPUT_DEVICE=plughw:CARD=USB,DEV=0\n'
+                'YLHB_AUDIO_OUTPUT_DEVICE=hw:CARD=USB,DEV=0\n'
+                'YLHB_TTS_VOICE=CustomVoice\n'
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('YLHB_AUDIO_INPUT_DEVICE=plughw:CARD=USB,DEV=0', result.stdout)
+        self.assertIn('YLHB_AUDIO_OUTPUT_DEVICE=hw:CARD=USB,DEV=0', result.stdout)
+        self.assertIn('YLHB_TTS_VOICE=CustomVoice', result.stdout)
 
     def test_agent_preflight_reports_missing_key_without_echoing_environment(self):
         env = os.environ.copy()

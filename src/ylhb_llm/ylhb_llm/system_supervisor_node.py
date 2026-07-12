@@ -23,7 +23,12 @@ from rclpy.time import Time
 from std_msgs.msg import String
 from std_srvs.srv import Empty
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
-from ylhb_mobile_bridge.patrol_route_store import load_route_file, validate_route_map_binding
+from ylhb_mobile_bridge.patrol_route_store import (
+    default_workspace_dir,
+    load_route_file,
+    resolve_route_file_path,
+    validate_route_map_binding,
+)
 
 try:
     from ylhb_3d_mapping import zed_3d_asset_manager
@@ -235,7 +240,8 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('system_status_topic', '/inspection_ai/system_status')
         self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('workspace_dir', os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL')))
+        self.declare_parameter('workspace_dir', '')
+        self.declare_parameter('route_directory', '')
         self.declare_parameter('ros_distro', 'humble')
         self.declare_parameter('map_output_dir', workspace_path('maps'))
         self.declare_parameter('mapping3d_output_dir', workspace_path('runs', '3d_capture'))
@@ -245,7 +251,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('enable_keepout_navigation', True)
         self.declare_parameter('patrol_navigation_profile', NAVIGATION_PROFILE_AUTO)
         self.declare_parameter('keepout_mask_path', workspace_path('maps', 'keepout', 'keepout_mask_power_room_a.yaml'))
-        self.declare_parameter('patrol_route_path', '')
+        self.declare_parameter('patrol_route_path', 'auto')
         self.declare_parameter('keepout_route_path', '')  # deprecated alias
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
         self.declare_parameter('embedded_task_layer', True)
@@ -271,15 +277,22 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('patrol_nav2_timeout_sec', 25.0)
         self.declare_parameter('patrol_command_timeout_sec', 8.0)
 
-        self.workspace_dir = os.path.expanduser(str(self.get_parameter('workspace_dir').value))
+        workspace_dir = str(self.get_parameter('workspace_dir').value).strip()
+        self.workspace_dir = os.path.expanduser(workspace_dir) if workspace_dir else str(default_workspace_dir())
+        route_directory = str(self.get_parameter('route_directory').value).strip()
+        self.route_directory = os.path.expanduser(route_directory) if route_directory else os.path.join(self.workspace_dir, 'maps')
         self.ros_distro = str(self.get_parameter('ros_distro').value)
-        self.map_output_dir = os.path.expanduser(str(self.get_parameter('map_output_dir').value))
-        self.mapping3d_output_dir = os.path.expanduser(str(self.get_parameter('mapping3d_output_dir').value))
+        map_output_dir = str(self.get_parameter('map_output_dir').value).strip()
+        self.map_output_dir = os.path.expanduser(map_output_dir) if map_output_dir else os.path.join(self.workspace_dir, 'maps')
+        mapping3d_output_dir = str(self.get_parameter('mapping3d_output_dir').value).strip()
+        self.mapping3d_output_dir = os.path.expanduser(mapping3d_output_dir) if mapping3d_output_dir else os.path.join(self.workspace_dir, 'runs', '3d_capture')
         capture_dir = str(self.get_parameter('mapping3d_capture_dir').value or self.mapping3d_output_dir)
         self.mapping3d_capture_dir = os.path.expanduser(capture_dir)
         self.mapping3d_output_dir = self.mapping3d_capture_dir
-        self.mapping3d_reconstruct_dir = os.path.expanduser(str(self.get_parameter('mapping3d_reconstruct_dir').value))
-        self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
+        reconstruct_dir = str(self.get_parameter('mapping3d_reconstruct_dir').value).strip()
+        self.mapping3d_reconstruct_dir = os.path.expanduser(reconstruct_dir) if reconstruct_dir else os.path.join(self.workspace_dir, 'runs', '3d_reconstruct')
+        navigation_map = str(self.get_parameter('default_navigation_map').value).strip()
+        self.default_navigation_map = os.path.expanduser(navigation_map) if navigation_map else os.path.join(self.workspace_dir, 'maps', 'my_map.yaml')
         self.enable_keepout_navigation = bool(self.get_parameter('enable_keepout_navigation').value)
         self.patrol_navigation_profile = str(
             self.get_parameter('patrol_navigation_profile').value
@@ -295,9 +308,13 @@ class SystemSupervisorNode(Node):
         )
         patrol_route_path = str(self.get_parameter('patrol_route_path').value).strip()
         keepout_route_path = str(self.get_parameter('keepout_route_path').value).strip()
-        self.patrol_route_path = os.path.abspath(os.path.expanduser(patrol_route_path or keepout_route_path or os.path.join(self.workspace_dir, 'maps', 'route_patrol_001.json')))
+        self.patrol_route_path = str(resolve_route_file_path(
+            patrol_route_path or keepout_route_path or 'auto', self.route_directory,
+        ))
         self.keepout_route_path = self.patrol_route_path
-        self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
+        perception_model_path = str(self.get_parameter('perception_model_path').value).strip()
+        self.perception_model_path = os.path.expanduser(perception_model_path) if perception_model_path else os.path.join(self.workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
+        self.get_logger().info(f'supervisor patrol route: resolved_file={self.patrol_route_path}')
         self.embedded_task_layer = bool(self.get_parameter('embedded_task_layer').value)
         self.enable_voice = bool(self.get_parameter('enable_voice').value)
         self.enable_voice_session = bool(self.get_parameter('enable_voice_session').value)

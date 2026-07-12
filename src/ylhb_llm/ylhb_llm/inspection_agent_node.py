@@ -1,12 +1,13 @@
 import json
-import os
 import queue
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict
 
 import rclpy
+from ament_index_python.packages import get_package_share_path
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -21,6 +22,7 @@ from .inspection_agent_spec import InspectionAgentSpecBuilder
 from .qwen_client import QwenClient, QwenClientError
 from .route_toolpack import RouteCatalog, RouteToolPack
 from .skill_toolpack import SkillToolPack
+from ylhb_mobile_bridge.patrol_route_store import default_workspace_dir, resolve_route_file_path
 
 
 def latched_qos() -> QoSProfile:
@@ -52,8 +54,11 @@ class InspectionAgentNode(Node):
         self.declare_parameter('request_timeout_sec', 12.0)
         self.declare_parameter('enable_llm_planner', False)
         self.declare_parameter('offline_safe_mode', True)
-        self.declare_parameter('route_file_path', os.path.expanduser('~/ros2_DL/maps/route_patrol_001.json'))
-        self.declare_parameter('robot_capabilities_file', os.path.join(os.path.dirname(__file__), '..', 'config', 'robot_capabilities.yaml'))
+        self.declare_parameter('workspace_dir', '')
+        self.declare_parameter('route_directory', '')
+        self.declare_parameter('patrol_route_path', 'auto')
+        self.declare_parameter('route_file_path', 'auto')  # deprecated alias
+        self.declare_parameter('robot_capabilities_file', '')
         self.declare_parameter('max_agent_steps', 8)
         self.declare_parameter('max_side_effect_tools_per_turn', 4)
         self.declare_parameter('max_identical_tool_calls', 2)
@@ -64,6 +69,15 @@ class InspectionAgentNode(Node):
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.enable_llm_planner = bool(self.get_parameter('enable_llm_planner').value)
         self.offline_safe_mode = bool(self.get_parameter('offline_safe_mode').value)
+        workspace_dir = str(self.get_parameter('workspace_dir').value).strip()
+        self.workspace_dir = Path(workspace_dir).expanduser() if workspace_dir else default_workspace_dir()
+        route_directory = str(self.get_parameter('route_directory').value).strip()
+        self.route_directory = Path(route_directory).expanduser() if route_directory else self.workspace_dir / 'maps'
+        patrol_route_path = str(self.get_parameter('patrol_route_path').value).strip()
+        route_file_path = str(self.get_parameter('route_file_path').value).strip()
+        self.resolved_route_file = str(resolve_route_file_path(
+            patrol_route_path or route_file_path or 'auto', self.route_directory,
+        ))
         self.seen_request_ids: set[str] = set()
         self.seen_request_order: deque[str] = deque(maxlen=256)
         self.request_queue: queue.Queue = queue.Queue()
@@ -202,16 +216,21 @@ class InspectionAgentNode(Node):
         route_toolpack = None
         route_schemas: Dict[str, Dict[str, Any]] = {}
         try:
-            route_catalog = RouteCatalog.from_file(str(self.get_parameter('route_file_path').value))
+            route_catalog = RouteCatalog.from_file(self.resolved_route_file, self.route_directory)
             route_toolpack = RouteToolPack(route_catalog)
             route_schemas = route_toolpack.tool_schemas()
+            self.get_logger().info(f'agent route catalog: resolved_file={route_catalog.route_file_path}')
         except Exception as exc:
             self.get_logger().warning(f'route toolpack unavailable: {exc}')
         try:
-            capability_path = str(self.get_parameter('robot_capabilities_file').value)
-            if not os.path.isabs(capability_path):
-                capability_path = os.path.join(os.path.dirname(__file__), '..', 'config', capability_path)
-            schemas = SkillToolPack.from_file(capability_path, route_schemas).tool_schemas()
+            package_config = get_package_share_path('ylhb_llm') / 'config'
+            configured = str(self.get_parameter('robot_capabilities_file').value).strip()
+            capability_path = Path(configured).expanduser() if configured else package_config / 'robot_capabilities.yaml'
+            if not capability_path.is_absolute():
+                capability_path = package_config / capability_path
+            schemas = SkillToolPack.from_file(str(capability_path), route_schemas).tool_schemas()
+            self.capabilities_file = str(capability_path)
+            self.get_logger().info(f'agent capabilities file: {capability_path}')
         except Exception as exc:
             self.get_logger().warning(f'skill toolpack unavailable: {exc}')
             schemas = {}
