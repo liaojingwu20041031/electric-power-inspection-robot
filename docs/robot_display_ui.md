@@ -21,10 +21,18 @@
   -> ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py
 ```
 
-开发模式由 `system_supervisor_node` 管理 mobile bridge。生产模式由 systemd 常驻，
-启动 UI 时传 `mobile_bridge_managed_externally:=true`；Supervisor 只检查本机端口，
-不会创建或终止第二个进程。UI 另订阅 `/mobile_bridge/cloud_status`，开关只调用
-`/mobile_bridge/set_cloud_enabled`，关闭云连接不会停止当前巡检。
+连接控制分为三层，不能混用：
+
+1. 网桥核心进程同时承载 ROS、FastAPI 和 Cloud Client；生产由 systemd 常驻管理。
+2. 本地 APP 服务使用 `/mobile_bridge/local_app_status` 和
+   `/mobile_bridge/set_local_app_enabled`，只控制手机 API/WS 是否开放。
+3. 云平台连接使用原有 `/mobile_bridge/cloud_status` 和
+   `/mobile_bridge/set_cloud_enabled`，只控制主动 HTTPS Cloud Link。
+
+生产模式启动 UI 时传 `mobile_bridge_managed_externally:=true`；Supervisor 只检查本机
+端口，不创建或终止第二个进程。页面显示两个独立 Switch：关闭本地 APP 不影响云连接
+和当前巡检；关闭云连接不影响本地 APP 和当前巡检。只有停止网桥核心进程才会同时中断
+两条连接，生产模式不向普通用户显示核心进程启停按钮。
 
 ## 启动
 
@@ -107,7 +115,7 @@ scripts/run_on_jetson.sh inspection fullscreen:=true
 
 日志写入 `runs/ui_autostart/inspection_ui_YYYYmmdd_HHMMSS.log`。DISPLAY 异常时先看日志里的 `DISPLAY`、`XAUTHORITY`，再手动执行 wrapper 复现。
 
-## 云平台连接页
+## 连接与服务页
 
 生产模式必须让 systemd 独占 mobile bridge，并传：
 
@@ -115,7 +123,17 @@ scripts/run_on_jetson.sh inspection fullscreen:=true
 mobile_bridge_managed_externally=true
 ```
 
-页面通过 `/mobile_bridge/cloud_status` 显示 `UNCONFIGURED`、`DISABLED`、`CONNECTING`、`CONNECTED`、`BACKOFF`，通过 `/mobile_bridge/set_cloud_enabled` 的 `SetBool` 切换连接。开关不修改 `platform.env`，不执行 shell，也不启动第二个 bridge。
+页面顶部对称显示“本地 APP 服务”和“云平台连接”两张卡片，并分别维护 pending、
+结果提示和确认对话框。中部连接图按两套状态单独着色，网桥核心节点保持独立；摘要区
+显示本地 APP、云平台、待上传事件和当前 execution；详细原始字段默认折叠。
+
+本地 APP Switch 调用 `/mobile_bridge/set_local_app_enabled`。关闭后手机 `/api/status`、
+`/api/debug/**`、`/ws/status`、`/ws/map` 等接口停用，HTTP 返回 503
+`local_app_disabled`；`/api/platform/v1/**` 和 Cloud Client 不受影响。
+
+云平台 Switch 继续调用 `/mobile_bridge/set_cloud_enabled`，显示 `UNCONFIGURED`、
+`DISABLED`、`CONNECTING`、`CONNECTED`、`BACKOFF`。两个开关都不执行 shell、不调用
+systemd，也不启动第二个 bridge。
 
 关闭连接不会停止当前巡检，只暂停 heartbeat、云端命令领取与事件上传；重新开启后会从服务器连续游标补传事件。活动 execution 中关闭会弹出二次确认。
 
@@ -123,7 +141,9 @@ mobile_bridge_managed_externally=true
 
 ```bash
 ros2 topic echo /mobile_bridge/cloud_status --once
+ros2 topic echo /mobile_bridge/local_app_status --once
 ros2 service type /mobile_bridge/set_cloud_enabled
+ros2 service type /mobile_bridge/set_local_app_enabled
 pgrep -af 'ylhb_mobile_bridge mobile_bridge_server'
 ```
 

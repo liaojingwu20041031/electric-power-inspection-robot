@@ -89,6 +89,9 @@ class DeploymentStore:
                 CREATE TABLE IF NOT EXISTS cloud_state (
                   state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS bridge_settings (
+                  setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
             """)
 
     def _connection(self) -> sqlite3.Connection:
@@ -276,3 +279,19 @@ class DeploymentStore:
         with self._connection() as db:
             row = db.execute("SELECT state_value FROM cloud_state WHERE state_key=?", (key,)).fetchone()
         return str(row["state_value"]) if row else default
+
+    def set_bridge_setting(self, key: str, value: str) -> None:
+        with self._connection() as db:
+            db.execute(
+                "INSERT INTO bridge_settings(setting_key,setting_value,updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,updated_at=excluded.updated_at",
+                (key, str(value), _now()),
+            )
+
+    def bridge_setting(self, key: str, default: str = "") -> str:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT setting_value FROM bridge_settings WHERE setting_key=?",
+                (key,),
+            ).fetchone()
+        return str(row["setting_value"]) if row else default

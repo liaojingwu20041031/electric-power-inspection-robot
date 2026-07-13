@@ -8,6 +8,7 @@ def test_main_navigation_uses_patrol_and_voice_pages_not_control_or_mapping():
     assert "StartupLoadingPage.qml" in qml
     assert "backend.uiReady" in qml
     assert "pages/PatrolPage.qml" in qml
+    assert "连接与服务" in qml
     assert "pages/Mapping3DPage.qml" in qml
     assert "pages/VoiceAiPage.qml" in qml
     assert "三维建模" in qml
@@ -63,14 +64,37 @@ def test_bridge_page_separates_local_and_cloud_controls():
     bridge = Path("src/ylhb_llm/ylhb_llm/ui_ros_bridge.py").read_text(encoding="utf-8")
     node = Path("src/ylhb_llm/ylhb_llm/inspection_display_ui_node.py").read_text(encoding="utf-8")
 
-    assert "本地 APP 网桥" in qml
+    assert "连接与服务" in qml
+    assert "本地 APP 服务" in qml
     assert "云平台连接" in qml
-    assert "backend.cloudStatus.configured" in qml
+    assert qml.count("Switch {") == 2
+    assert "backend.setLocalAppEnabled" in qml
     assert "backend.setCloudEnabled" in qml
-    assert "关闭云平台连接不会停止当前巡检" in qml
+    assert 'target: localAppSwitch' in qml
+    assert 'target: cloudSwitch' in qml
+    assert 'localAppSwitch.checked =' not in qml
+    assert 'cloudSwitch.checked =' not in qml
+    assert "setCloudEnabled(local" not in qml
+    assert "setLocalAppEnabled(cloud" not in qml
+    assert "云平台连接和当前巡检不会受到影响" in qml
+    assert "本地 APP 和当前巡检不会停止" in qml
+    assert "ScrollBar.horizontal.policy: ScrollBar.AlwaysOff" in qml
+    assert "mobile_bridge_managed_externally" in qml
+    assert "高级服务操作" in qml
+    assert 'visible: !backend.systemStatus.mobile_bridge_managed_externally' in qml
+    assert 'visible: root.advancedExpanded && !backend.systemStatus.mobile_bridge_managed_externally' in qml
+    assert 'backend.sendSystemCommand("restart_mobile_bridge")' in qml
     assert "cloud_status_topic" in bridge
     assert "set_cloud_enabled_service_name" in bridge
+    assert "local_app_status_topic" in bridge
+    assert "set_local_app_enabled_service_name" in bridge
+    assert "localAppStatus = pyqtSignal(dict)" in bridge
+    assert "localAppControlResult = pyqtSignal(bool, bool, str)" in bridge
+    assert "cloudControlResult = pyqtSignal(bool, bool, str)" in bridge
     assert "signals.cloudStatus.connect(backend.update_cloud_status)" in node
+    assert "signals.localAppStatus.connect(backend.update_local_app_status)" in node
+    assert "signals.localAppControlResult.connect(backend.update_local_app_control_result)" in node
+    assert "signals.cloudControlResult.connect(backend.update_cloud_control_result)" in node
 
 
 def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():

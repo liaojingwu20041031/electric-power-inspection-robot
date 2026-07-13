@@ -75,7 +75,7 @@ ApplicationWindow {
                 }
 
                 Repeater {
-                    model: ["APP 网桥", "巡逻模式", "三维建模", "本机状态", "语音与 AI", "日志"]
+                    model: ["连接与服务", "巡逻模式", "三维建模", "本机状态", "语音与 AI", "日志"]
                     delegate: Button {
                         required property int index
                         required property string modelData

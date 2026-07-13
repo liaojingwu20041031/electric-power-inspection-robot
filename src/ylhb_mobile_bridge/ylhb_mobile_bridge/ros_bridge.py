@@ -1,8 +1,10 @@
 import math
 import json
+import os
 import queue
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 import rclpy
@@ -28,6 +30,11 @@ from .map_snapshot import (
 
 CHASSIS_SAFE_MAX_LINEAR_SPEED = 0.35
 CHASSIS_SAFE_MAX_ANGULAR_SPEED = 0.55
+TRUE_VALUES = {'1', 'true', 'yes', 'on'}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def initial_pose_qos_profile() -> QoSProfile:
@@ -103,6 +110,8 @@ class MobileRosBridge(Node):
         self.robot_id = str(self.get_parameter('robot_id').value)
         self.cloud_status_topic = str(self.get_parameter('cloud_status_topic').value)
         self.set_cloud_enabled_service_name = str(self.get_parameter('set_cloud_enabled_service_name').value)
+        self.local_app_status_topic = str(self.get_parameter('local_app_status_topic').value)
+        self.set_local_app_enabled_service_name = str(self.get_parameter('set_local_app_enabled_service_name').value)
 
         self._last_odom_time: Optional[float] = None
         self._last_scan_time: Optional[float] = None
@@ -129,6 +138,14 @@ class MobileRosBridge(Node):
         self._stop_timer: Optional[threading.Timer] = None
         self._nav_goal_handle = None
         self.cloud_client = None
+        self._local_app_enabled = os.environ.get(
+            'YLHB_LOCAL_APP_ENABLED', 'true'
+        ).strip().lower() in TRUE_VALUES
+        self._local_app_http_available = False
+        self._local_app_last_changed_at = _now()
+        self._local_app_last_error = ''
+        self._local_app_clients = {'status': 0, 'map': 0}
+        self._local_app_lock = threading.Lock()
 
         self._cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self._text_pub = self.create_publisher(
@@ -152,7 +169,9 @@ class MobileRosBridge(Node):
             initial_pose_qos_profile(),
         )
         self._cloud_status_pub = self.create_publisher(String, self.cloud_status_topic, initial_pose_qos_profile())
+        self._local_app_status_pub = self.create_publisher(String, self.local_app_status_topic, initial_pose_qos_profile())
         self.create_service(SetBool, self.set_cloud_enabled_service_name, self._set_cloud_enabled)
+        self.create_service(SetBool, self.set_local_app_enabled_service_name, self._set_local_app_enabled)
         self.create_subscription(
             Odometry,
             self.odom_topic,
@@ -251,6 +270,8 @@ class MobileRosBridge(Node):
             'platform_storage_dir': '~/.local/share/ylhb/platform',
             'cloud_status_topic': '/mobile_bridge/cloud_status',
             'set_cloud_enabled_service_name': '/mobile_bridge/set_cloud_enabled',
+            'local_app_status_topic': '/mobile_bridge/local_app_status',
+            'set_local_app_enabled_service_name': '/mobile_bridge/set_local_app_enabled',
             'max_linear_speed': 0.30,
             'max_angular_speed': 0.55,
             'default_cmd_duration_ms': 300,
@@ -720,6 +741,121 @@ class MobileRosBridge(Node):
             msg = String()
             msg.data = json.dumps(self.cloud_client.status(), ensure_ascii=False)
             self._cloud_status_pub.publish(msg)
+        self._publish_local_app_status()
+
+    def initialize_local_app_settings(self, store) -> None:
+        override = store.bridge_setting(
+            'local_app_enabled_override', ''
+        ).strip().lower()
+        if override in {'true', 'false'}:
+            self._local_app_enabled = override == 'true'
+        self._local_app_last_changed_at = _now()
+
+    def is_local_app_enabled(self) -> bool:
+        return bool(self._local_app_enabled)
+
+    def set_local_app_http_available(self, available: bool, error: str = '') -> None:
+        self._local_app_http_available = bool(available)
+        self._local_app_last_error = str(error or '')
+        self._publish_local_app_status()
+
+    def local_app_client_connected(self, kind: str) -> None:
+        lock = getattr(self, '_local_app_lock', None)
+        if lock:
+            with lock:
+                self._local_app_clients[kind] = self._local_app_clients.get(kind, 0) + 1
+        else:
+            self._local_app_clients[kind] = self._local_app_clients.get(kind, 0) + 1
+        self._publish_local_app_status()
+
+    def local_app_client_disconnected(self, kind: str) -> None:
+        lock = getattr(self, '_local_app_lock', None)
+        if lock:
+            with lock:
+                self._local_app_clients[kind] = max(
+                    0, self._local_app_clients.get(kind, 0) - 1
+                )
+        else:
+            self._local_app_clients[kind] = max(
+                0, self._local_app_clients.get(kind, 0) - 1
+            )
+        self._publish_local_app_status()
+
+    def local_app_status_snapshot(self) -> dict:
+        enabled = self.is_local_app_enabled()
+        available = bool(self._local_app_http_available)
+        if enabled and available:
+            state = 'ENABLED'
+        elif not enabled:
+            state = 'DISABLED'
+        else:
+            state = 'DEGRADED'
+        system_status = self.system_status()
+        app_url = str(system_status.get('mobile_bridge_url') or '')
+        if not app_url:
+            getter = getattr(self, 'get_parameter', None)
+            try:
+                port = int(getter('port').value) if callable(getter) else 8000
+            except (AttributeError, KeyError):
+                port = 8000
+            app_url = f'http://127.0.0.1:{port}'
+        lock = getattr(self, '_local_app_lock', None)
+        if lock:
+            with lock:
+                clients = dict(self._local_app_clients)
+        else:
+            clients = dict(self._local_app_clients)
+        return {
+            'enabled': enabled,
+            'state': state,
+            'httpAvailable': available,
+            'appUrl': app_url,
+            'authRequired': bool(getattr(self, 'require_token', False)),
+            'activeStatusClients': clients.get('status', 0),
+            'activeMapClients': clients.get('map', 0),
+            'managedExternally': bool(
+                system_status.get('mobile_bridge_managed_externally', True)
+            ),
+            'lastChangedAt': self._local_app_last_changed_at,
+            'lastError': self._local_app_last_error,
+        }
+
+    def set_local_app_enabled(self, enabled: bool) -> dict:
+        enabled = bool(enabled)
+        store = getattr(self, 'platform_store', None)
+        if store is None:
+            raise RuntimeError('bridge settings store is not ready')
+        store.set_bridge_setting(
+            'local_app_enabled_override', 'true' if enabled else 'false'
+        )
+        self._local_app_enabled = enabled
+        self._local_app_last_changed_at = _now()
+        self._local_app_last_error = ''
+        status = self.local_app_status_snapshot()
+        self._publish_local_app_status(status)
+        return status
+
+    def _publish_local_app_status(self, status: Optional[dict] = None) -> None:
+        publisher = getattr(self, '_local_app_status_pub', None)
+        if publisher is None:
+            return
+        msg = String()
+        msg.data = json.dumps(
+            status or self.local_app_status_snapshot(), ensure_ascii=False
+        )
+        publisher.publish(msg)
+
+    def _set_local_app_enabled(self, request, response):
+        try:
+            status = self.set_local_app_enabled(bool(request.data))
+            response.success = True
+            response.message = str(status.get('state') or '')
+        except Exception as exc:
+            self._local_app_last_error = str(exc)
+            response.success = False
+            response.message = str(exc)
+            self._publish_local_app_status()
+        return response
 
     def _set_cloud_enabled(self, request, response):
         if not self.cloud_client:

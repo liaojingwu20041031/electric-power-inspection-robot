@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from typing import Any, Dict
 
@@ -24,7 +25,10 @@ def latched_qos() -> QoSProfile:
 
 class UiSignals(QObject):
     systemStatus = pyqtSignal(dict)
+    localAppStatus = pyqtSignal(dict)
     cloudStatus = pyqtSignal(dict)
+    localAppControlResult = pyqtSignal(bool, bool, str)
+    cloudControlResult = pyqtSignal(bool, bool, str)
     taskContext = pyqtSignal(dict)
     taskEvent = pyqtSignal(object)
     taskStatus = pyqtSignal(object)
@@ -54,6 +58,8 @@ class InspectionDisplayRosBridge(Node):
             'system_status_topic': '/inspection_ai/system_status',
             'cloud_status_topic': '/mobile_bridge/cloud_status',
             'set_cloud_enabled_service_name': '/mobile_bridge/set_cloud_enabled',
+            'local_app_status_topic': '/mobile_bridge/local_app_status',
+            'set_local_app_enabled_service_name': '/mobile_bridge/set_local_app_enabled',
             'task_event_topic': '/inspection_ai/task_event',
             'task_status_topic': '/inspection_ai/task_status',
             'say_text_topic': '/inspection_ai/say_text',
@@ -88,6 +94,7 @@ class InspectionDisplayRosBridge(Node):
         self.patrol_command_pub = self.create_publisher(String, self._param('patrol_command_topic'), 10)
         self.cmd_vel_pub = self.create_publisher(Twist, self._param('cmd_vel_topic'), 10)
         self.create_subscription(String, self._param('system_status_topic'), self._system_status, latched_qos())
+        self.create_subscription(String, self._param('local_app_status_topic'), self._local_app_status, latched_qos())
         self.create_subscription(String, self._param('cloud_status_topic'), self._cloud_status, latched_qos())
         self.create_subscription(String, self._param('task_context_status_topic'), self._task_context, latched_qos())
         self.create_subscription(TaskEvent, self._param('task_event_topic'), signals.taskEvent.emit, 10)
@@ -119,6 +126,7 @@ class InspectionDisplayRosBridge(Node):
             'capture': self.create_client(Trigger, self._param('capture_voice_service_name')),
         }
         self.cloud_enabled_client = self.create_client(SetBool, self._param('set_cloud_enabled_service_name'))
+        self.local_app_enabled_client = self.create_client(SetBool, self._param('set_local_app_enabled_service_name'))
         self.publish_system_mode(str(self.get_parameter('initial_system_mode').value))
 
     def _param(self, name: str) -> str:
@@ -137,6 +145,9 @@ class InspectionDisplayRosBridge(Node):
 
     def _cloud_status(self, msg: String) -> None:
         self.signals.cloudStatus.emit(self.parse_json(msg.data))
+
+    def _local_app_status(self, msg: String) -> None:
+        self.signals.localAppStatus.emit(self.parse_json(msg.data))
 
     def _task_context(self, msg: String) -> None:
         self.signals.taskContext.emit(self.parse_json(msg.data))
@@ -216,10 +227,77 @@ class InspectionDisplayRosBridge(Node):
 
     def call_cloud_enabled(self, enabled: bool) -> None:
         if not self.cloud_enabled_client.service_is_ready():
+            self.signals.cloudControlResult.emit(
+                bool(enabled), False, '云平台控制服务不可用'
+            )
             return
         request = SetBool.Request()
         request.data = bool(enabled)
-        self.cloud_enabled_client.call_async(request)
+        future = self.cloud_enabled_client.call_async(request)
+        self._watch_set_bool(
+            future,
+            bool(enabled),
+            self.signals.cloudControlResult,
+            self._cloud_control_done,
+            '云平台控制请求超时',
+        )
+
+    def call_local_app_enabled(self, enabled: bool) -> None:
+        if not self.local_app_enabled_client.service_is_ready():
+            self.signals.localAppControlResult.emit(
+                bool(enabled), False, '本地 APP 控制服务不可用'
+            )
+            return
+        request = SetBool.Request()
+        request.data = bool(enabled)
+        future = self.local_app_enabled_client.call_async(request)
+        self._watch_set_bool(
+            future,
+            bool(enabled),
+            self.signals.localAppControlResult,
+            self._local_app_control_done,
+            '本地 APP 控制请求超时',
+        )
+
+    @staticmethod
+    def _watch_set_bool(
+        future, enabled: bool, signal, done_callback, timeout_message: str
+    ) -> None:
+        lock = threading.Lock()
+        finished = False
+
+        def finish(success: bool, message: str) -> None:
+            nonlocal finished
+            with lock:
+                if finished:
+                    return
+                finished = True
+            signal.emit(enabled, success, message)
+
+        timer = threading.Timer(5.0, lambda: finish(False, timeout_message))
+        timer.daemon = True
+        timer.start()
+        future.add_done_callback(
+            lambda done: done_callback(done, finish, timer)
+        )
+
+    @staticmethod
+    def _local_app_control_done(future, finish, timer) -> None:
+        timer.cancel()
+        try:
+            result = future.result()
+            finish(bool(result.success), str(result.message))
+        except Exception as exc:
+            finish(False, str(exc))
+
+    @staticmethod
+    def _cloud_control_done(future, finish, timer) -> None:
+        timer.cancel()
+        try:
+            result = future.result()
+            finish(bool(result.success), str(result.message))
+        except Exception as exc:
+            finish(False, str(exc))
 
     def _voice_service_done(self, name: str, future) -> None:
         try:

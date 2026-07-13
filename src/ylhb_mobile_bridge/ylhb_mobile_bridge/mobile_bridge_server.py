@@ -34,6 +34,13 @@ from .schemas import (
 )
 
 APP_SYSTEM_MODES = {'bringup', 'mapping'}
+LOCAL_APP_HTTP_PATHS = {
+    '/api/status',
+    '/api/cmd_vel',
+    '/api/text_command',
+    '/api/task',
+    '/api/stop',
+}
 
 
 def task_to_text(command: TaskCommand) -> str:
@@ -80,6 +87,41 @@ def make_app(
                 )
             ),
         )
+
+    def local_app_disabled_response() -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content=response_dict(
+                ApiResponse(
+                    ok=False,
+                    error='local_app_disabled',
+                    message='本地 APP 服务已关闭',
+                )
+            ),
+        )
+
+    def local_app_enabled() -> bool:
+        checker = getattr(bridge, 'is_local_app_enabled', None)
+        return bool(checker()) if callable(checker) else True
+
+    def is_local_app_path(path: str) -> bool:
+        return path in LOCAL_APP_HTTP_PATHS or path.startswith('/api/debug/')
+
+    async def wait_while_local_app_enabled(interval: float) -> bool:
+        remaining = max(0.0, interval)
+        while remaining > 0:
+            step = min(0.25, remaining)
+            await asyncio.sleep(step)
+            if not local_app_enabled():
+                return False
+            remaining -= step
+        return local_app_enabled()
+
+    async def close_local_app_websocket(websocket: WebSocket) -> None:
+        try:
+            await websocket.close(code=1012)
+        except Exception:
+            pass
 
     def map_error_response(exc: MapManagerError) -> JSONResponse:
         return JSONResponse(
@@ -134,12 +176,26 @@ def make_app(
 
     @app.middleware('http')
     async def auth_middleware(request: Request, call_next):
+        if is_local_app_path(request.url.path) and not local_app_enabled():
+            return local_app_disabled_response()
         if (
             request.url.path.startswith('/api/')
             and not require_http_token(request)
         ):
             return unauthorized_response()
         return await call_next(request)
+
+    @app.on_event('startup')
+    async def mark_http_available():
+        setter = getattr(bridge, 'set_local_app_http_available', None)
+        if callable(setter):
+            setter(True)
+
+    @app.on_event('shutdown')
+    async def mark_http_unavailable():
+        setter = getattr(bridge, 'set_local_app_http_available', None)
+        if callable(setter):
+            setter(False)
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
@@ -514,6 +570,9 @@ def make_app(
 
     @app.websocket('/ws/status')
     async def ws_status(websocket: WebSocket):
+        if not local_app_enabled():
+            await close_local_app_websocket(websocket)
+            return
         if not require_ws_token(websocket):
             await websocket.close(code=1008)
             return
@@ -522,21 +581,38 @@ def make_app(
             0.1,
             float(getattr(bridge, 'status_rate_hz', 2.0)),
         )
+        connected = getattr(bridge, 'local_app_client_connected', None)
+        disconnected = getattr(bridge, 'local_app_client_disconnected', None)
+        if callable(connected):
+            connected('status')
         try:
             while True:
+                if not local_app_enabled():
+                    await close_local_app_websocket(websocket)
+                    return
                 await websocket.send_json(
                     response_dict(ok('status', bridge.robot_status()))
                 )
-                await asyncio.sleep(interval)
+                if not await wait_while_local_app_enabled(interval):
+                    await close_local_app_websocket(websocket)
+                    return
         except WebSocketDisconnect:
-            bridge.stop_motion()
+            if local_app_enabled():
+                bridge.stop_motion()
             return
         except Exception:
-            bridge.stop_motion()
+            if local_app_enabled():
+                bridge.stop_motion()
             return
+        finally:
+            if callable(disconnected):
+                disconnected('status')
 
     @app.websocket('/ws/map')
     async def ws_map(websocket: WebSocket):
+        if not local_app_enabled():
+            await close_local_app_websocket(websocket)
+            return
         if not require_ws_token(websocket):
             await websocket.close(code=1008)
             return
@@ -552,8 +628,15 @@ def make_app(
             0.1,
             float(getattr(bridge, 'map_stream_rate_hz', 1.0)),
         )
+        connected = getattr(bridge, 'local_app_client_connected', None)
+        disconnected = getattr(bridge, 'local_app_client_disconnected', None)
+        if callable(connected):
+            connected('map')
         try:
             while True:
+                if not local_app_enabled():
+                    await close_local_app_websocket(websocket)
+                    return
                 snapshot = bridge.map_snapshot(downsample=downsample)
                 if snapshot is None:
                     await websocket.send_json(
@@ -569,13 +652,20 @@ def make_app(
                     await websocket.send_json(
                         response_dict(ok('map snapshot', snapshot))
                     )
-                await asyncio.sleep(interval)
+                if not await wait_while_local_app_enabled(interval):
+                    await close_local_app_websocket(websocket)
+                    return
         except WebSocketDisconnect:
-            bridge.stop_motion()
+            if local_app_enabled():
+                bridge.stop_motion()
             return
         except Exception:
-            bridge.stop_motion()
+            if local_app_enabled():
+                bridge.stop_motion()
             return
+        finally:
+            if callable(disconnected):
+                disconnected('map')
 
     return app
 

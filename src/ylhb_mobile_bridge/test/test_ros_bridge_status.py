@@ -40,6 +40,14 @@ class FakePlatformStore:
         self.events.append(saved)
         return saved
 
+    def bridge_setting(self, key, default=''):
+        return getattr(self, 'bridge_settings', {}).get(key, default)
+
+    def set_bridge_setting(self, key, value):
+        if not hasattr(self, 'bridge_settings'):
+            self.bridge_settings = {}
+        self.bridge_settings[key] = str(value)
+
 
 class FakeTimer:
     def __init__(self, interval, callback) -> None:
@@ -460,6 +468,74 @@ def test_cloud_command_is_dispatched_only_after_ros_publish():
 
     assert bridge.platform_store.states[-1][1] == "DISPATCHED"
     assert len(bridge._system_command_pub.messages) == 1
+
+
+def test_local_app_toggle_persists_without_changing_cloud_state():
+    bridge = make_bridge()
+    bridge.platform_store = FakePlatformStore()
+    bridge.cloud_client = SimpleNamespace(desired_enabled=True)
+    bridge._local_app_enabled = True
+    bridge._local_app_http_available = True
+    bridge._local_app_last_changed_at = ''
+    bridge._local_app_last_error = ''
+    bridge._local_app_clients = {'status': 0, 'map': 0}
+
+    status = bridge.set_local_app_enabled(False)
+
+    assert status['enabled'] is False
+    assert bridge.platform_store.bridge_settings['local_app_enabled_override'] == 'false'
+    assert bridge.cloud_client.desired_enabled is True
+
+
+def test_local_app_override_wins_and_status_has_ui_contract():
+    bridge = make_bridge()
+    bridge.platform_store = FakePlatformStore()
+    bridge.platform_store.set_bridge_setting('local_app_enabled_override', 'false')
+    bridge._local_app_enabled = True
+    bridge._local_app_http_available = True
+    bridge._local_app_last_changed_at = ''
+    bridge._local_app_last_error = ''
+    bridge._local_app_clients = {'status': 2, 'map': 1}
+    bridge.require_token = False
+    bridge._system_status = {
+        'mobile_bridge_url': 'http://192.168.1.50:8000',
+        'mobile_bridge_managed_externally': True,
+    }
+
+    bridge.initialize_local_app_settings(bridge.platform_store)
+    status = bridge.local_app_status_snapshot()
+
+    assert status == {
+        'enabled': False,
+        'state': 'DISABLED',
+        'httpAvailable': True,
+        'appUrl': 'http://192.168.1.50:8000',
+        'authRequired': False,
+        'activeStatusClients': 2,
+        'activeMapClients': 1,
+        'managedExternally': True,
+        'lastChangedAt': status['lastChangedAt'],
+        'lastError': '',
+    }
+
+
+def test_cloud_toggle_does_not_change_local_app_state():
+    bridge = make_bridge()
+    bridge._local_app_enabled = True
+    bridge.cloud_client = SimpleNamespace(
+        set_enabled=lambda enabled: {
+            'configured': True,
+            'desiredEnabled': bool(enabled),
+            'state': 'DISABLED' if not enabled else 'CONNECTING',
+        }
+    )
+    request = SimpleNamespace(data=False)
+    response = SimpleNamespace(success=False, message='')
+
+    bridge._set_cloud_enabled(request, response)
+
+    assert response.success is True
+    assert bridge._local_app_enabled is True
 
 
 def test_invalid_cloud_queue_item_is_rejected_with_event():

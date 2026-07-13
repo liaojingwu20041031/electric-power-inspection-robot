@@ -27,6 +27,8 @@ mobile_bridge:
     platform_storage_dir: "~/.local/share/ylhb/platform"
     cloud_status_topic: "/mobile_bridge/cloud_status"
     set_cloud_enabled_service_name: "/mobile_bridge/set_cloud_enabled"
+    local_app_status_topic: "/mobile_bridge/local_app_status"
+    set_local_app_enabled_service_name: "/mobile_bridge/set_local_app_enabled"
     # Cloud pull configuration is environment-only: YLHB_CLOUD_*; never put tokens here.
     max_linear_speed: 0.30
     max_angular_speed: 0.55

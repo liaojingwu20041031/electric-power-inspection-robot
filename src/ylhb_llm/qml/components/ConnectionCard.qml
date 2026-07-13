@@ -1,0 +1,78 @@
+import QtQuick 2.12
+import QtQuick.Controls 2.12
+import QtQuick.Layouts 1.12
+import ".."
+
+Rectangle {
+    id: root
+    default property alias contentData: body.data
+    property string title: ""
+    property string stateTitle: ""
+    property string description: ""
+    property color statusColor: Theme.muted
+    property color softColor: Theme.surfaceAlt
+
+    implicitWidth: 320
+    implicitHeight: body.implicitHeight + 40
+    radius: 16
+    color: Theme.surface
+    border.color: Theme.border
+
+    ColumnLayout {
+        id: body
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: 20
+        spacing: 12
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 10
+            Rectangle {
+                width: 12
+                height: 12
+                radius: 6
+                color: root.statusColor
+            }
+            Label {
+                Layout.fillWidth: true
+                text: root.title
+                color: Theme.text
+                font.pixelSize: 18
+                font.bold: true
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: stateTitleLabel.implicitHeight + stateDescriptionLabel.implicitHeight + 28
+            radius: 12
+            color: root.softColor
+            ColumnLayout {
+                id: stateColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 10
+                spacing: 4
+                Label {
+                    id: stateTitleLabel
+                    Layout.fillWidth: true
+                    text: root.stateTitle
+                    color: Theme.text
+                    font.pixelSize: 17
+                    font.bold: true
+                    wrapMode: Text.Wrap
+                }
+                Label {
+                    id: stateDescriptionLabel
+                    Layout.fillWidth: true
+                    text: root.description
+                    color: Theme.muted
+                    font.pixelSize: 14
+                    wrapMode: Text.Wrap
+                }
+            }
+        }
+    }
+}

@@ -11,6 +11,7 @@ if HAS_FASTAPI:
     import fastapi.routing
 
     from ylhb_mobile_bridge.mobile_bridge_server import make_app
+    from ylhb_mobile_bridge.platform_store import DeploymentStore
 
 pytestmark = pytest.mark.skipif(
     not HAS_FASTAPI,
@@ -45,6 +46,8 @@ class FakeBridge:
         self.patrol_commands = []
         self.system_status_payload = {}
         self.patrol_status_payload = {}
+        self.local_app_enabled = True
+        self.local_app_clients = {'status': 0, 'map': 0}
 
     def get_logger(self):
         return FakeLogger()
@@ -94,6 +97,15 @@ class FakeBridge:
 
     def publish_patrol_command(self, command):
         self.patrol_commands.append(command)
+
+    def is_local_app_enabled(self):
+        return self.local_app_enabled
+
+    def local_app_client_connected(self, kind):
+        self.local_app_clients[kind] += 1
+
+    def local_app_client_disconnected(self, kind):
+        self.local_app_clients[kind] -= 1
 
     def patrol_status(self):
         return self.patrol_status_payload
@@ -565,3 +577,94 @@ def test_http_token_auth_allows_bearer_header():
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
+
+
+def test_disabled_local_app_returns_503_without_blocking_platform_api():
+    bridge = FakeBridge()
+    bridge.local_app_enabled = False
+    app = make_app(bridge, FakeProcessManager())
+
+    @app.get('/api/platform/v1/health')
+    def platform_health():
+        return {'online': True}
+
+    client = AsgiClient(app)
+    response = client.get('/api/status')
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body['ok'] is False
+    assert body['error'] == 'local_app_disabled'
+    assert body['message'] == '本地 APP 服务已关闭'
+    assert body['data'] is None
+    assert 'timestamp' in body
+    assert client.get('/api/platform/v1/health').status_code == 200
+
+
+def test_local_app_and_cloud_overrides_use_separate_settings(tmp_path):
+    store = DeploymentStore(tmp_path)
+
+    store.set_bridge_setting('local_app_enabled_override', 'false')
+    store.set_cloud_state('cloud_enabled_override', 'true')
+
+    assert store.bridge_setting('local_app_enabled_override', '') == 'false'
+    assert store.cloud_state('cloud_enabled_override', '') == 'true'
+    assert store.cloud_state('local_app_enabled_override', '') == ''
+
+
+@pytest.mark.parametrize(
+    ('path', 'client_kind', 'close_raises'),
+    [
+        ('/ws/status', 'status', False),
+        ('/ws/map', 'map', False),
+        ('/ws/status', 'status', True),
+        ('/ws/map', 'map', True),
+    ],
+)
+def test_websockets_close_when_local_app_is_disabled(
+    path, client_kind, close_raises
+):
+    bridge = FakeBridge()
+    bridge.status_rate_hz = 0.1
+    bridge.map_stream_rate_hz = 0.1
+    app = make_app(bridge, FakeProcessManager())
+    messages = []
+    received_connect = False
+
+    async def run_websocket():
+        nonlocal received_connect
+
+        async def receive():
+            nonlocal received_connect
+            if not received_connect:
+                received_connect = True
+                return {'type': 'websocket.connect'}
+            await asyncio.sleep(10)
+
+        async def send(message):
+            messages.append(message)
+            if message['type'] == 'websocket.send':
+                bridge.local_app_enabled = False
+            if message['type'] == 'websocket.close' and close_raises:
+                raise RuntimeError('client disconnected during close')
+
+        await app({
+            'type': 'websocket',
+            'asgi': {'version': '3.0'},
+            'http_version': '1.1',
+            'scheme': 'ws',
+            'path': path,
+            'raw_path': path.encode(),
+            'query_string': b'',
+            'headers': [],
+            'client': ('testclient', 50000),
+            'server': ('testserver', 80),
+            'subprotocols': [],
+        }, receive, send)
+
+    asyncio.run(asyncio.wait_for(run_websocket(), timeout=1.0))
+
+    closes = [message for message in messages if message['type'] == 'websocket.close']
+    assert closes[-1]['code'] == 1012
+    assert bridge.local_app_clients[client_kind] == 0
+    assert bridge.stopped is False

@@ -6,11 +6,11 @@ Button {
     id: control
     property color buttonColor: Theme.primary
     property color textColor: Theme.surface
-    implicitHeight: 40
+    implicitHeight: 44
     font.pixelSize: 14
     font.bold: true
     background: Rectangle {
-        radius: 6
+        radius: 10
         color: control.enabled ? control.buttonColor : Theme.border
     }
     contentItem: Text {

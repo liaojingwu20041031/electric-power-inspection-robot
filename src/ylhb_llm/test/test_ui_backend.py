@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from ylhb_mobile_bridge.patrol_route_store import load_route_file
 from ylhb_llm.ui_backend import UiBackend
 from ylhb_llm.ui_models import UiState
+from ylhb_llm.ui_ros_bridge import InspectionDisplayRosBridge
 
 
 TEST_ROUTE_PATH = (
@@ -26,6 +27,7 @@ class FakeBridge:
         self.twists = []
         self.agent_requests = []
         self.cloud_enabled_requests = []
+        self.local_app_enabled_requests = []
 
     def publish_system_command(self, command, **extra):
         self.system_commands.append((command, extra))
@@ -50,6 +52,9 @@ class FakeBridge:
 
     def call_cloud_enabled(self, enabled):
         self.cloud_enabled_requests.append(bool(enabled))
+
+    def call_local_app_enabled(self, enabled):
+        self.local_app_enabled_requests.append(bool(enabled))
 
 
 def make_backend(clock, **kwargs):
@@ -227,6 +232,121 @@ def test_cloud_status_and_toggle_use_dedicated_service():
 
     assert backend.cloudStatus == status
     assert backend.bridge.cloud_enabled_requests == [False]
+
+
+def test_local_app_and_cloud_controls_have_independent_state_and_services():
+    backend = make_backend(lambda: 100.0)
+    local_status = {'enabled': True, 'state': 'ENABLED', 'httpAvailable': True}
+    cloud_status = {'configured': True, 'desiredEnabled': True, 'state': 'CONNECTED'}
+
+    backend.update_local_app_status(local_status)
+    backend.update_cloud_status(cloud_status)
+    backend.setLocalAppEnabled(False)
+    backend.setLocalAppEnabled(False)
+
+    assert backend.localAppStatus == local_status
+    assert backend.cloudStatus == cloud_status
+    assert backend.localAppControlPending is True
+    assert backend.cloudControlPending is False
+    assert backend.bridge.local_app_enabled_requests == [False]
+    assert backend.bridge.cloud_enabled_requests == []
+
+    backend.update_local_app_control_result(False, True, 'DISABLED')
+    backend.setCloudEnabled(False)
+    backend.setCloudEnabled(False)
+
+    assert backend.localAppControlPending is False
+    assert backend.cloudControlPending is True
+    assert backend.bridge.local_app_enabled_requests == [False]
+    assert backend.bridge.cloud_enabled_requests == [False]
+
+
+def test_connection_state_texts_are_human_readable_and_independent():
+    backend = make_backend(lambda: 100.0)
+    backend.update_local_app_status({'enabled': False, 'state': 'DISABLED'})
+    backend.update_cloud_status({'desiredEnabled': True, 'state': 'BACKOFF', 'nextRetrySec': 8})
+
+    assert backend.localAppStateText == '本地 APP 服务已关闭'
+    assert backend.localAppDescription == '手机暂时无法连接，云平台通信不受影响'
+    assert backend.cloudStateText == '云平台暂时离线'
+    assert '8 秒后' in backend.cloudDescription
+
+
+def test_unavailable_connection_services_emit_explicit_failure():
+    emitted = []
+
+    class Signal:
+        def emit(self, *args):
+            emitted.append(args)
+
+    unavailable = SimpleNamespace(service_is_ready=lambda: False)
+    bridge = SimpleNamespace(
+        local_app_enabled_client=unavailable,
+        cloud_enabled_client=unavailable,
+        signals=SimpleNamespace(
+            localAppControlResult=Signal(),
+            cloudControlResult=Signal(),
+        ),
+    )
+
+    InspectionDisplayRosBridge.call_local_app_enabled(bridge, True)
+    InspectionDisplayRosBridge.call_cloud_enabled(bridge, False)
+
+    assert emitted == [
+        (True, False, '本地 APP 控制服务不可用'),
+        (False, False, '云平台控制服务不可用'),
+    ]
+
+
+def test_ready_connection_service_that_never_replies_times_out(monkeypatch):
+    emitted = []
+
+    class Signal:
+        def emit(self, *args):
+            emitted.append(args)
+
+    class PendingFuture:
+        def add_done_callback(self, callback):
+            self.callback = callback
+
+    class Client:
+        def service_is_ready(self):
+            return True
+
+        def call_async(self, request):
+            return PendingFuture()
+
+    class ImmediateTimer:
+        def __init__(self, _interval, callback):
+            self.callback = callback
+            self.daemon = False
+
+        def start(self):
+            self.callback()
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr('ylhb_llm.ui_ros_bridge.threading.Timer', ImmediateTimer)
+    bridge = SimpleNamespace(
+        local_app_enabled_client=Client(),
+        cloud_enabled_client=Client(),
+        _watch_set_bool=InspectionDisplayRosBridge._watch_set_bool,
+        _local_app_control_done=InspectionDisplayRosBridge._local_app_control_done,
+        _cloud_control_done=InspectionDisplayRosBridge._cloud_control_done,
+        signals=SimpleNamespace(
+            localAppControlResult=Signal(),
+            cloudControlResult=Signal(),
+        ),
+    )
+
+    InspectionDisplayRosBridge.call_local_app_enabled(bridge, False)
+    InspectionDisplayRosBridge.call_cloud_enabled(bridge, True)
+
+    assert emitted == [
+        (False, False, '本地 APP 控制请求超时'),
+        (True, False, '云平台控制请求超时'),
+    ]
 
 
 def test_patrol_readiness_properties_follow_system_status():

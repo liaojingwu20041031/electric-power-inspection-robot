@@ -126,6 +126,7 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
     bridge.platform_store = store
     bridge.platform_robot_id = robot_id
     bridge.platform_boot_id = boot_id
+    bridge.initialize_local_app_settings(store)
     from .platform_cloud_client import PlatformCloudClient
     bridge.cloud_client = PlatformCloudClient(store, bridge, robot_id, boot_id)
     return store
