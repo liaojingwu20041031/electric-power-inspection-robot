@@ -20,6 +20,15 @@ takeover/cancel 旧入站接口默认返回 `409 INBOUND_CONTROL_DISABLED`；只
 execution 仍保留。暂停云连接不会自动开放入站控制，调试时必须显式设置
 `YLHB_ALLOW_INBOUND_PLATFORM_CONTROL=true`。
 
+公网 Robot Bridge 与本地 Mobile Bridge 是两条不同链路：
+
+- 公网主链路由 Jetson 主动访问 `https://example.com/robot-api/v1`；公网服务器不访问 Jetson。
+- 本地 APP 使用本文 `/api/*`、`/api/debug/*` 和 WebSocket，仅限可信局域网。
+- `/api/platform/v1` 仅作本机/可信局域网调试，不是 Spring Boot 的正式公网调用路径。
+- 浏览器和平台前端不得持有 Robot Token 或 Bridge Admin Token。
+
+Cloud Link 的 env、systemd、状态 Topic、SetBool 开关、日志和备份见 [Jetson 云平台连接运维](cloud_platform_connection.md)；协议字段见 [Robot Platform Protocol v1](protocol/robot-platform-v1.md)。
+
 ## 重要约定
 
 - APP 只允许通过系统进程端口启动/停止 `bringup` 和 `mapping`；该接口优先转发给

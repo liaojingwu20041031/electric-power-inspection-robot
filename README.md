@@ -245,6 +245,9 @@ ros2 topic echo /gps/rtk_status --once
 - [路线 JSON 字段参考](docs/route_json_reference.md)：v2/v3 兼容、地图绑定、keepout、循环与 schedule 契约
 - [二值 Keepout 操作](docs/safety_map_keepout.md)：mask 生成/checker、Profile、lifecycle 与现场验收
 - [Mobile Bridge APP 调试接口](docs/mobile_debug_api.md)：移动端状态、底盘控制、建图、巡逻和安全限制
+- [Robot Platform Protocol v1](docs/protocol/robot-platform-v1.md)：公网 heartbeat、命令、事件、deployment、鉴权与恢复合同
+- [Jetson 云平台连接运维](docs/cloud_platform_connection.md)：platform.env、systemd、Cloud UI、日志脱敏、备份和本地回退
+- [本体 QML 操控台](docs/robot_display_ui.md)：外部托管 mobile bridge、云连接状态与 UI 安全边界
 - [ZED 3D 双阶段建模流程](docs/3d_mapping_workflow.md)：SVO 采集、离线重建、QML 页面和 RViz 预览
 - [AI Agent 工程日志](docs/AI_AGENT_ENGINEERING_LOG.md)：mini-agent-core 风格本地运行时、工具策略、话题 schema 和测试入口
 - [mini-agent-core](https://github.com/liaojingwu20041031/mini-agent-core)：作者独立维护的轻量 Agent Core / SDK 模板

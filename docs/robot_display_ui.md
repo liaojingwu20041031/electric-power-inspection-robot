@@ -106,3 +106,25 @@ scripts/run_on_jetson.sh inspection fullscreen:=true
 ```
 
 日志写入 `runs/ui_autostart/inspection_ui_YYYYmmdd_HHMMSS.log`。DISPLAY 异常时先看日志里的 `DISPLAY`、`XAUTHORITY`，再手动执行 wrapper 复现。
+
+## 云平台连接页
+
+生产模式必须让 systemd 独占 mobile bridge，并传：
+
+```text
+mobile_bridge_managed_externally=true
+```
+
+页面通过 `/mobile_bridge/cloud_status` 显示 `UNCONFIGURED`、`DISABLED`、`CONNECTING`、`CONNECTED`、`BACKOFF`，通过 `/mobile_bridge/set_cloud_enabled` 的 `SetBool` 切换连接。开关不修改 `platform.env`，不执行 shell，也不启动第二个 bridge。
+
+关闭连接不会停止当前巡检，只暂停 heartbeat、云端命令领取与事件上传；重新开启后会从服务器连续游标补传事件。活动 execution 中关闭会弹出二次确认。
+
+无运动检查：
+
+```bash
+ros2 topic echo /mobile_bridge/cloud_status --once
+ros2 service type /mobile_bridge/set_cloud_enabled
+pgrep -af 'ylhb_mobile_bridge mobile_bridge_server'
+```
+
+完整环境变量、systemd、日志脱敏、SQLite 备份和本地 auto 回退见 [Jetson 云平台连接运维](cloud_platform_connection.md)。
