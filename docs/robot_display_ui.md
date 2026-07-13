@@ -21,9 +21,10 @@
   -> ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py
 ```
 
-`system_supervisor_node` 是 mobile bridge 的唯一本机进程控制来源。UI 只展示
-`/inspection_ai/system_status` 中的 `mobile_bridge`、`mobile_bridge_http`、
-`mobile_bridge_url` 和 `jetson_ip`。
+开发模式由 `system_supervisor_node` 管理 mobile bridge。生产模式由 systemd 常驻，
+启动 UI 时传 `mobile_bridge_managed_externally:=true`；Supervisor 只检查本机端口，
+不会创建或终止第二个进程。UI 另订阅 `/mobile_bridge/cloud_status`，开关只调用
+`/mobile_bridge/set_cloud_enabled`，关闭云连接不会停止当前巡检。
 
 ## 启动
 
@@ -34,6 +35,7 @@ source install/setup.bash
 ros2 launch ylhb_llm llm.launch.py \
   enable_display_ui:=true \
   enable_system_supervisor:=true \
+  mobile_bridge_managed_externally:=true \
   fullscreen:=true
 ```
 

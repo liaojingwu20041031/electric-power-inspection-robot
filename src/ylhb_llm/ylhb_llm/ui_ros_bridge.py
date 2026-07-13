@@ -7,7 +7,7 @@ from PyQt5.QtCore import QObject, pyqtSignal
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
 from ylhb_interfaces.msg import SayText, TaskEvent, TaskStatus, VoiceStatus
@@ -24,6 +24,7 @@ def latched_qos() -> QoSProfile:
 
 class UiSignals(QObject):
     systemStatus = pyqtSignal(dict)
+    cloudStatus = pyqtSignal(dict)
     taskContext = pyqtSignal(dict)
     taskEvent = pyqtSignal(object)
     taskStatus = pyqtSignal(object)
@@ -51,6 +52,8 @@ class InspectionDisplayRosBridge(Node):
             'system_mode_topic': '/inspection_ai/system_mode',
             'system_command_topic': '/inspection_ai/system_command',
             'system_status_topic': '/inspection_ai/system_status',
+            'cloud_status_topic': '/mobile_bridge/cloud_status',
+            'set_cloud_enabled_service_name': '/mobile_bridge/set_cloud_enabled',
             'task_event_topic': '/inspection_ai/task_event',
             'task_status_topic': '/inspection_ai/task_status',
             'say_text_topic': '/inspection_ai/say_text',
@@ -85,6 +88,7 @@ class InspectionDisplayRosBridge(Node):
         self.patrol_command_pub = self.create_publisher(String, self._param('patrol_command_topic'), 10)
         self.cmd_vel_pub = self.create_publisher(Twist, self._param('cmd_vel_topic'), 10)
         self.create_subscription(String, self._param('system_status_topic'), self._system_status, latched_qos())
+        self.create_subscription(String, self._param('cloud_status_topic'), self._cloud_status, latched_qos())
         self.create_subscription(String, self._param('task_context_status_topic'), self._task_context, latched_qos())
         self.create_subscription(TaskEvent, self._param('task_event_topic'), signals.taskEvent.emit, 10)
         self.create_subscription(TaskStatus, self._param('task_status_topic'), signals.taskStatus.emit, 10)
@@ -114,6 +118,7 @@ class InspectionDisplayRosBridge(Node):
             'stop': self.create_client(Trigger, self._param('stop_voice_session_service_name')),
             'capture': self.create_client(Trigger, self._param('capture_voice_service_name')),
         }
+        self.cloud_enabled_client = self.create_client(SetBool, self._param('set_cloud_enabled_service_name'))
         self.publish_system_mode(str(self.get_parameter('initial_system_mode').value))
 
     def _param(self, name: str) -> str:
@@ -129,6 +134,9 @@ class InspectionDisplayRosBridge(Node):
 
     def _system_status(self, msg: String) -> None:
         self.signals.systemStatus.emit(self.parse_json(msg.data))
+
+    def _cloud_status(self, msg: String) -> None:
+        self.signals.cloudStatus.emit(self.parse_json(msg.data))
 
     def _task_context(self, msg: String) -> None:
         self.signals.taskContext.emit(self.parse_json(msg.data))
@@ -205,6 +213,13 @@ class InspectionDisplayRosBridge(Node):
             return
         future = client.call_async(Trigger.Request())
         future.add_done_callback(lambda done, service_name=name: self._voice_service_done(service_name, done))
+
+    def call_cloud_enabled(self, enabled: bool) -> None:
+        if not self.cloud_enabled_client.service_is_ready():
+            return
+        request = SetBool.Request()
+        request.data = bool(enabled)
+        self.cloud_enabled_client.call_async(request)
 
     def _voice_service_done(self, name: str, future) -> None:
         try:

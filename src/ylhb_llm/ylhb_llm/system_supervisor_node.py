@@ -276,6 +276,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('patrol_amcl_timeout_sec', 10.0)
         self.declare_parameter('patrol_nav2_timeout_sec', 25.0)
         self.declare_parameter('patrol_command_timeout_sec', 8.0)
+        self.declare_parameter('mobile_bridge_managed_externally', False)
 
         workspace_dir = str(self.get_parameter('workspace_dir').value).strip()
         self.workspace_dir = os.path.expanduser(workspace_dir) if workspace_dir else str(default_workspace_dir())
@@ -324,6 +325,7 @@ class SystemSupervisorNode(Node):
         self.enable_voice_session = bool(self.get_parameter('enable_voice_session').value)
         self.enable_capture_voice = bool(self.get_parameter('enable_capture_voice').value)
         self.enable_tts = bool(self.get_parameter('enable_tts').value)
+        self.mobile_bridge_managed_externally = bool(self.get_parameter('mobile_bridge_managed_externally').value)
         self.audio_device = str(self.get_parameter('audio_device').value)
         self.audio_input_device = str(self.get_parameter('audio_input_device').value)
         self.audio_output_device = str(self.get_parameter('audio_output_device').value)
@@ -336,6 +338,7 @@ class SystemSupervisorNode(Node):
         self.last_command = ''
         self.last_success = True
         self.last_message = 'system supervisor ready'
+        self.command_result: Dict[str, Any] = {}
         self.jetson_ip = discover_jetson_ip()
         self.mobile_bridge_url = f'http://{self.jetson_ip}:8000'
         self.mobile_bridge_http = 'stopped'
@@ -575,9 +578,21 @@ class SystemSupervisorNode(Node):
             self.latest_mapping3d_result = payload
 
     def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
+        if command in {'start_mobile_bridge', 'stop_mobile_bridge', 'restart_mobile_bridge'} and getattr(self, 'mobile_bridge_managed_externally', False):
+            self.set_result(command, True, 'Mobile Bridge 由 systemd 常驻管理')
+            return
         if command == 'start_platform_patrol':
             required = ('active_execution_id', 'active_deployment_id', 'active_request_id', 'active_route_revision_id', 'active_route_path', 'active_map_yaml_path', 'executor_route_id')
             if any(not str(payload.get(key) or '').strip() for key in required):
+                self.command_result = {
+                    'event': 'command_rejected',
+                    'command_id': str(payload.get('command_id') or ''),
+                    'request_id': str(payload.get('active_request_id') or payload.get('request_id') or ''),
+                    'execution_id': str(payload.get('active_execution_id') or payload.get('execution_id') or ''),
+                    'deployment_id': str(payload.get('active_deployment_id') or payload.get('deployment_id') or ''),
+                    'error_code': 'INCOMPLETE_SUPERVISOR_CONTEXT',
+                    'error_message': '平台巡逻上下文不完整',
+                }
                 self.set_result(command, False, '平台巡逻上下文不完整')
                 return
             self.platform_context = {key: str(payload[key]) for key in required}
@@ -609,8 +624,8 @@ class SystemSupervisorNode(Node):
             self.set_result(command, True, f'已发送巡逻命令: {patrol_command}')
             return
         if command == 'takeover_patrol':
-            self.publish_patrol_command('pause', request_id=str(payload.get('request_id') or ''), command_id=str(payload.get('command_id') or ''))
-            self.set_result(command, True, '已暂停巡逻，等待人工接管')
+            self.publish_patrol_command('takeover', request_id=str(payload.get('request_id') or ''), command_id=str(payload.get('command_id') or ''))
+            self.set_result(command, True, '已发送人工接管命令')
             return
         if command == 'stop_patrol_mode':
             self.cancel_patrol_start()
@@ -1347,6 +1362,17 @@ class SystemSupervisorNode(Node):
         self.patrol_mode_state = 'failed'
         self.startup_step = 'patrol_failed'
         self.patrol_error = error
+        context = getattr(self, 'platform_context', {})
+        if context.get('active_command_id'):
+            self.command_result = {
+                'event': 'command_failed',
+                'command_id': context.get('active_command_id', ''),
+                'request_id': context.get('active_request_id', ''),
+                'execution_id': context.get('active_execution_id', ''),
+                'deployment_id': context.get('active_deployment_id', ''),
+                'error_code': 'PATROL_START_FAILED',
+                'error_message': error,
+            }
         self.set_result('start_patrol_mode', False, '巡逻启动失败: ' + error)
 
     def publish_patrol_command(self, command: str, request_id: str = '', route_id: str = '', command_id: str = '') -> None:
@@ -1368,7 +1394,8 @@ class SystemSupervisorNode(Node):
         }
         if route_id:
             payload['route_id'] = route_id
-        command_id = command_id or str(getattr(self, 'platform_context', {}).get('active_command_id') or '')
+        if command == 'start' and not command_id:
+            command_id = str(getattr(self, 'platform_context', {}).get('active_command_id') or '')
         if command_id:
             payload['command_id'] = command_id
         msg.data = json.dumps(payload, ensure_ascii=False)
@@ -2589,9 +2616,10 @@ class SystemSupervisorNode(Node):
 
     def publish_status(self) -> None:
         mobile_bridge = self.processes.get('mobile_bridge')
-        self.mobile_bridge_http = mobile_bridge_tcp_status(
-            bool(mobile_bridge and mobile_bridge.is_running())
+        tcp_status = mobile_bridge_tcp_status(
+            bool(getattr(self, 'mobile_bridge_managed_externally', False) or (mobile_bridge and mobile_bridge.is_running()))
         )
+        self.mobile_bridge_http = {'tcp_ok': 'http_ok', 'tcp_error': 'http_error'}.get(tcp_status, tcp_status)
         with self.lock:
             self.publish_status_locked()
 
@@ -2634,6 +2662,8 @@ class SystemSupervisorNode(Node):
         payload.update({
             'mobile_bridge_http': self.mobile_bridge_http,
             'mobile_bridge_url': self.mobile_bridge_url,
+            'mobile_bridge_managed_externally': getattr(self, 'mobile_bridge_managed_externally', False),
+            'command_result': getattr(self, 'command_result', {}),
             'jetson_ip': self.jetson_ip,
             'patrol_mode_state': patrol_state,
             'patrol_readiness': patrol_readiness,
@@ -2700,6 +2730,8 @@ class SystemSupervisorNode(Node):
                 getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
             ),
         })
+        if getattr(self, 'mobile_bridge_managed_externally', False):
+            payload['mobile_bridge'] = 'running' if self.mobile_bridge_http == 'http_ok' else 'stopped'
         capture_dir = getattr(self, 'mapping3d_capture_dir', getattr(self, 'mapping3d_output_dir', workspace_path('runs', '3d_capture')))
         reconstruct_dir = getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
         payload['mapping3d_assets'] = {

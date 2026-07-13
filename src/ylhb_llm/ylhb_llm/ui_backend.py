@@ -82,6 +82,7 @@ PATROL_TERMINAL_LABELS = {
 
 class UiBackend(QObject):
     systemStatusChanged = pyqtSignal()
+    cloudStatusChanged = pyqtSignal()
     logsChanged = pyqtSignal()
     robotModeChanged = pyqtSignal()
     controlUnlockedChanged = pyqtSignal()
@@ -135,6 +136,10 @@ class UiBackend(QObject):
     @pyqtProperty('QVariantMap', notify=systemStatusChanged)
     def systemStatus(self) -> Dict[str, Any]:
         return self.state.system_status
+
+    @pyqtProperty('QVariantMap', notify=cloudStatusChanged)
+    def cloudStatus(self) -> Dict[str, Any]:
+        return self.state.cloud_status
 
     @pyqtProperty('QVariantList', notify=logsChanged)
     def logs(self):
@@ -671,6 +676,11 @@ class UiBackend(QObject):
         self.bridge.publish_system_command(command)
         self.addLog(f'系统命令: {command}')
 
+    @pyqtSlot(bool)
+    def setCloudEnabled(self, enabled: bool) -> None:
+        self.bridge.call_cloud_enabled(bool(enabled))
+        self.addLog('云平台连接开启请求已发送' if enabled else '云平台连接关闭请求已发送')
+
     @pyqtSlot(str)
     def sendPatrolCommand(self, command: str) -> None:
         value = str(command or '').strip()
@@ -984,6 +994,10 @@ class UiBackend(QObject):
         if message and log_key != self._last_status_log_key:
             self._last_status_log_key = log_key
             self.addLog(str(message))
+
+    def update_cloud_status(self, payload: Dict[str, Any]) -> None:
+        self.state.cloud_status = dict(payload or {})
+        self.cloudStatusChanged.emit()
 
     def update_patrol_status(self, payload: Dict[str, Any]) -> None:
         if not payload:

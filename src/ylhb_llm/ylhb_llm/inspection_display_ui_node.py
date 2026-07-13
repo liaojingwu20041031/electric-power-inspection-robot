@@ -52,6 +52,7 @@ def main(args: Optional[List[str]] = None) -> None:
     bridge = InspectionDisplayRosBridge(signals)
     backend = UiBackend(bridge, UiState())
     signals.systemStatus.connect(backend.update_system_status)
+    signals.cloudStatus.connect(backend.update_cloud_status)
     signals.taskContext.connect(backend.update_task_context)
     signals.taskEvent.connect(backend.on_task_event)
     signals.taskStatus.connect(backend.on_task_status)

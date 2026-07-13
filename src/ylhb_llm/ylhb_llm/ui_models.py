@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 @dataclass
 class UiState:
     system_status: Dict[str, Any] = field(default_factory=dict)
+    cloud_status: Dict[str, Any] = field(default_factory=dict)
     task_context: Dict[str, Any] = field(default_factory=dict)
     localized_objects: str = ''
     voice_status: str = '-'

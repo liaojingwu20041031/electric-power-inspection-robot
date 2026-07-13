@@ -15,6 +15,10 @@ ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py
 ```
 
 Bridge 监听 `8000` 端口，只建议在可信局域网使用，不要映射到公网。
+配置 `YLHB_CLOUD_BASE_URL` 和 `YLHB_CLOUD_ROBOT_TOKEN` 后，deploy/start/pause/resume/
+takeover/cancel 旧入站接口默认返回 `409 INBOUND_CONTROL_DISABLED`；只读 health、events、
+execution 仍保留。暂停云连接不会自动开放入站控制，调试时必须显式设置
+`YLHB_ALLOW_INBOUND_PLATFORM_CONTROL=true`。
 
 ## 重要约定
 

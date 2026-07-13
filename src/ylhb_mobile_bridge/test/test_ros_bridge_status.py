@@ -1,3 +1,5 @@
+import json
+import queue
 import time
 from types import SimpleNamespace
 from typing import Dict, List
@@ -18,6 +20,25 @@ class FakePublisher:
 
     def publish(self, msg) -> None:
         self.messages.append(msg)
+
+
+class FailingPublisher(FakePublisher):
+    def publish(self, msg) -> None:
+        raise RuntimeError("publish failed")
+
+
+class FakePlatformStore:
+    def __init__(self) -> None:
+        self.states = []
+        self.events = []
+
+    def set_command_state(self, command_id, state, result=None) -> None:
+        self.states.append((command_id, state, result or {}))
+
+    def append_event(self, event):
+        saved = {**event, "sequence": len(self.events) + 1}
+        self.events.append(saved)
+        return saved
 
 
 class FakeTimer:
@@ -63,6 +84,7 @@ def make_bridge(
     bridge._last_imu_time = None
     bridge._latest_map = None
     bridge._pose = None
+    bridge._map_pose = None
     bridge._velocity = None
     bridge._scan_range_min = None
     bridge._scan_range_max = None
@@ -71,6 +93,7 @@ def make_bridge(
     bridge._system_mode = "unknown"
     bridge._system_status = {}
     bridge._patrol_status = {}
+    bridge._last_command_result_key = ""
     bridge._status_cache = {}
     bridge._last_stop_motion_time = 0.0
     bridge._last_stop_text_time = 0.0
@@ -421,6 +444,73 @@ def test_system_and_patrol_commands_publish_json_and_plain_command():
     assert '"command": "start_mapping"' in payload
     assert '"map_name": "demo"' in payload
     assert bridge._patrol_command_pub.messages[-1].data == "pause"
+
+
+def test_cloud_command_is_dispatched_only_after_ros_publish():
+    bridge = make_velocity_bridge()
+    bridge._cloud_command_queue = queue.Queue()
+    bridge._platform_context = {}
+    bridge.platform_store = FakePlatformStore()
+    bridge.enqueue_cloud_command({
+        "type": "PAUSE", "commandId": "command-1", "requestId": "request-1",
+        "executionId": "execution-1", "deploymentId": "deployment-1",
+    })
+
+    bridge._drain_cloud_commands()
+
+    assert bridge.platform_store.states[-1][1] == "DISPATCHED"
+    assert len(bridge._system_command_pub.messages) == 1
+
+
+def test_invalid_cloud_queue_item_is_rejected_with_event():
+    bridge = make_velocity_bridge()
+    bridge._cloud_command_queue = queue.Queue()
+    bridge._platform_context = {}
+    bridge.platform_store = FakePlatformStore()
+    bridge.enqueue_cloud_command({"type": "PAUSE", "commandId": "command-2", "requestId": "request-2"})
+
+    bridge._drain_cloud_commands()
+
+    assert bridge.platform_store.states[-1][1] == "REJECTED"
+    assert bridge.platform_store.events[-1]["event"] == "command_rejected"
+
+
+def test_cloud_ros_publish_exception_is_failed_with_event():
+    bridge = make_velocity_bridge()
+    bridge._system_command_pub = FailingPublisher()
+    bridge._cloud_command_queue = queue.Queue()
+    bridge._platform_context = {}
+    bridge.platform_store = FakePlatformStore()
+    bridge.enqueue_cloud_command({
+        "type": "CANCEL", "commandId": "command-3", "requestId": "request-3",
+        "executionId": "execution-3", "deploymentId": "deployment-3",
+    })
+
+    bridge._drain_cloud_commands()
+
+    assert bridge.platform_store.states[-1][1] == "FAILED"
+    assert bridge.platform_store.events[-1]["error_code"] == "ROS_PUBLISH_FAILED"
+
+
+def test_patrol_event_keeps_its_own_command_context():
+    bridge = make_bridge()
+    bridge.platform_store = FakePlatformStore()
+    bridge.platform_robot_id = "robot-1"
+    bridge.platform_boot_id = "boot-1"
+    bridge._platform_context = {
+        "active_execution_id": "wrong-execution", "active_deployment_id": "wrong-deployment",
+        "active_request_id": "wrong-request", "active_command_id": "wrong-command",
+    }
+    event = {
+        "event": "route_paused", "execution_id": "execution-1", "deployment_id": "deployment-1",
+        "request_id": "request-1", "command_id": "command-1",
+    }
+
+    bridge._on_patrol_event(SimpleNamespace(data=json.dumps(event)))
+
+    saved = bridge.platform_store.events[-1]
+    assert (saved["execution_id"], saved["request_id"], saved["command_id"]) == ("execution-1", "request-1", "command-1")
+    assert bridge.platform_store.states[-1][1] == "APPLIED"
 
 
 def test_debug_status_topics_include_all_four():

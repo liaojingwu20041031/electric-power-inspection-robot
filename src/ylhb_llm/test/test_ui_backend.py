@@ -25,6 +25,7 @@ class FakeBridge:
         self.patrol_commands = []
         self.twists = []
         self.agent_requests = []
+        self.cloud_enabled_requests = []
 
     def publish_system_command(self, command, **extra):
         self.system_commands.append((command, extra))
@@ -46,6 +47,9 @@ class FakeBridge:
 
     def call_voice_service(self, _name):
         pass
+
+    def call_cloud_enabled(self, enabled):
+        self.cloud_enabled_requests.append(bool(enabled))
 
 
 def make_backend(clock, **kwargs):
@@ -209,6 +213,20 @@ def test_start_patrol_mode_sends_system_command_to_supervisor():
 
     assert backend.bridge.system_commands == [('start_patrol_mode', {'profile': 'inspection'})]
     assert backend.bridge.patrol_commands == []
+
+
+def test_cloud_status_and_toggle_use_dedicated_service():
+    backend = make_backend(lambda: 100.0)
+    status = {
+        'configured': True, 'desiredEnabled': True, 'state': 'CONNECTED',
+        'activeExecutionId': 'execution-1', 'activeDeploymentId': 'deployment-1',
+    }
+
+    backend.update_cloud_status(status)
+    backend.setCloudEnabled(False)
+
+    assert backend.cloudStatus == status
+    assert backend.bridge.cloud_enabled_requests == [False]
 
 
 def test_patrol_readiness_properties_follow_system_status():

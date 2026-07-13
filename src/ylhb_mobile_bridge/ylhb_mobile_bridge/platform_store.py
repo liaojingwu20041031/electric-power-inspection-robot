@@ -14,6 +14,20 @@ import yaml
 from .patrol_route_store import validate_route_file, validate_route_map_binding
 
 
+DELIVERY_FIELDS = {
+    "leaseToken", "leaseUntil", "serverTime", "attemptCount",
+    "deliveryAttempt", "deliveredAt", "nextHeartbeatSec",
+}
+COMMAND_TRANSITIONS = {
+    "RECEIVED": {"ACKED"},
+    "ACKED": {"DISPATCHED", "REJECTED", "FAILED"},
+    "DISPATCHED": {"APPLIED", "REJECTED", "FAILED"},
+    "APPLIED": set(),
+    "REJECTED": set(),
+    "FAILED": set(),
+}
+
+
 class PlatformStoreError(ValueError):
     def __init__(self, code: str, message: str, status_code: int = 400):
         super().__init__(message)
@@ -23,6 +37,10 @@ class PlatformStoreError(ValueError):
 
 def canonical_json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def normalize_command_business_payload(command: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in command.items() if key not in DELIVERY_FIELDS}
 
 
 def sha256(data: bytes) -> str:
@@ -131,6 +149,7 @@ class DeploymentStore:
             raise PlatformStoreError("DEPLOYMENT_CONFLICT", "deploymentId already has different content", 409)
         staging = Path(tempfile.mkdtemp(prefix=f"{deployment_id}-", dir=self.root / "staging"))
         target = self.root / "deployments" / deployment_id
+        installed = False
         try:
             (staging / "manifest.json").write_bytes(canonical_json(manifest))
             (staging / "route.json").write_bytes(canonical_json(normalized_route))
@@ -139,12 +158,17 @@ class DeploymentStore:
             (staging / pgm_name).write_bytes(pgm)
             validate_route_map_binding(normalized_route, staging / yaml_name)
             os.replace(staging, target)
+            installed = True
             with self._connection() as db:
                 db.execute("INSERT INTO deployments VALUES (?, ?, ?, ?, ?)", (deployment_id, json.dumps(manifest), route_hash, manifest["mapImageSha256"], _now()))
             return {"deploymentId": deployment_id, "state": "DEPLOYED", "idempotent": False, "routePayloadSha256": route_hash, "mapImageSha256": manifest["mapImageSha256"], "routePath": str(target / "route.json"), "mapYamlPath": str(target / yaml_name), "mapPgmPath": str(target / pgm_name)}
         except PlatformStoreError:
+            if installed:
+                shutil.rmtree(target, ignore_errors=True)
             raise
         except Exception as exc:
+            if installed:
+                shutil.rmtree(target, ignore_errors=True)
             raise PlatformStoreError("INVALID_MAP", str(exc)) from exc
         finally:
             shutil.rmtree(staging, ignore_errors=True)
@@ -191,7 +215,8 @@ class DeploymentStore:
             raise PlatformStoreError("INVALID_COMMAND", "invalid cloud command")
         if command_type == "START" and (not deployment_id or not str(command.get("executorRouteId") or "")):
             raise PlatformStoreError("INVALID_COMMAND", "START requires deploymentId and executorRouteId")
-        payload = canonical_json(command).decode("utf-8")
+        business_command = normalize_command_business_payload(command)
+        payload = canonical_json(business_command).decode("utf-8")
         with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT * FROM processed_commands WHERE command_id=?", (command_id,)).fetchone()
@@ -204,7 +229,7 @@ class DeploymentStore:
                 raise PlatformStoreError("COMMAND_CONFLICT", "requestId belongs to another command", 409)
             stamp = _now()
             db.execute("INSERT INTO processed_commands(command_id,request_id,execution_id,deployment_id,command_type,payload_json,state,result_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (command_id, request_id, execution_id, deployment_id, command_type, payload, "RECEIVED", "{}", stamp, stamp))
-            return {"command_id": command_id, "request_id": request_id, "execution_id": execution_id, "deployment_id": deployment_id, "command_type": command_type, "payload": command, "state": "RECEIVED", "result": {}}
+            return {"command_id": command_id, "request_id": request_id, "execution_id": execution_id, "deployment_id": deployment_id, "command_type": command_type, "payload": business_command, "state": "RECEIVED", "result": {}}
 
     @staticmethod
     def _command_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -216,15 +241,32 @@ class DeploymentStore:
         return self._command_dict(row) if row else None
 
     def set_command_state(self, command_id: str, state: str, result: Dict[str, Any] | None = None) -> None:
-        if state not in {"RECEIVED", "ACKED", "DISPATCHED", "APPLIED", "REJECTED"}:
+        if state not in COMMAND_TRANSITIONS:
             raise PlatformStoreError("INVALID_COMMAND", "invalid command state")
         with self._connection() as db:
+            row = db.execute("SELECT state FROM processed_commands WHERE command_id=?", (command_id,)).fetchone()
+            if not row:
+                raise PlatformStoreError("COMMAND_NOT_FOUND", "command does not exist", 404)
+            current = str(row["state"])
+            if state != current and state not in COMMAND_TRANSITIONS[current]:
+                raise PlatformStoreError("INVALID_COMMAND_TRANSITION", f"cannot move command from {current} to {state}", 409)
             db.execute("UPDATE processed_commands SET state=?,result_json=?,updated_at=? WHERE command_id=?", (state, json.dumps(result or {}, ensure_ascii=False), _now(), command_id))
 
     def pending_cloud_commands(self) -> List[Dict[str, Any]]:
         with self._connection() as db:
             rows = db.execute("SELECT * FROM processed_commands WHERE state IN ('RECEIVED','ACKED','DISPATCHED') ORDER BY created_at").fetchall()
         return [self._command_dict(row) for row in rows]
+
+    def pending_command_count(self) -> int:
+        with self._connection() as db:
+            row = db.execute("SELECT COUNT(*) AS count FROM processed_commands WHERE state IN ('RECEIVED','ACKED','DISPATCHED')").fetchone()
+        return int(row["count"])
+
+    def pending_event_count(self, after_sequence: int | None = None) -> int:
+        cursor = int(self.cloud_state("last_uploaded_sequence", "0") or 0) if after_sequence is None else max(0, int(after_sequence))
+        with self._connection() as db:
+            row = db.execute("SELECT COUNT(*) AS count FROM events WHERE sequence>?", (cursor,)).fetchone()
+        return int(row["count"])
 
     def set_cloud_state(self, key: str, value: str) -> None:
         with self._connection() as db:

@@ -584,13 +584,6 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     rclpy.init()
     bridge = MobileRosBridge()
-    executor_thread = threading.Thread(
-        target=rclpy.spin,
-        args=(bridge,),
-        daemon=True,
-    )
-    executor_thread.start()
-
     workspace_dir = bridge.get_parameter('workspace_dir').value
     default_map_path = bridge.get_parameter('default_map_path').value
     host = bridge.get_parameter('host').value
@@ -602,6 +595,12 @@ def main() -> None:
         default_map_path=default_map_path,
     )
     attach_platform_api(app, bridge)
+    executor_thread = threading.Thread(
+        target=rclpy.spin,
+        args=(bridge,),
+        daemon=True,
+    )
+    executor_thread.start()
     bridge.cloud_client.start()
 
     try:

@@ -67,6 +67,21 @@ def test_mobile_bridge_commands_start_stop_and_restart():
     assert node.start_process.call_args_list[-1].args == ('mobile_bridge',)
 
 
+def test_external_mobile_bridge_ownership_never_spawns_or_stops_process():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.mobile_bridge_managed_externally = True
+    node.start_process = Mock()
+    node.stop_process = Mock()
+    node.set_result = Mock()
+
+    for command in ('start_mobile_bridge', 'stop_mobile_bridge', 'restart_mobile_bridge'):
+        node.handle_command(command, {})
+
+    node.start_process.assert_not_called()
+    node.stop_process.assert_not_called()
+    assert all('systemd' in call.args[2] for call in node.set_result.call_args_list)
+
+
 def test_start_process_reports_immediate_navigation_exit(monkeypatch):
     class ExitedProcess:
         pid = 123

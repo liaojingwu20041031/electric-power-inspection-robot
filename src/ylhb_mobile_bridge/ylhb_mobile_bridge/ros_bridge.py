@@ -19,6 +19,7 @@ from rclpy.qos import (
 )
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import String
+from std_srvs.srv import SetBool
 
 from .map_snapshot import (
     occupancy_grid_metadata,
@@ -100,6 +101,8 @@ class MobileRosBridge(Node):
         self.require_token = bool(self.get_parameter('require_token').value)
         self.api_token = str(self.get_parameter('api_token').value)
         self.robot_id = str(self.get_parameter('robot_id').value)
+        self.cloud_status_topic = str(self.get_parameter('cloud_status_topic').value)
+        self.set_cloud_enabled_service_name = str(self.get_parameter('set_cloud_enabled_service_name').value)
 
         self._last_odom_time: Optional[float] = None
         self._last_scan_time: Optional[float] = None
@@ -119,11 +122,13 @@ class MobileRosBridge(Node):
         self._platform_context: dict = {}
         self._cloud_command_queue: queue.Queue[dict] = queue.Queue()
         self._cloud_snapshot: dict = {}
+        self._last_command_result_key = ''
         self._status_cache: dict = {}
         self._last_stop_motion_time = 0.0
         self._last_stop_text_time = 0.0
         self._stop_timer: Optional[threading.Timer] = None
         self._nav_goal_handle = None
+        self.cloud_client = None
 
         self._cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self._text_pub = self.create_publisher(
@@ -146,6 +151,8 @@ class MobileRosBridge(Node):
             '/initialpose',
             initial_pose_qos_profile(),
         )
+        self._cloud_status_pub = self.create_publisher(String, self.cloud_status_topic, initial_pose_qos_profile())
+        self.create_service(SetBool, self.set_cloud_enabled_service_name, self._set_cloud_enabled)
         self.create_subscription(
             Odometry,
             self.odom_topic,
@@ -242,6 +249,8 @@ class MobileRosBridge(Node):
             'robot_id': '',
             'platform_api_token': '',
             'platform_storage_dir': '~/.local/share/ylhb/platform',
+            'cloud_status_topic': '/mobile_bridge/cloud_status',
+            'set_cloud_enabled_service_name': '/mobile_bridge/set_cloud_enabled',
             'max_linear_speed': 0.30,
             'max_angular_speed': 0.55,
             'default_cmd_duration_ms': 300,
@@ -317,6 +326,27 @@ class MobileRosBridge(Node):
 
     def _on_system_status(self, msg: String) -> None:
         self._system_status = self._parse_json_message(msg.data)
+        result = self._system_status.get('command_result') or {}
+        if not isinstance(result, dict) or result.get('event') not in {'command_rejected', 'command_failed'}:
+            return
+        key = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        if key == getattr(self, '_last_command_result_key', ''):
+            return
+        command_id = str(result.get('command_id') or '')
+        store = getattr(self, 'platform_store', None)
+        if not command_id or not store:
+            return
+        self._last_command_result_key = key
+        existing = store.command(command_id)
+        if existing and existing.get('state') in {'APPLIED', 'REJECTED', 'FAILED'}:
+            return
+        saved = store.append_event({
+            **result,
+            'schema_version': '1.0',
+            'robot_id': getattr(self, 'platform_robot_id', getattr(self, 'robot_id', '')),
+            'boot_id': getattr(self, 'platform_boot_id', ''),
+        })
+        store.set_command_state(command_id, 'REJECTED' if result['event'] == 'command_rejected' else 'FAILED', saved)
 
     def _on_patrol_status(self, msg: String) -> None:
         self._patrol_status = self._parse_json_message(msg.data)
@@ -326,22 +356,40 @@ class MobileRosBridge(Node):
         if not event or not getattr(self, 'platform_store', None):
             return
         context = self._platform_context
-        if not context.get('active_execution_id'):
+        execution_id = str(event.get('execution_id') or context.get('active_execution_id') or '')
+        if not execution_id:
             return
-        command_id = str(event.get('command_id') or context.get('active_command_id') or '')
+        command_id = str(event.get('command_id') if 'command_id' in event else context.get('active_command_id') or '')
+        if not command_id and event.get('event') in {'route_paused', 'route_resumed', 'manual_takeover', 'route_canceled', 'command_rejected', 'command_failed'}:
+            return
         saved = self.platform_store.append_event({
             **event, 'schema_version': '1.0',
-            'robot_id': getattr(self, 'platform_robot_id', self.robot_id),
+            'robot_id': getattr(self, 'platform_robot_id', getattr(self, 'robot_id', '')),
             'boot_id': getattr(self, 'platform_boot_id', ''),
-            'execution_id': context['active_execution_id'],
-            'deployment_id': context['active_deployment_id'],
-            'request_id': context['active_request_id'],
+            'execution_id': execution_id,
+            'deployment_id': str(event.get('deployment_id') or context.get('active_deployment_id') or ''),
+            'request_id': str(event.get('request_id') if 'request_id' in event else context.get('active_request_id') or ''),
             'command_id': command_id,
         })
         if command_id:
-            state = {'route_started': 'APPLIED', 'route_paused': 'APPLIED', 'route_resumed': 'APPLIED', 'manual_takeover': 'APPLIED', 'route_canceled': 'APPLIED', 'route_failed': 'REJECTED'}.get(str(saved.get('event') or ''))
+            state = {
+                'route_started': 'APPLIED', 'route_paused': 'APPLIED',
+                'route_resumed': 'APPLIED', 'manual_takeover': 'APPLIED',
+                'route_canceled': 'APPLIED', 'command_rejected': 'REJECTED',
+                'command_failed': 'FAILED',
+            }.get(str(saved.get('event') or ''))
             if state:
                 self.platform_store.set_command_state(command_id, state, saved)
+            elif saved.get('event') == 'route_failed':
+                command = self.platform_store.command(command_id)
+                if command and command.get('state') in {'ACKED', 'DISPATCHED'}:
+                    failed = self.platform_store.append_event({
+                        **saved,
+                        'event': 'command_failed',
+                        'error_code': 'ROUTE_FAILED_BEFORE_APPLIED',
+                        'error_message': str(saved.get('reason') or saved.get('error') or 'route failed'),
+                    })
+                    self.platform_store.set_command_state(command_id, 'FAILED', failed)
 
     def _age(self, last_time: Optional[float]) -> Optional[float]:
         return None if last_time is None else round(time.time() - last_time, 3)
@@ -612,6 +660,24 @@ class MobileRosBridge(Node):
     def enqueue_cloud_command(self, command: dict) -> None:
         self._cloud_command_queue.put(dict(command))
 
+    def _record_cloud_queue_result(self, command: dict, state: str, event: str, code: str, message: str) -> None:
+        command_id = str(command.get('commandId') or '')
+        if not command_id or not getattr(self, 'platform_store', None):
+            return
+        result = {
+            'event': event,
+            'robot_id': getattr(self, 'platform_robot_id', getattr(self, 'robot_id', '')),
+            'boot_id': getattr(self, 'platform_boot_id', ''),
+            'command_id': command_id,
+            'request_id': str(command.get('requestId') or ''),
+            'execution_id': str(command.get('executionId') or ''),
+            'deployment_id': str(command.get('deploymentId') or ''),
+            'error_code': code,
+            'error_message': message,
+        }
+        saved = self.platform_store.append_event(result)
+        self.platform_store.set_command_state(command_id, state, saved)
+
     def _drain_cloud_commands(self) -> None:
         while True:
             try:
@@ -625,17 +691,45 @@ class MobileRosBridge(Node):
             deployment_id = str(command.get('deploymentId') or '')
             mapping = {'START': 'start_platform_patrol', 'PAUSE': 'pause_patrol', 'RESUME': 'resume_patrol', 'TAKEOVER': 'takeover_patrol', 'CANCEL': 'cancel_patrol'}
             if command_type not in mapping or not command_id or not request_id or not execution_id:
+                self._record_cloud_queue_result(command, 'REJECTED', 'command_rejected', 'INVALID_COMMAND', 'cloud command queue item is incomplete')
                 continue
             context = {**self._platform_context, 'active_command_id': command_id, 'active_request_id': request_id, 'active_execution_id': execution_id, 'active_deployment_id': deployment_id}
             if command_type == 'START':
                 context.update({'active_route_revision_id': str(command.get('routeRevisionId') or ''), 'active_route_path': str(command.get('routePath') or ''), 'active_map_yaml_path': str(command.get('mapYamlPath') or ''), 'executor_route_id': str(command.get('executorRouteId') or '')})
             self.set_platform_context(context)
-            self.publish_system_command(mapping[command_type], command_id=command_id, request_id=request_id, execution_id=execution_id, deployment_id=deployment_id, profile=str(command.get('profile') or 'inspection'), **context)
+            try:
+                self.publish_system_command(mapping[command_type], command_id=command_id, request_id=request_id, execution_id=execution_id, deployment_id=deployment_id, profile=str(command.get('profile') or 'inspection'), **context)
+            except Exception as exc:
+                self._record_cloud_queue_result(command, 'FAILED', 'command_failed', 'ROS_PUBLISH_FAILED', str(exc))
+                continue
+            try:
+                self.platform_store.set_command_state(command_id, 'DISPATCHED')
+            except Exception as exc:
+                self._record_cloud_queue_result(command, 'FAILED', 'command_failed', 'DISPATCH_PERSIST_FAILED', str(exc))
 
     def _refresh_cloud_snapshot(self) -> None:
         status = self.robot_status()
         patrol = self.patrol_status()
-        self._cloud_snapshot = {'state': str(patrol.get('state') or 'idle'), 'mapPose': status.get('mapPose'), 'odomPose': status.get('odomPose'), 'platformContext': dict(self._platform_context), 'health': {'odomAgeSec': status.get('last_odom_age_sec'), 'scanAgeSec': status.get('last_scan_age_sec'), 'imuAgeSec': status.get('last_imu_age_sec'), 'nav2': status.get('nav2_status'), 'systemMode': status.get('system_mode'), 'lastError': patrol.get('last_error') or self._system_status.get('last_error')}}
+        context = dict(self._platform_context)
+        context.setdefault('active_execution_id', str(patrol.get('execution_id') or ''))
+        context.setdefault('active_deployment_id', str(patrol.get('deployment_id') or ''))
+        context.setdefault('active_request_id', str(patrol.get('request_id') or ''))
+        context.setdefault('active_command_id', str(patrol.get('command_id') or ''))
+        self._cloud_snapshot = {'state': str(patrol.get('state') or 'idle'), 'mapPose': status.get('mapPose'), 'odomPose': status.get('odomPose'), 'platformContext': context, 'health': {'odomAgeSec': status.get('last_odom_age_sec'), 'scanAgeSec': status.get('last_scan_age_sec'), 'imuAgeSec': status.get('last_imu_age_sec'), 'nav2': status.get('nav2_status'), 'systemMode': status.get('system_mode'), 'lastError': patrol.get('last_error') or self._system_status.get('last_error')}}
+        if self.cloud_client:
+            msg = String()
+            msg.data = json.dumps(self.cloud_client.status(), ensure_ascii=False)
+            self._cloud_status_pub.publish(msg)
+
+    def _set_cloud_enabled(self, request, response):
+        if not self.cloud_client:
+            response.success = False
+            response.message = 'cloud client is not ready'
+            return response
+        status = self.cloud_client.set_enabled(bool(request.data))
+        response.success = bool(status.get('configured')) or not bool(request.data)
+        response.message = str(status.get('state') or '')
+        return response
 
     def cloud_status_snapshot(self) -> dict:
         return dict(self._cloud_snapshot)

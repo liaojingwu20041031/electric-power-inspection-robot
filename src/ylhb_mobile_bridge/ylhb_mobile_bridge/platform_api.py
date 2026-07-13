@@ -27,6 +27,12 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
     robot_id = os.environ.get("YLHB_ROBOT_ID") or str(bridge.get_parameter("robot_id").value)
     token = os.environ.get("YLHB_PLATFORM_API_TOKEN") or str(bridge.get_parameter("platform_api_token").value)
     boot_id = str(uuid.uuid4())
+    cloud_link_configured = bool(os.environ.get("YLHB_CLOUD_BASE_URL") and os.environ.get("YLHB_CLOUD_ROBOT_TOKEN"))
+    allow_inbound_control = os.environ.get("YLHB_ALLOW_INBOUND_PLATFORM_CONTROL", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+    def require_inbound_control() -> None:
+        if cloud_link_configured and not allow_inbound_control:
+            raise PlatformStoreError("INBOUND_CONTROL_DISABLED", "inbound platform control is disabled while Cloud Link is configured", 409)
 
     @app.middleware("http")
     async def platform_auth(request: Request, call_next):
@@ -51,6 +57,7 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
 
     @app.put("/api/platform/v1/deployments/{deployment_id}")
     async def deploy(deployment_id: str, request: Request):
+        require_inbound_control()
         form = await request.form()
         try:
             manifest = json.loads((await form["manifest"].read()).decode("utf-8"))
@@ -73,6 +80,7 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
 
     @app.post("/api/platform/v1/executions/{execution_id}/start", status_code=202)
     async def start(execution_id: str, request: Request):
+        require_inbound_control()
         body = await request.json()
         deployment_id, request_id = str(body.get("deploymentId", "")), str(body.get("requestId", ""))
         executor_route_id = str(body.get("executorRouteId", ""))
@@ -91,6 +99,7 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
 
     @app.post("/api/platform/v1/executions/{execution_id}/{action}")
     async def control(execution_id: str, action: str, request: Request):
+        require_inbound_control()
         commands = {"pause": "pause_patrol", "resume": "resume_patrol", "takeover": "takeover_patrol", "cancel": "cancel_patrol"}
         if action not in commands:
             raise HTTPException(status_code=404, detail="control not found")

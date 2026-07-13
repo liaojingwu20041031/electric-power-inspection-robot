@@ -3,14 +3,21 @@
 import copy
 import hashlib
 import json
+import os
 import tempfile
 from pathlib import Path
 
 import yaml
 
-from ylhb_mobile_bridge.platform_cloud_client import PlatformCloudClient
+from ylhb_mobile_bridge.platform_cloud_client import CloudRequestError, PlatformCloudClient
 from ylhb_mobile_bridge.patrol_route_store import load_route_file
-from ylhb_mobile_bridge.platform_store import DeploymentStore, canonical_json, sha256
+from ylhb_mobile_bridge.platform_store import (
+    DeploymentStore,
+    PlatformStoreError,
+    canonical_json,
+    normalize_command_business_payload,
+    sha256,
+)
 
 
 def deployment_payload() -> tuple[dict, bytes, bytes, bytes]:
@@ -37,16 +44,44 @@ def main() -> None:
         assert Path(deployment["routePath"]).name == "route.json"
         command = {"commandId": "command-1", "requestId": "request-1", "type": "START", "executionId": "execution-1", "deploymentId": "deploy-1", "executorRouteId": "route-1"}
         assert store.receive_cloud_command(command)["state"] == "RECEIVED"
-        assert store.receive_cloud_command(command)["state"] == "RECEIVED"
+        leased_again = {**command, "leaseToken": "new-token", "leaseUntil": "later", "attemptCount": 2}
+        assert normalize_command_business_payload(leased_again) == command
+        assert store.receive_cloud_command(leased_again)["state"] == "RECEIVED"
+        assert store.pending_command_count() == 1
+        store.set_command_state("command-1", "ACKED")
+        store.set_command_state("command-1", "DISPATCHED")
         store.set_command_state("command-1", "APPLIED", {"event": "route_started"})
         assert store.receive_cloud_command(command)["state"] == "APPLIED"
+        try:
+            store.set_command_state("command-1", "DISPATCHED")
+            raise AssertionError("terminal command state regressed")
+        except PlatformStoreError:
+            pass
+        failed = {**command, "commandId": "command-2", "requestId": "request-2"}
+        store.receive_cloud_command(failed)
+        store.set_command_state("command-2", "ACKED")
+        store.set_command_state("command-2", "FAILED", {"error_code": "DOWNLOAD_FAILED"})
+        assert store.command("command-2")["state"] == "FAILED"
         assert store.append_event({"event": "route_started", "command_id": "command-1"})["sequence"] == 1
+        assert store.pending_event_count(0) == 1
         store.set_cloud_state("last_uploaded_sequence", "0")
         assert store.cloud_state("last_uploaded_sequence") == "0"
         class Bridge:
             def enqueue_cloud_command(self, _command): pass
             def cloud_status_snapshot(self): return {"health": {}}
+        os.environ.pop("YLHB_CLOUD_BASE_URL", None)
+        os.environ.pop("YLHB_CLOUD_ROBOT_TOKEN", None)
+        os.environ["YLHB_CLOUD_ENABLED"] = "true"
+        unconfigured = PlatformCloudClient(store, Bridge(), "robot-001", "boot-1")
+        assert unconfigured.status()["state"] == "UNCONFIGURED"
+        assert unconfigured.status()["desiredEnabled"] is False
+        os.environ["YLHB_CLOUD_BASE_URL"] = "https://user:secret@example.com/bridge?token=hidden"
+        os.environ["YLHB_CLOUD_ROBOT_TOKEN"] = "never-export-this"
         downloader = PlatformCloudClient(store, Bridge(), "robot-001", "boot-1")
+        assert downloader.status()["serverBaseUrl"] == "https://example.com/bridge"
+        downloader.set_enabled(False)
+        assert store.cloud_state("cloud_enabled_override") == "false"
+        downloader.set_enabled(True)
         assets = {"manifest": manifest, "route": route, "yaml": yaml_bytes, "pgm": pgm}
         downloader._request = lambda _method, path, binary=False, body=None: assets[path.rsplit("/", 1)[-1]]
         downloaded = downloader._download_deployment("deploy-2")
@@ -56,6 +91,22 @@ def main() -> None:
         downloader._upload_events()
         downloader._upload_events()
         assert uploaded[0]["events"][0]["sequence"] == uploaded[1]["events"][0]["sequence"] == 1
+        order = []
+        downloader._request = lambda method, path, body=None, binary=False: order.append(path) or ({"acceptedEventSequence": 0, "command": None} if path.endswith("heartbeat") else {"acceptedThroughSequence": 1})
+        downloader.run_once()
+        assert order[:2] == ["/robot-api/v1/heartbeat", "/robot-api/v1/events/batch"]
+        failed_command = {**command, "commandId": "command-3", "requestId": "request-3", "deploymentId": "deploy-missing", "leaseToken": "lease-3"}
+        requests = []
+        downloader._request = lambda method, path, body=None, binary=False: requests.append((path, body)) or {"ok": True}
+        downloader._download_deployment = lambda _deployment_id: (_ for _ in ()).throw(CloudRequestError("download failed"))
+        try:
+            downloader._handle_command(failed_command)
+            raise AssertionError("deployment failure was swallowed")
+        except CloudRequestError:
+            pass
+        assert store.command("command-3")["state"] == "FAILED"
+        assert store.events(0, 10)[-1]["event"] == "command_failed"
+        assert [body.get("status") for path, body in requests if path.endswith("/ack")] == ["RECEIVED"]
     print("robot platform v1 smoke: ok")
 
 

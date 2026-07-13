@@ -39,6 +39,7 @@ ACTIVE_STATES = {
     "returning_home",
     "waiting_loop",
     "canceling",
+    "manual_takeover",
 }
 INITIAL_POSE_ALLOWED_STATES = {
     "idle",
@@ -287,7 +288,7 @@ class PatrolExecutorLogic:
         return True
 
     def resume(self) -> bool:
-        if self.state != "paused":
+        if self.state not in {"paused", "manual_takeover"}:
             return False
         self._retry_count = 0
         paused_from_state = self._paused_from_state
@@ -305,12 +306,26 @@ class PatrolExecutorLogic:
             self._complete_success()
         return True
 
+    def takeover(self) -> bool:
+        if self.state not in {"running", "paused", "returning_home", "waiting_loop"}:
+            return False
+        if self.state != "paused":
+            self._paused_from_state = self.state
+        self._navigation_token += 1
+        self._loop_wait_token += 1
+        self._clear_loop_wait()
+        self._cancel_navigation()
+        self._stop_motion()
+        self._set_state("manual_takeover")
+        return True
+
     def cancel(self) -> bool:
         if self.state not in {
             "running",
             "paused",
             "returning_home",
             "waiting_loop",
+            "manual_takeover",
         }:
             return False
         self._navigation_token += 1
@@ -515,8 +530,10 @@ class PatrolExecutorNode(Node):
         self.platform_context = {
             "execution_id": str(self.get_parameter("execution_id").value),
             "deployment_id": str(self.get_parameter("deployment_id").value),
-            "request_id": str(self.get_parameter("platform_request_id").value),
-            "command_id": str(self.get_parameter("platform_command_id").value),
+            "start_request_id": str(self.get_parameter("platform_request_id").value),
+            "start_command_id": str(self.get_parameter("platform_command_id").value),
+            "active_control_request_id": "",
+            "active_control_command_id": "",
         }
         self.platform_boot_id = str(uuid.uuid4())
 
@@ -664,17 +681,29 @@ class PatrolExecutorNode(Node):
         return fields
 
     def _publish_event(self, event: Dict[str, Any]) -> None:
-        self._publish_json(self._event_pub, {**event, **self._platform_fields()})
+        self._publish_json(self._event_pub, {**self._platform_fields(), **event})
+
+    def _platform_context(self) -> Dict[str, str]:
+        context = getattr(self, "platform_context", None)
+        if context is None:
+            context = {
+                "execution_id": "", "deployment_id": "",
+                "start_request_id": "", "start_command_id": "",
+                "active_control_request_id": "", "active_control_command_id": "",
+            }
+            self.platform_context = context
+        return context
 
     def _platform_fields(self) -> Dict[str, Any]:
+        context = self._platform_context()
         return {
             "schema_version": "1.0",
             "robot_id": os.environ.get("YLHB_ROBOT_ID", ""),
             "boot_id": self.platform_boot_id,
-            "execution_id": self.platform_context["execution_id"],
-            "deployment_id": self.platform_context["deployment_id"],
-            "request_id": self.platform_context["request_id"],
-            "command_id": self.platform_context["command_id"],
+            "execution_id": context["execution_id"],
+            "deployment_id": context["deployment_id"],
+            "request_id": context["start_request_id"],
+            "command_id": context["start_command_id"],
             "route_path": self.resolved_route_file_path or "",
             "occurred_at": time.time(),
         }
@@ -756,14 +785,17 @@ class PatrolExecutorNode(Node):
         return {"command": stripped}
 
     def _on_command(self, message: String) -> None:
+        payload: Dict[str, Any] = {}
+        command = ""
         try:
             payload = self._parse_command(message.data)
             command = str(payload.get("command", "")).strip().lower()
-            if payload.get("command_id"):
-                self.platform_context["command_id"] = str(payload["command_id"])
             route_id = payload.get("route_id")
             if command == "start":
                 request_id = str(payload.get("request_id") or "")
+                context = self._platform_context()
+                context["start_request_id"] = request_id
+                context["start_command_id"] = str(payload.get("command_id") or context["start_command_id"])
                 duplicate = bool(request_id and request_id in self._seen_start_request_ids)
                 started = True if duplicate else self._start_route_from_file(route_id)
                 if started and request_id and not duplicate:
@@ -780,15 +812,17 @@ class PatrolExecutorNode(Node):
                     })
             elif command == "go_to_target":
                 self._go_to_target(str(payload.get("target_id") or ""))
-            elif command == "pause":
-                if not self.logic.pause():
-                    raise ValueError(f"cannot pause while {self.logic.state}")
-            elif command == "resume":
-                if not self.logic.resume():
-                    raise ValueError(f"cannot resume while {self.logic.state}")
-            elif command == "cancel":
-                if not self.logic.cancel():
-                    raise ValueError(f"cannot cancel while {self.logic.state}")
+            elif command in {"pause", "resume", "cancel", "takeover"}:
+                context = self._platform_context()
+                context["active_control_request_id"] = str(payload.get("request_id") or "")
+                context["active_control_command_id"] = str(payload.get("command_id") or "")
+                applied = getattr(self.logic, command)()
+                if not applied:
+                    raise ValueError(f"cannot {command} while {self.logic.state}")
+                self._publish_control_event({
+                    "pause": "route_paused", "resume": "route_resumed",
+                    "cancel": "route_canceled", "takeover": "manual_takeover",
+                }[command])
             elif command == "reload":
                 if not self._reload_route_file():
                     raise ValueError("route file reload failed")
@@ -805,6 +839,20 @@ class PatrolExecutorNode(Node):
                 raise ValueError(f"unknown patrol command: {command}")
         except (ValueError, json.JSONDecodeError) as exc:
             self.get_logger().warning(str(exc))
+            if command in {"pause", "resume", "cancel", "takeover"}:
+                self._publish_control_event("command_rejected", error_code="INVALID_STATE", error_message=str(exc))
+
+    def _publish_control_event(self, event: str, **details: Any) -> None:
+        context = self._platform_context()
+        self._publish_event({
+            "event": event,
+            "request_id": context["active_control_request_id"],
+            "command_id": context["active_control_command_id"],
+            "timestamp": time.time(),
+            **details,
+        })
+        context["active_control_request_id"] = ""
+        context["active_control_command_id"] = ""
 
     def _start_route_from_file(self, route_id: Optional[str]) -> bool:
         if self.logic.state in ACTIVE_STATES:

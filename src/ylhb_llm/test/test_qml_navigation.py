@@ -58,6 +58,21 @@ def test_ui_bridge_connects_mapping3d_status_and_result():
     assert "signals.mapping3dResult.connect(backend.update_mapping3d_result)" in node
 
 
+def test_bridge_page_separates_local_and_cloud_controls():
+    qml = Path("src/ylhb_llm/qml/pages/BridgePage.qml").read_text(encoding="utf-8")
+    bridge = Path("src/ylhb_llm/ylhb_llm/ui_ros_bridge.py").read_text(encoding="utf-8")
+    node = Path("src/ylhb_llm/ylhb_llm/inspection_display_ui_node.py").read_text(encoding="utf-8")
+
+    assert "本地 APP 网桥" in qml
+    assert "云平台连接" in qml
+    assert "backend.cloudStatus.configured" in qml
+    assert "backend.setCloudEnabled" in qml
+    assert "关闭云平台连接不会停止当前巡检" in qml
+    assert "cloud_status_topic" in bridge
+    assert "set_cloud_enabled_service_name" in bridge
+    assert "signals.cloudStatus.connect(backend.update_cloud_status)" in node
+
+
 def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
     qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
 

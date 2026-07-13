@@ -12,5 +12,5 @@ LOG_FILE="${LOG_DIR}/inspection_ui_$(date +%Y%m%d_%H%M%S).log"
   echo "DISPLAY=${DISPLAY:-}"
   echo "XAUTHORITY=${XAUTHORITY:-}"
   cd "${WS_DIR}"
-  exec "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true
+  exec "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true mobile_bridge_managed_externally:=true
 } >>"${LOG_FILE}" 2>&1
