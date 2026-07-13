@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
+import uuid
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 
@@ -499,6 +501,7 @@ class PatrolExecutorNode(Node):
         super().__init__("patrol_executor")
         self._declare_parameters()
         self.route_file_path = str(self.get_parameter("route_file_path").value)
+        self.route_directory = str(self.get_parameter("route_directory").value).strip()
         self.resolved_route_file_path: Optional[str] = None
         self.command_topic = str(self.get_parameter("command_topic").value)
         self.status_topic = str(self.get_parameter("status_topic").value)
@@ -509,6 +512,12 @@ class PatrolExecutorNode(Node):
         self.map_frame = str(self.get_parameter("map_frame").value)
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         self.startup_id = str(self.get_parameter("startup_id").value)
+        self.platform_context = {
+            "execution_id": str(self.get_parameter("execution_id").value),
+            "deployment_id": str(self.get_parameter("deployment_id").value),
+            "request_id": str(self.get_parameter("platform_request_id").value),
+        }
+        self.platform_boot_id = str(uuid.uuid4())
 
         self._route_data: Optional[Dict[str, Any]] = None
         self._schedule_clock = PatchedScheduleClock()
@@ -579,6 +588,7 @@ class PatrolExecutorNode(Node):
     def _declare_parameters(self) -> None:
         defaults = {
             "route_file_path": "auto",
+            "route_directory": "",
             "command_topic": "/patrol/command",
             "status_topic": "/patrol/status",
             "event_topic": "/patrol/event",
@@ -587,6 +597,9 @@ class PatrolExecutorNode(Node):
             "cmd_vel_topic": "/cmd_vel",
             "auto_start": False,
             "startup_id": "",
+            "execution_id": "",
+            "deployment_id": "",
+            "platform_request_id": "",
             "schedule_check_period_sec": 1.0,
             "publish_initial_pose_on_startup": True,
             "initial_pose_publish_count": 1,
@@ -607,7 +620,7 @@ class PatrolExecutorNode(Node):
         publisher.publish(message)
 
     def _publish_status(self, status: Dict[str, Any]) -> None:
-        status = {**status, **self._navigation_status_fields()}
+        status = {**status, **self._platform_fields(), **self._navigation_status_fields()}
         self._publish_json(self._status_pub, status)
         if (
             status["state"] in TERMINAL_STATES
@@ -649,7 +662,19 @@ class PatrolExecutorNode(Node):
         return fields
 
     def _publish_event(self, event: Dict[str, Any]) -> None:
-        self._publish_json(self._event_pub, event)
+        self._publish_json(self._event_pub, {**event, **self._platform_fields()})
+
+    def _platform_fields(self) -> Dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "robot_id": os.environ.get("YLHB_ROBOT_ID", ""),
+            "boot_id": self.platform_boot_id,
+            "execution_id": self.platform_context["execution_id"],
+            "deployment_id": self.platform_context["deployment_id"],
+            "request_id": self.platform_context["request_id"],
+            "route_path": self.resolved_route_file_path or "",
+            "occurred_at": time.time(),
+        }
 
     def _publish_text_command(self, text: str) -> None:
         message = String()
@@ -685,7 +710,9 @@ class PatrolExecutorNode(Node):
 
     def _reload_route_file(self, log_errors: bool = True) -> bool:
         try:
-            resolved_path = resolve_route_file_path(self.route_file_path)
+            resolved_path = resolve_route_file_path(
+                self.route_file_path, self.route_directory or None,
+            )
             self._route_data = load_route_file(str(resolved_path))
             self.resolved_route_file_path = str(resolved_path)
             self.get_logger().info(

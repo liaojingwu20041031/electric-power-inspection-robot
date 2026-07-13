@@ -56,6 +56,7 @@ class MobileRosBridge(Node):
         self.scan_topic = self.get_parameter('scan_topic').value
         self.map_topic = self.get_parameter('map_topic').value
         self.imu_topic = self.get_parameter('imu_topic').value
+        self.amcl_pose_topic = self.get_parameter('amcl_pose_topic').value
         self.zlac_status_topic = self.get_parameter('zlac_status_topic').value
         self.zlac_fault_topic = self.get_parameter('zlac_fault_topic').value
         self.system_mode_topic = self.get_parameter('system_mode_topic').value
@@ -71,6 +72,7 @@ class MobileRosBridge(Node):
         self.patrol_status_topic = self.get_parameter(
             'patrol_status_topic'
         ).value
+        self.patrol_event_topic = self.get_parameter('patrol_event_topic').value
         self.max_linear_speed = self._safe_speed_limit(
             self.get_parameter('max_linear_speed').value,
             CHASSIS_SAFE_MAX_LINEAR_SPEED,
@@ -96,6 +98,7 @@ class MobileRosBridge(Node):
         )
         self.require_token = bool(self.get_parameter('require_token').value)
         self.api_token = str(self.get_parameter('api_token').value)
+        self.robot_id = str(self.get_parameter('robot_id').value)
 
         self._last_odom_time: Optional[float] = None
         self._last_scan_time: Optional[float] = None
@@ -103,6 +106,7 @@ class MobileRosBridge(Node):
         self._last_imu_time: Optional[float] = None
         self._latest_map: Optional[OccupancyGrid] = None
         self._pose: Optional[dict] = None
+        self._map_pose: Optional[dict] = None
         self._velocity: Optional[dict] = None
         self._scan_range_min: Optional[float] = None
         self._scan_range_max: Optional[float] = None
@@ -111,6 +115,7 @@ class MobileRosBridge(Node):
         self._system_mode = 'unknown'
         self._system_status: dict = {}
         self._patrol_status: dict = {}
+        self._platform_context: dict = {}
         self._status_cache: dict = {}
         self._last_stop_motion_time = 0.0
         self._last_stop_text_time = 0.0
@@ -163,6 +168,9 @@ class MobileRosBridge(Node):
             qos_profile_sensor_data,
         )
         self.create_subscription(
+            PoseWithCovarianceStamped, self.amcl_pose_topic, self._on_amcl_pose, 10,
+        )
+        self.create_subscription(
             String,
             self.zlac_status_topic,
             self._on_zlac_status,
@@ -192,6 +200,10 @@ class MobileRosBridge(Node):
             self._on_patrol_status,
             initial_pose_qos_profile(),
         )
+        self.create_subscription(
+            String, self.patrol_event_topic, self._on_patrol_event,
+            initial_pose_qos_profile(),
+        )
         self._nav_client = ActionClient(
             self,
             NavigateToPose,
@@ -208,6 +220,7 @@ class MobileRosBridge(Node):
             'scan_topic': '/scan',
             'map_topic': '/map',
             'imu_topic': '/imu/data',
+            'amcl_pose_topic': '/amcl_pose',
             'zlac_status_topic': '/zlac8015d/status',
             'zlac_fault_topic': '/zlac8015d/fault',
             'system_mode_topic': '/inspection_ai/system_mode',
@@ -215,11 +228,15 @@ class MobileRosBridge(Node):
             'system_status_topic': '/inspection_ai/system_status',
             'patrol_command_topic': '/patrol/command',
             'patrol_status_topic': '/patrol/status',
+            'patrol_event_topic': '/patrol/event',
             'status_rate_hz': 2.0,
             'map_stream_rate_hz': 1.0,
             'map_max_size_px': 1024,
             'require_token': False,
             'api_token': '',
+            'robot_id': '',
+            'platform_api_token': '',
+            'platform_storage_dir': '~/.local/share/ylhb/platform',
             'max_linear_speed': 0.30,
             'max_angular_speed': 0.55,
             'default_cmd_duration_ms': 300,
@@ -266,6 +283,16 @@ class MobileRosBridge(Node):
     def _on_imu(self, _msg: Imu) -> None:
         self._last_imu_time = time.time()
 
+    def _on_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
+        if msg.header.frame_id != 'map':
+            return
+        orientation = msg.pose.pose.orientation
+        position = msg.pose.pose.position
+        self._map_pose = {
+            'frame': 'map', 'x': float(position.x), 'y': float(position.y),
+            'yaw': math.atan2(2.0 * (orientation.w * orientation.z + orientation.x * orientation.y), 1.0 - 2.0 * (orientation.y * orientation.y + orientation.z * orientation.z)),
+        }
+
     def _on_zlac_status(self, msg: String) -> None:
         self._zlac_status = msg.data or 'online'
 
@@ -288,6 +315,22 @@ class MobileRosBridge(Node):
 
     def _on_patrol_status(self, msg: String) -> None:
         self._patrol_status = self._parse_json_message(msg.data)
+
+    def _on_patrol_event(self, msg: String) -> None:
+        event = self._parse_json_message(msg.data)
+        if not event or not getattr(self, 'platform_store', None):
+            return
+        context = self._platform_context
+        if not context.get('active_execution_id'):
+            return
+        self.platform_store.append_event({
+            **event, 'schema_version': '1.0',
+            'robot_id': getattr(self, 'platform_robot_id', self.robot_id),
+            'boot_id': getattr(self, 'platform_boot_id', ''),
+            'execution_id': context['active_execution_id'],
+            'deployment_id': context['active_deployment_id'],
+            'request_id': context['active_request_id'],
+        })
 
     def _age(self, last_time: Optional[float]) -> Optional[float]:
         return None if last_time is None else round(time.time() - last_time, 3)
@@ -382,6 +425,8 @@ class MobileRosBridge(Node):
             'last_odom_age_sec': self._age(self._last_odom_time),
             'last_scan_age_sec': self._age(self._last_scan_time),
             'pose': self._pose,
+            'mapPose': self._map_pose,
+            'odomPose': self._pose,
             'velocity': self._velocity,
             'timestamp': time.time(),
         }
@@ -551,6 +596,9 @@ class MobileRosBridge(Node):
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self._system_command_pub.publish(msg)
+
+    def set_platform_context(self, context: dict) -> None:
+        self._platform_context = dict(context)
 
     def has_system_supervisor(self) -> bool:
         return bool(self._system_status)

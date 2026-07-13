@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 
 from .map_manager import MapManager, MapManagerError
 from .process_manager import ProcessManager
+from .platform_api import attach_platform_api
 from .ros_bridge import MobileRosBridge
 from .schemas import (
     ApiResponse,
@@ -600,6 +601,7 @@ def main() -> None:
         process_manager,
         default_map_path=default_map_path,
     )
+    attach_platform_api(app, bridge)
 
     try:
         uvicorn.run(app, host=host, port=port, access_log=False)

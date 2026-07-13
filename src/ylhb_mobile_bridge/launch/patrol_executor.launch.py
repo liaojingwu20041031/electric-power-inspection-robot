@@ -7,6 +7,10 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     route_file_path = LaunchConfiguration("route_file_path")
+    route_directory = LaunchConfiguration("route_directory")
+    execution_id = LaunchConfiguration("execution_id")
+    deployment_id = LaunchConfiguration("deployment_id")
+    platform_request_id = LaunchConfiguration("platform_request_id")
     auto_start = LaunchConfiguration("auto_start")
     publish_initial_pose = LaunchConfiguration(
         "publish_initial_pose_on_startup"
@@ -19,6 +23,10 @@ def generate_launch_description():
                 "route_file_path",
                 default_value="auto",
             ),
+            DeclareLaunchArgument("route_directory", default_value=""),
+            DeclareLaunchArgument("execution_id", default_value=""),
+            DeclareLaunchArgument("deployment_id", default_value=""),
+            DeclareLaunchArgument("platform_request_id", default_value=""),
             DeclareLaunchArgument("auto_start", default_value="false"),
             DeclareLaunchArgument(
                 "publish_initial_pose_on_startup",
@@ -33,6 +41,10 @@ def generate_launch_description():
                 parameters=[
                     {
                         "route_file_path": route_file_path,
+                        "route_directory": route_directory,
+                        "execution_id": execution_id,
+                        "deployment_id": deployment_id,
+                        "platform_request_id": platform_request_id,
                         "auto_start": ParameterValue(
                             auto_start,
                             value_type=bool,

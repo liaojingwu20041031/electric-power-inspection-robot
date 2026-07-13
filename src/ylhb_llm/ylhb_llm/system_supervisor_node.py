@@ -308,8 +308,12 @@ class SystemSupervisorNode(Node):
         )
         patrol_route_path = str(self.get_parameter('patrol_route_path').value).strip()
         keepout_route_path = str(self.get_parameter('keepout_route_path').value).strip()
+        self.patrol_route_request = patrol_route_path or keepout_route_path or 'auto'
+        self.local_patrol_route_request = self.patrol_route_request
+        self.local_default_navigation_map = self.default_navigation_map
+        self.platform_context = {}
         self.patrol_route_path = str(resolve_route_file_path(
-            patrol_route_path or keepout_route_path or 'auto', self.route_directory,
+            self.patrol_route_request, self.route_directory,
         ))
         self.keepout_route_path = self.patrol_route_path
         perception_model_path = str(self.get_parameter('perception_model_path').value).strip()
@@ -409,7 +413,7 @@ class SystemSupervisorNode(Node):
             'patrol_executor': ManagedProcess(
                 'patrol_executor',
                 'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
-                f'route_file_path:={self.patrol_route_path} '
+                f'route_file_path:={self.patrol_route_request} route_directory:={self.route_directory} '
                 'auto_start:=false publish_initial_pose_on_startup:=true',
             ),
         }
@@ -571,7 +575,18 @@ class SystemSupervisorNode(Node):
             self.latest_mapping3d_result = payload
 
     def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
+        if command == 'start_platform_patrol':
+            required = ('active_execution_id', 'active_deployment_id', 'active_request_id', 'active_route_revision_id', 'active_route_path', 'active_map_yaml_path', 'executor_route_id')
+            if any(not str(payload.get(key) or '').strip() for key in required):
+                self.set_result(command, False, '平台巡逻上下文不完整')
+                return
+            self.platform_context = {key: str(payload[key]) for key in required}
+            self.patrol_route_request = self.platform_context['active_route_path']
+            self.default_navigation_map = self.platform_context['active_map_yaml_path']
+            self.start_patrol_mode(str(payload.get('profile') or 'inspection'), self.platform_context['executor_route_id'])
+            return
         if command == 'start_patrol_mode':
+            self.platform_context = {}
             self.start_patrol_mode(
                 str(payload.get('profile') or 'navigation'),
                 str(payload.get('route_id') or ''),
@@ -591,6 +606,10 @@ class SystemSupervisorNode(Node):
                 self.cancel_patrol_start()
             self.publish_patrol_command(patrol_command)
             self.set_result(command, True, f'已发送巡逻命令: {patrol_command}')
+            return
+        if command == 'takeover_patrol':
+            self.publish_patrol_command('pause', request_id=str(payload.get('request_id') or ''))
+            self.set_result(command, True, '已暂停巡逻，等待人工接管')
             return
         if command == 'stop_patrol_mode':
             self.cancel_patrol_start()
@@ -991,6 +1010,9 @@ class SystemSupervisorNode(Node):
         self.set_result('reload_patrol_route', True, '巡逻路线已刷新')
 
     def start_patrol_mode(self, profile: str = 'navigation', route_id: str = '') -> None:
+        if not self.platform_context:
+            self.patrol_route_request = self.local_patrol_route_request
+            self.default_navigation_map = self.local_default_navigation_map
         profile = profile if profile in ('navigation', 'inspection') else 'navigation'
         with getattr(self, 'lock', threading.Lock()):
             if getattr(self, 'patrol_start_active', False):
@@ -1037,6 +1059,16 @@ class SystemSupervisorNode(Node):
         self.patrol_error = ''
         self.patrol_warning = ''
         self.patrol_navigation_assets_prepared = False
+        route_request = getattr(self, 'patrol_route_request', '')
+        if route_request:
+            try:
+                self.patrol_route_path = str(resolve_route_file_path(
+                    route_request, self.route_directory,
+                ))
+                self.keepout_route_path = self.patrol_route_path
+            except ValueError as exc:
+                self.fail_patrol_start(str(exc), generation=generation)
+                return
         if not self.prepare_patrol_navigation_assets():
             self.fail_patrol_start(self.patrol_error or '导航资源准备失败', generation=generation)
             return
@@ -1172,11 +1204,15 @@ class SystemSupervisorNode(Node):
         started_at = time.time()
         executor = getattr(self, 'processes', {}).get('patrol_executor')
         if executor is not None:
-            route_path = getattr(self, 'patrol_route_path', '')
+            context = getattr(self, 'platform_context', {})
             executor.command = (
                 'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
-                f'route_file_path:={route_path} auto_start:=false '
+                f'route_file_path:={self.patrol_route_request} route_directory:={self.route_directory} '
+                'auto_start:=false '
                 f'publish_initial_pose_on_startup:=false startup_id:={self.startup_id}'
+                f" execution_id:={context.get('active_execution_id', '')}"
+                f" deployment_id:={context.get('active_deployment_id', '')}"
+                f" platform_request_id:={context.get('active_request_id', '')}"
             )
         if not self.start_process('patrol_executor'):
             self.fail_patrol_start('巡逻执行器启动失败', generation=generation)

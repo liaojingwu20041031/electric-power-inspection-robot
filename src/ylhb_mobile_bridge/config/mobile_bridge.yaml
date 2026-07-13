@@ -8,14 +8,23 @@ mobile_bridge:
     scan_topic: "/scan"
     map_topic: "/map"
     imu_topic: "/imu/data"
+    amcl_pose_topic: "/amcl_pose"
     zlac_status_topic: "/zlac8015d/status"
     zlac_fault_topic: "/zlac8015d/fault"
     system_mode_topic: "/inspection_ai/system_mode"
+    system_command_topic: "/inspection_ai/system_command"
+    system_status_topic: "/inspection_ai/system_status"
+    patrol_command_topic: "/patrol/command"
+    patrol_status_topic: "/patrol/status"
+    patrol_event_topic: "/patrol/event"
     status_rate_hz: 2.0
     map_stream_rate_hz: 1.0
     map_max_size_px: 1024
     require_token: false
     api_token: ""
+    robot_id: ""
+    platform_api_token: ""
+    platform_storage_dir: "~/.local/share/ylhb/platform"
     max_linear_speed: 0.30
     max_angular_speed: 0.55
     default_cmd_duration_ms: 300
