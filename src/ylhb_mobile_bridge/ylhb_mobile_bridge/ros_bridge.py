@@ -1,5 +1,6 @@
 import math
 import json
+import queue
 import threading
 import time
 from typing import Dict, Optional
@@ -116,6 +117,8 @@ class MobileRosBridge(Node):
         self._system_status: dict = {}
         self._patrol_status: dict = {}
         self._platform_context: dict = {}
+        self._cloud_command_queue: queue.Queue[dict] = queue.Queue()
+        self._cloud_snapshot: dict = {}
         self._status_cache: dict = {}
         self._last_stop_motion_time = 0.0
         self._last_stop_text_time = 0.0
@@ -209,6 +212,8 @@ class MobileRosBridge(Node):
             NavigateToPose,
             'navigate_to_pose',
         )
+        self.create_timer(0.2, self._drain_cloud_commands)
+        self.create_timer(0.5, self._refresh_cloud_snapshot)
 
     def _declare_parameters(self) -> None:
         defaults = {
@@ -323,14 +328,20 @@ class MobileRosBridge(Node):
         context = self._platform_context
         if not context.get('active_execution_id'):
             return
-        self.platform_store.append_event({
+        command_id = str(event.get('command_id') or context.get('active_command_id') or '')
+        saved = self.platform_store.append_event({
             **event, 'schema_version': '1.0',
             'robot_id': getattr(self, 'platform_robot_id', self.robot_id),
             'boot_id': getattr(self, 'platform_boot_id', ''),
             'execution_id': context['active_execution_id'],
             'deployment_id': context['active_deployment_id'],
             'request_id': context['active_request_id'],
+            'command_id': command_id,
         })
+        if command_id:
+            state = {'route_started': 'APPLIED', 'route_paused': 'APPLIED', 'route_resumed': 'APPLIED', 'manual_takeover': 'APPLIED', 'route_canceled': 'APPLIED', 'route_failed': 'REJECTED'}.get(str(saved.get('event') or ''))
+            if state:
+                self.platform_store.set_command_state(command_id, state, saved)
 
     def _age(self, last_time: Optional[float]) -> Optional[float]:
         return None if last_time is None else round(time.time() - last_time, 3)
@@ -424,6 +435,7 @@ class MobileRosBridge(Node):
             ),
             'last_odom_age_sec': self._age(self._last_odom_time),
             'last_scan_age_sec': self._age(self._last_scan_time),
+            'last_imu_age_sec': self._age(self._last_imu_time),
             'pose': self._pose,
             'mapPose': self._map_pose,
             'odomPose': self._pose,
@@ -596,6 +608,37 @@ class MobileRosBridge(Node):
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self._system_command_pub.publish(msg)
+
+    def enqueue_cloud_command(self, command: dict) -> None:
+        self._cloud_command_queue.put(dict(command))
+
+    def _drain_cloud_commands(self) -> None:
+        while True:
+            try:
+                command = self._cloud_command_queue.get_nowait()
+            except queue.Empty:
+                return
+            command_type = str(command.get('type') or '').upper()
+            command_id = str(command.get('commandId') or '')
+            request_id = str(command.get('requestId') or '')
+            execution_id = str(command.get('executionId') or '')
+            deployment_id = str(command.get('deploymentId') or '')
+            mapping = {'START': 'start_platform_patrol', 'PAUSE': 'pause_patrol', 'RESUME': 'resume_patrol', 'TAKEOVER': 'takeover_patrol', 'CANCEL': 'cancel_patrol'}
+            if command_type not in mapping or not command_id or not request_id or not execution_id:
+                continue
+            context = {**self._platform_context, 'active_command_id': command_id, 'active_request_id': request_id, 'active_execution_id': execution_id, 'active_deployment_id': deployment_id}
+            if command_type == 'START':
+                context.update({'active_route_revision_id': str(command.get('routeRevisionId') or ''), 'active_route_path': str(command.get('routePath') or ''), 'active_map_yaml_path': str(command.get('mapYamlPath') or ''), 'executor_route_id': str(command.get('executorRouteId') or '')})
+            self.set_platform_context(context)
+            self.publish_system_command(mapping[command_type], command_id=command_id, request_id=request_id, execution_id=execution_id, deployment_id=deployment_id, profile=str(command.get('profile') or 'inspection'), **context)
+
+    def _refresh_cloud_snapshot(self) -> None:
+        status = self.robot_status()
+        patrol = self.patrol_status()
+        self._cloud_snapshot = {'state': str(patrol.get('state') or 'idle'), 'mapPose': status.get('mapPose'), 'odomPose': status.get('odomPose'), 'platformContext': dict(self._platform_context), 'health': {'odomAgeSec': status.get('last_odom_age_sec'), 'scanAgeSec': status.get('last_scan_age_sec'), 'imuAgeSec': status.get('last_imu_age_sec'), 'nav2': status.get('nav2_status'), 'systemMode': status.get('system_mode'), 'lastError': patrol.get('last_error') or self._system_status.get('last_error')}}
+
+    def cloud_status_snapshot(self) -> dict:
+        return dict(self._cloud_snapshot)
 
     def set_platform_context(self, context: dict) -> None:
         self._platform_context = dict(context)

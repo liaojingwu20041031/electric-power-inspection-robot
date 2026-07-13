@@ -516,6 +516,7 @@ class PatrolExecutorNode(Node):
             "execution_id": str(self.get_parameter("execution_id").value),
             "deployment_id": str(self.get_parameter("deployment_id").value),
             "request_id": str(self.get_parameter("platform_request_id").value),
+            "command_id": str(self.get_parameter("platform_command_id").value),
         }
         self.platform_boot_id = str(uuid.uuid4())
 
@@ -600,6 +601,7 @@ class PatrolExecutorNode(Node):
             "execution_id": "",
             "deployment_id": "",
             "platform_request_id": "",
+            "platform_command_id": "",
             "schedule_check_period_sec": 1.0,
             "publish_initial_pose_on_startup": True,
             "initial_pose_publish_count": 1,
@@ -672,6 +674,7 @@ class PatrolExecutorNode(Node):
             "execution_id": self.platform_context["execution_id"],
             "deployment_id": self.platform_context["deployment_id"],
             "request_id": self.platform_context["request_id"],
+            "command_id": self.platform_context["command_id"],
             "route_path": self.resolved_route_file_path or "",
             "occurred_at": time.time(),
         }
@@ -756,6 +759,8 @@ class PatrolExecutorNode(Node):
         try:
             payload = self._parse_command(message.data)
             command = str(payload.get("command", "")).strip().lower()
+            if payload.get("command_id"):
+                self.platform_context["command_id"] = str(payload["command_id"])
             route_id = payload.get("route_id")
             if command == "start":
                 request_id = str(payload.get("request_id") or "")

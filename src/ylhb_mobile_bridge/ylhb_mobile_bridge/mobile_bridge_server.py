@@ -602,10 +602,12 @@ def main() -> None:
         default_map_path=default_map_path,
     )
     attach_platform_api(app, bridge)
+    bridge.cloud_client.start()
 
     try:
         uvicorn.run(app, host=host, port=port, access_log=False)
     finally:
+        bridge.cloud_client.stop()
         bridge.stop_motion()
         bridge.destroy_node()
         rclpy.shutdown()

@@ -2,6 +2,8 @@
 set -euo pipefail
 install -d -m 700 /home/nvidia/.config/ylhb
 test -f /home/nvidia/.config/ylhb/platform.env || install -m 600 /dev/null /home/nvidia/.config/ylhb/platform.env
+# Set YLHB_CLOUD_ENABLED=true, HTTPS YLHB_CLOUD_BASE_URL and YLHB_CLOUD_ROBOT_TOKEN
+# in the protected environment file before enabling outbound cloud connectivity.
 sudo tee /etc/systemd/system/ylhb-mobile-bridge.service >/dev/null <<'EOF'
 [Unit]
 After=network-online.target

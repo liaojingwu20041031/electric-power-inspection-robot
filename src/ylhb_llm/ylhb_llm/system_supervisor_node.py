@@ -581,6 +581,7 @@ class SystemSupervisorNode(Node):
                 self.set_result(command, False, '平台巡逻上下文不完整')
                 return
             self.platform_context = {key: str(payload[key]) for key in required}
+            self.platform_context['active_command_id'] = str(payload.get('command_id') or '')
             self.patrol_route_request = self.platform_context['active_route_path']
             self.default_navigation_map = self.platform_context['active_map_yaml_path']
             self.start_patrol_mode(str(payload.get('profile') or 'inspection'), self.platform_context['executor_route_id'])
@@ -604,11 +605,11 @@ class SystemSupervisorNode(Node):
             patrol_command = patrol_commands[command]
             if patrol_command == 'cancel':
                 self.cancel_patrol_start()
-            self.publish_patrol_command(patrol_command)
+            self.publish_patrol_command(patrol_command, request_id=str(payload.get('request_id') or ''), command_id=str(payload.get('command_id') or ''))
             self.set_result(command, True, f'已发送巡逻命令: {patrol_command}')
             return
         if command == 'takeover_patrol':
-            self.publish_patrol_command('pause', request_id=str(payload.get('request_id') or ''))
+            self.publish_patrol_command('pause', request_id=str(payload.get('request_id') or ''), command_id=str(payload.get('command_id') or ''))
             self.set_result(command, True, '已暂停巡逻，等待人工接管')
             return
         if command == 'stop_patrol_mode':
@@ -1213,6 +1214,7 @@ class SystemSupervisorNode(Node):
                 f" execution_id:={context.get('active_execution_id', '')}"
                 f" deployment_id:={context.get('active_deployment_id', '')}"
                 f" platform_request_id:={context.get('active_request_id', '')}"
+                f" platform_command_id:={context.get('active_command_id', '')}"
             )
         if not self.start_process('patrol_executor'):
             self.fail_patrol_start('巡逻执行器启动失败', generation=generation)
@@ -1347,7 +1349,7 @@ class SystemSupervisorNode(Node):
         self.patrol_error = error
         self.set_result('start_patrol_mode', False, '巡逻启动失败: ' + error)
 
-    def publish_patrol_command(self, command: str, request_id: str = '', route_id: str = '') -> None:
+    def publish_patrol_command(self, command: str, request_id: str = '', route_id: str = '', command_id: str = '') -> None:
         if not request_id:
             request_id = (
                 f"patrol_start_{int(time.time() * 1000)}"
@@ -1366,6 +1368,9 @@ class SystemSupervisorNode(Node):
         }
         if route_id:
             payload['route_id'] = route_id
+        command_id = command_id or str(getattr(self, 'platform_context', {}).get('active_command_id') or '')
+        if command_id:
+            payload['command_id'] = command_id
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.patrol_command_pub.publish(msg)
 

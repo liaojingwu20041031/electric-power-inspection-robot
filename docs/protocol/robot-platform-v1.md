@@ -1,25 +1,13 @@
-# Robot Platform Protocol v1
+# Robot Platform Protocol v1 — Heartbeat Pull
 
-平台与机器人只通过 HTTP 交换本协议。所有正式机器人接口前缀为 `/api/platform/v1`，均要求 `Authorization: Bearer <token>`；适配器接口前缀为 `/bridge/v1`，同样要求 Bearer Token。Token 只来自环境变量，不写入 YAML、日志或仓库。
+Jetson 是唯一发起公网连接的一方。公网 Bridge 不访问 Jetson；不需要公网 IP、端口映射、Tailscale、MQTT、Kafka、Redis 或 WebSocket。`/api/platform/v1/*` 保留为本机或可信局域网调试接口，不是公网主链路。
 
-标识符：`robotId` 是机器人配置键；`routeRevisionId` 是不可变路线版本；`deploymentId` 将路线和地图精确绑定；`taskId` 属于平台业务任务；`executionId` 是一次执行；`executorRouteId` 是路线 JSON 中的路线 ID；`requestId` 是控制请求幂等键；`bootId` 是机器人桥接进程实例；`sequence` 是 SQLite 持久事件序号。
+机器人从受保护环境文件读取 `YLHB_CLOUD_ENABLED=false`、`YLHB_CLOUD_BASE_URL`（启用时必须 HTTPS）、`YLHB_CLOUD_ROBOT_TOKEN`、`YLHB_CLOUD_CA_FILE`、`YLHB_CLOUD_REQUEST_TIMEOUT_SEC=10`、`YLHB_CLOUD_IDLE_HEARTBEAT_SEC=3`、`YLHB_CLOUD_ACTIVE_HEARTBEAT_SEC=1`、`YLHB_CLOUD_MAX_BACKOFF_SEC=30`、`YLHB_SOFTWARE_VERSION`。Token 不进入 YAML、日志或仓库，TLS 始终使用系统证书（可额外指定 CA），没有关闭校验的配置。
 
-## API 与规则
+机器人轮询 `POST /robot-api/v1/heartbeat`，上传协议版本、机器人/启动身份、软件版本、巡逻状态、活动 execution/deployment、接收命令号、事件序号、map/odom 位姿及 odom/scan/imu/Nav2/模式/错误健康信息。响应一次最多一条命令，包含 `serverTime`、`nextHeartbeatSec`、`acceptedEventSequence` 和 `command`。
 
-- `GET /health` 返回 `robotId`、`bootId`、`state`、`mapPose`、`odomPose`；没有可靠 AMCL/TF map 位姿时 `mapPose=null`，绝不把 odom 标为 map。
-- `PUT /deployments/{deploymentId}` 使用 multipart：`manifest`、`route`、`yaml`、`pgm`。`manifest` 至少有 `schemaVersion`、`robotId`、`routeRevisionId`、`routeContentSha256`、`mapAssetId`、`mapImageSha256`、`yamlName`、`pgmName`。拒绝绝对文件名和路径穿越；相同 deploymentId 同哈希返回幂等结果，不同哈希返回 `409 DEPLOYMENT_CONFLICT`。
-- `POST /executions/{executionId}/start` JSON 为 `deploymentId`、`executorRouteId`、`profile`、`requestId`，返回 `202 {"accepted":true,"state":"STARTING","executionId":"..."}`，不等待 Nav2。平台任务只允许 deploymentId，禁止 `auto` 和机器人路径；本地人工巡逻仍允许 `route_file_path=auto`。
-- `POST /executions/{executionId}/{pause|resume|takeover|cancel}` JSON 必须有 `requestId`，应用层幂等。`GET /executions/{executionId}` 查状态；`GET /events?afterSequence=0&limit=100` 的下界排他、按 sequence 升序、事件永不因重启归零或删除。
+命令白名单为 `START`、`PAUSE`、`RESUME`、`TAKEOVER`、`CANCEL`。收到命令先事务持久化为 `RECEIVED`，再 ACK，成功后 `ACKED`，由 ROS timer 从队列下发；真实巡逻事件才将其标为 `APPLIED` 或 `REJECTED`。`commandId` 和 `requestId` 都持久化去重，重启不重复执行已应用命令。禁止 `cmd_vel`、Shell、ROS 节点名、路径和系统命令。
 
-路线哈希是递归排序对象键、保持数组顺序、UTF-8 紧凑 JSON 的 SHA-256；PGM 哈希是原始字节 SHA-256。部署先校验文件名、哈希、YAML `image`、路线和地图绑定，再原子安装与写 SQLite。连接超时默认 3 秒、读取超时默认 10 秒；GET/PUT 可有限重试，POST 仅携带 requestId 时可重试。
+`START` 缺少本地部署时顺序下载 manifest、route、YAML、PGM 到 staging；校验 robot/deployment/revision、传输哈希、地图哈希、YAML image、文件大小和路线地图绑定，随后原子安装。部署保留 manifest 的原始 YAML/PGM 文件名，`routePath`、`mapYamlPath`、`mapPgmPath` 为精确最终路径；不会覆盖 `maps/my_map.*` 或 `maps/route_patrol_*.json`，本地 `auto` 路线选择保持不变。
 
-事件保留原字段，并增加 `schema_version`、`robot_id`、`boot_id`、`execution_id`、`deployment_id`、`request_id`、`sequence`、`route_id`、`route_path`、`state`、`occurred_at`。检查点可带 `target_id`、`target_name`、`target_index`、`target_count`、`completed_target_count`、`progress`。事件包括 `command_accepted`、`route_started`、`target_navigation_started`、`target_reached`、`target_task_started`、`target_task_finished`、`route_paused`、`route_resumed`、`return_home_started`、`route_finished`、`route_failed`、`route_canceled`。
-
-状态映射：`idle→CREATED`、`starting→DISPATCHING`、`running→RUNNING`、`paused→PAUSED`、`manual_takeover→MANUAL_TAKEOVER`、`returning_home/waiting_loop→RUNNING`、`succeeded→COMPLETED`、`failed→FAILED`、`canceled→CANCELLED`。统一错误为 `{code,message,requestId,details?}`；代码包括 `AUTH_FAILED`、`ROBOT_UNREACHABLE`、`PLATFORM_UNREACHABLE`、`ROBOT_BUSY`、`DEPLOYMENT_NOT_FOUND`、`DEPLOYMENT_CONFLICT`、`EXECUTION_NOT_FOUND`、`EXECUTION_CONFLICT`、`ROUTE_HASH_MISMATCH`、`MAP_HASH_MISMATCH`、`INVALID_ROUTE`、`INVALID_MAP`、`INVALID_REQUEST`、`TIMEOUT`、`INTERNAL_ERROR`。
-
-示例：
-
-```bash
-curl -H 'Authorization: Bearer token-placeholder' http://127.0.0.1:8000/api/platform/v1/health
-curl -X POST -H 'Authorization: Bearer token-placeholder' -H 'Content-Type: application/json' -d '{"robotId":"robot-001","deploymentId":"deploy-1","executorRouteId":"route-1","requestId":"req-1"}' http://127.0.0.1:8001/bridge/v1/executions/exe-1/start
-```
+事件仅由 `DeploymentStore.append_event` 分配单调 `sequence`，字段包含 `command_id`、`execution_id`、`deployment_id`、`request_id`、`robot_id`、`boot_id`、`occurred_at`。每批最多 100 条；服务器只确认连续序号。确认游标回退时机器人从服务器确认位置补传，事件不删除。网络错误按 1、2、4、8、15、30 秒加 0–20% 抖动（并遵守 `Retry-After`）；巡检继续、本地急停仍有效、网络中断不接收新远程命令。

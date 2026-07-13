@@ -11,6 +11,7 @@ def generate_launch_description():
     execution_id = LaunchConfiguration("execution_id")
     deployment_id = LaunchConfiguration("deployment_id")
     platform_request_id = LaunchConfiguration("platform_request_id")
+    platform_command_id = LaunchConfiguration("platform_command_id")
     auto_start = LaunchConfiguration("auto_start")
     publish_initial_pose = LaunchConfiguration(
         "publish_initial_pose_on_startup"
@@ -27,6 +28,7 @@ def generate_launch_description():
             DeclareLaunchArgument("execution_id", default_value=""),
             DeclareLaunchArgument("deployment_id", default_value=""),
             DeclareLaunchArgument("platform_request_id", default_value=""),
+            DeclareLaunchArgument("platform_command_id", default_value=""),
             DeclareLaunchArgument("auto_start", default_value="false"),
             DeclareLaunchArgument(
                 "publish_initial_pose_on_startup",
@@ -45,6 +47,7 @@ def generate_launch_description():
                         "execution_id": execution_id,
                         "deployment_id": deployment_id,
                         "platform_request_id": platform_request_id,
+                        "platform_command_id": platform_command_id,
                         "auto_start": ParameterValue(
                             auto_start,
                             value_type=bool,
