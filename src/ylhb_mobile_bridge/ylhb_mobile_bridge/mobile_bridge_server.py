@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import os
 import threading
+import uuid
+from pathlib import Path
 from typing import Optional
 
 import rclpy
@@ -51,12 +54,29 @@ def task_to_text(command: TaskCommand) -> str:
     return '收到通用任务指令'
 
 
+def stable_robot_id(bridge: MobileRosBridge) -> str:
+    configured = os.environ.get('YLHB_ROBOT_ID', '').strip() or str(
+        getattr(bridge, 'robot_id', '') or ''
+    ).strip()
+    if configured:
+        return configured
+    try:
+        seed = Path('/etc/machine-id').read_text(encoding='utf-8').strip()
+    except OSError:
+        seed = str(uuid.getnode())
+    if not seed:
+        seed = str(uuid.getnode())
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f'ylhb-robot:{seed}'))
+
+
 def make_app(
     bridge: MobileRosBridge,
     process_manager: ProcessManager,
     default_map_path: Optional[str] = None,
 ) -> FastAPI:
     app = FastAPI(title='YLHB Mobile Bridge', version='0.1.0')
+    robot_id = stable_robot_id(bridge)
+    bridge_instance_id = str(uuid.uuid4())
     app.add_middleware(
         CORSMiddleware,
         allow_origins=['*'],
@@ -75,6 +95,14 @@ def make_app(
         message = str(exc)
         bridge.get_logger().error('%s: %s', error, message)
         return ApiResponse(ok=False, error=error, message=message)
+
+    def status_payload() -> dict:
+        return {
+            **bridge.robot_status(),
+            'apiVersion': '1.1',
+            'robotId': robot_id,
+            'bridgeInstanceId': bridge_instance_id,
+        }
 
     def unauthorized_response() -> JSONResponse:
         return JSONResponse(
@@ -235,7 +263,7 @@ def make_app(
 
     @app.get('/api/status')
     def status():
-        return ok('status', bridge.robot_status())
+        return ok('status', status_payload())
 
     @app.post('/api/cmd_vel')
     def cmd_vel(command: VelocityCommand):
@@ -591,18 +619,14 @@ def make_app(
                     await close_local_app_websocket(websocket)
                     return
                 await websocket.send_json(
-                    response_dict(ok('status', bridge.robot_status()))
+                    response_dict(ok('status', status_payload()))
                 )
                 if not await wait_while_local_app_enabled(interval):
                     await close_local_app_websocket(websocket)
                     return
         except WebSocketDisconnect:
-            if local_app_enabled():
-                bridge.stop_motion()
             return
         except Exception:
-            if local_app_enabled():
-                bridge.stop_motion()
             return
         finally:
             if callable(disconnected):
@@ -656,12 +680,8 @@ def make_app(
                     await close_local_app_websocket(websocket)
                     return
         except WebSocketDisconnect:
-            if local_app_enabled():
-                bridge.stop_motion()
             return
         except Exception:
-            if local_app_enabled():
-                bridge.stop_motion()
             return
         finally:
             if callable(disconnected):

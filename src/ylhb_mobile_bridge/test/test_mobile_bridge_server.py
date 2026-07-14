@@ -40,6 +40,8 @@ class FakeBridge:
 
     def __init__(self):
         self.stopped = False
+        self.stop_motion_calls = 0
+        self.robot_id = "robot-test"
         self.mapping_map_reset_count = 0
         self.mapping_map_available = False
         self.system_commands = []
@@ -53,7 +55,21 @@ class FakeBridge:
         return FakeLogger()
 
     def robot_status(self):
-        return {"online": True, "pose": None, "velocity": None}
+        return {
+            "online": True,
+            "pose": None,
+            "velocity": None,
+            "network": {
+                "candidateEndpoints": [
+                    {
+                        "url": "http://192.168.8.20:8000",
+                        "interface": "eth0",
+                        "type": "ethernet",
+                        "linkUp": True,
+                    }
+                ]
+            },
+        }
 
     def debug_status(self):
         return {"online": True, "map_meta": None}
@@ -84,6 +100,7 @@ class FakeBridge:
         self.stopped = True
 
     def stop_motion(self):
+        self.stop_motion_calls += 1
         self.stopped = True
 
     def publish_system_command(self, command, **extra):
@@ -225,14 +242,66 @@ def make_client(bridge=None, process_manager=None, default_map_path=None):
 
 
 def test_status_uses_unified_response_envelope():
-    response = make_client().get("/api/status")
+    bridge = FakeBridge()
+    client = make_client(bridge)
+    response = client.get("/api/status")
+    second = client.get("/api/status")
 
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
     assert body["message"] == "status"
     assert body["data"]["online"] is True
+    assert body["data"]["apiVersion"] == "1.1"
+    assert body["data"]["robotId"] == "robot-test"
+    assert body["data"]["bridgeInstanceId"] == second.json()["data"]["bridgeInstanceId"]
+    assert body["data"]["network"]["candidateEndpoints"][0]["linkUp"] is True
     assert "timestamp" in body
+
+
+def run_failing_websocket(path):
+    bridge = FakeBridge()
+    app = make_app(bridge, FakeProcessManager())
+    received_connect = False
+
+    async def run_websocket():
+        nonlocal received_connect
+
+        async def receive():
+            nonlocal received_connect
+            if not received_connect:
+                received_connect = True
+                return {"type": "websocket.connect"}
+            await asyncio.sleep(10)
+
+        async def send(message):
+            if message["type"] == "websocket.send":
+                raise RuntimeError("client disconnected")
+
+        await app({
+            "type": "websocket",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "scheme": "ws",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+            "subprotocols": [],
+        }, receive, send)
+
+    asyncio.run(asyncio.wait_for(run_websocket(), timeout=1.0))
+    return bridge
+
+
+def test_status_websocket_disconnect_does_not_stop_motion():
+    assert run_failing_websocket("/ws/status").stop_motion_calls == 0
+
+
+def test_map_websocket_disconnect_does_not_stop_motion():
+    assert run_failing_websocket("/ws/map").stop_motion_calls == 0
 
 
 def test_validation_errors_use_unified_response_envelope():

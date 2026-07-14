@@ -516,6 +516,7 @@ class MobileRosBridge(Node):
             'velocity': self._velocity,
             'network': {
                 'appEndpoints': network['appEndpoints'],
+                'candidateEndpoints': network['candidateEndpoints'],
                 'interfaces': network['interfaces'],
                 'preferredAppEndpoint': network['preferredAppEndpoint'],
                 'warnings': network['warnings'],
@@ -834,6 +835,7 @@ class MobileRosBridge(Node):
                 system_status.get('mobile_bridge_managed_externally', True)
             ),
             'appEndpoints': network['appEndpoints'],
+            'candidateEndpoints': network['candidateEndpoints'],
             'preferredAppEndpoint': network['preferredAppEndpoint'],
             'networkInterfaces': network['interfaces'],
             'networkWarnings': network['warnings'],
@@ -845,6 +847,7 @@ class MobileRosBridge(Node):
         provider = getattr(self, 'network_status', None)
         empty = {
             'appEndpoints': [],
+            'candidateEndpoints': [],
             'preferredAppEndpoint': {},
             'interfaces': [],
             'warnings': [],
@@ -861,7 +864,16 @@ class MobileRosBridge(Node):
             return empty
         return {
             'appEndpoints': endpoints,
-            'preferredAppEndpoint': endpoints[0] if endpoints else {},
+            'candidateEndpoints': [
+                {
+                    'url': endpoint['url'],
+                    'interface': endpoint['interface'],
+                    'type': endpoint['type'],
+                    'linkUp': bool(endpoint['available']),
+                }
+                for endpoint in endpoints
+            ],
+            'preferredAppEndpoint': {},
             'interfaces': list(snapshot.get('interfaces') or []),
             'warnings': list(snapshot.get('warnings') or []),
         }

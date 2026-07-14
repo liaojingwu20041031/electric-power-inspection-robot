@@ -412,7 +412,21 @@ def test_robot_status_includes_optional_network_snapshot():
         'wlan0',
         'eth0',
     ]
-    assert network['preferredAppEndpoint']['interface'] == 'wlan0'
+    assert network['preferredAppEndpoint'] == {}
+    assert network['candidateEndpoints'] == [
+        {
+            'url': 'http://192.168.137.100:8000',
+            'interface': 'wlan0',
+            'type': 'wifi',
+            'linkUp': True,
+        },
+        {
+            'url': 'http://192.168.8.20:8000',
+            'interface': 'eth0',
+            'type': 'ethernet',
+            'linkUp': True,
+        },
+    ]
     assert len(network['interfaces']) == 2
     assert network['warnings'] == []
 
@@ -586,7 +600,8 @@ def test_local_app_override_wins_and_status_has_ui_contract():
         'activeMapClients': 1,
         'managedExternally': True,
         'appEndpoints': bridge.network_status.app_endpoints('0.0.0.0', 8000),
-        'preferredAppEndpoint': bridge.network_status.app_endpoints('0.0.0.0', 8000)[0],
+        'candidateEndpoints': status['candidateEndpoints'],
+        'preferredAppEndpoint': {},
         'networkInterfaces': bridge.network_status.snapshot()['interfaces'],
         'networkWarnings': [],
         'lastChangedAt': status['lastChangedAt'],
