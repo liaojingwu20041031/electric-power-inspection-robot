@@ -134,7 +134,7 @@ def _route_signature(
     paths: Iterable[Path], active_route_id: str, preview_mode: str
 ) -> str:
     digest = hashlib.sha256(
-        f"route-preview-v4:{preview_mode}:{active_route_id}:footprint-v1:warn=0.20".encode("utf-8")
+        f"route-preview-v5:{preview_mode}:{active_route_id}:footprint-v1:warn=0.20".encode("utf-8")
     )
     for path in paths:
         digest.update(str(path).encode("utf-8"))
@@ -230,7 +230,10 @@ def _draw_preview(
         resample = getattr(getattr(Image, "Resampling", Image), "NEAREST")
         image = image.resize((1000, max(1, int(round(height * scale)))), resample)
         width, height = image.size
-    draw = ImageDraw.Draw(image)
+    shortest_side = min(width, height)
+    route_line_width = max(3, min(7, int(round(shortest_side / 180))))
+    marker_radius = max(7, min(12, int(round(shortest_side / 90))))
+    font_size = max(13, min(18, int(round(shortest_side / 65))))
     font = ImageFont.load_default()
     for font_path in (
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -239,7 +242,7 @@ def _draw_preview(
     ):
         if Path(font_path).exists():
             try:
-                font = ImageFont.truetype(font_path, 14)
+                font = ImageFont.truetype(font_path, font_size)
                 break
             except OSError:
                 pass
@@ -254,7 +257,7 @@ def _draw_preview(
         )
         return int(round((px - crop_left) * scale)), int(round((py - crop_top) * scale))
 
-    points = [
+    route_points = [
         scaled_pixel(
             start_pose.get("x", 0.0),
             start_pose.get("y", 0.0),
@@ -262,44 +265,17 @@ def _draw_preview(
     ]
     for target in ordered:
         pose = target.get("pose") or {}
-        points.append(scaled_pixel(pose.get("x", 0.0), pose.get("y", 0.0)))
-    line_points = points + ([points[0]] if route.get("return_to_start") and len(points) > 1 else [])
-    for first, second in zip(line_points, line_points[1:]):
-        draw.line([first, second], fill="#2563EB", width=3)
-
-    start_x, start_y = points[0]
-    draw.ellipse(
-        [start_x - 7, start_y - 7, start_x + 7, start_y + 7],
-        fill="#F97316",
-        outline="#DC2626",
-        width=2,
-    )
-    draw.text((start_x + 9, start_y - 9), "S", fill="#DC2626", font=font)
-
-    for index, target in enumerate(ordered, start=1):
-        pose = target.get("pose") or {}
-        px, py = scaled_pixel(pose.get("x", 0.0), pose.get("y", 0.0))
-        target_status = (target.get("safety") or {}).get("validation_status", "ok")
-        marker_color = "#DC2626" if target_status == "unsafe" else "#EAB308" if target_status == "warning" else "#22C55E"
-        draw.ellipse(
-            [px - 8, py - 8, px + 8, py + 8],
-            fill=marker_color,
-            outline="#111827",
-            width=2,
-        )
-        draw.text((px + 10, py + 5), f"{index}. {target.get('name', target.get('id', ''))}", fill="#111827", font=font)
-        yaw = float(pose.get("yaw", 0.0))
-        draw.line(
-            [(px, py), (px + math.cos(yaw) * 22, py - math.sin(yaw) * 22)],
-            fill="#111827",
-            width=2,
-        )
-
+        route_points.append(scaled_pixel(pose.get("x", 0.0), pose.get("y", 0.0)))
+    keepout_overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
+    keepout_draw = ImageDraw.Draw(keepout_overlay)
     for zone in route_data.get("keepout_zones", []):
         if zone.get("enabled") is True and zone.get("type") == "hard_keepout":
-            points = [scaled_pixel(point["x"], point["y"]) for point in zone.get("polygon", [])]
-            if len(points) >= 3:
-                draw.polygon(points, fill="#FCA5A5", outline="#991B1B")
+            zone_points = [scaled_pixel(point["x"], point["y"]) for point in zone.get("polygon", [])]
+            if len(zone_points) >= 3:
+                keepout_draw.polygon(zone_points, fill=(239, 68, 68, 72), outline=(153, 27, 27, 255))
+                keepout_draw.line(zone_points + [zone_points[0]], fill=(153, 27, 27, 255), width=2)
+    image = Image.alpha_composite(image.convert("RGBA"), keepout_overlay).convert("RGB")
+    draw = ImageDraw.Draw(image)
 
     footprint = [
         (0.18650, 0.00000), (0.16543, 0.10591), (0.10544, 0.19569), (0.01566, 0.25568),
@@ -312,26 +288,102 @@ def _draw_preview(
     ]:
         yaw = float(pose.get("yaw", 0.0))
         cosine, sine = math.cos(yaw), math.sin(yaw)
-        points = [
+        footprint_points = [
             scaled_pixel(
                 float(pose.get("x", 0.0)) + (x + (0.01 if x > 0 else -0.01 if x < 0 else 0.0)) * cosine - (y + (0.01 if y > 0 else -0.01 if y < 0 else 0.0)) * sine,
                 float(pose.get("y", 0.0)) + (x + (0.01 if x > 0 else -0.01 if x < 0 else 0.0)) * sine + (y + (0.01 if y > 0 else -0.01 if y < 0 else 0.0)) * cosine,
             )
             for x, y in footprint
         ]
-        draw.line(points + [points[0]], fill="#DC2626" if status == "unsafe" else "#EAB308" if status == "warning" else "#16A34A", width=2)
+        draw.line(
+            footprint_points + [footprint_points[0]],
+            fill="#DC2626" if status == "unsafe" else "#D97706" if status == "warning" else "#15803D",
+            width=1,
+        )
+
+    line_points = route_points
+    if route.get("return_to_start") and len(line_points) > 1:
+        line_points = line_points + [line_points[0]]
+    for first, second in zip(line_points, line_points[1:]):
+        draw.line([first, second], fill="#FFFFFF", width=route_line_width + 4)
+        draw.line([first, second], fill="#2563EB", width=route_line_width)
+
+    label_overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
+    label_draw = ImageDraw.Draw(label_overlay)
+    labels: List[Tuple[Tuple[int, int], str]] = []
+
+    start_x, start_y = route_points[0]
+    draw.ellipse(
+        [start_x - marker_radius - 3, start_y - marker_radius - 3, start_x + marker_radius + 3, start_y + marker_radius + 3],
+        fill="#FFFFFF",
+    )
+    draw.ellipse(
+        [start_x - marker_radius, start_y - marker_radius, start_x + marker_radius, start_y + marker_radius],
+        fill="#F97316",
+        outline="#C2410C",
+        width=2,
+    )
+    labels.append(((start_x + marker_radius + 7, start_y - marker_radius - 5), "S 起点"))
+
+    for index, target in enumerate(ordered, start=1):
+        pose = target.get("pose") or {}
+        px, py = scaled_pixel(pose.get("x", 0.0), pose.get("y", 0.0))
+        target_status = (target.get("safety") or {}).get("validation_status", "ok")
+        marker_color = "#DC2626" if target_status == "unsafe" else "#EAB308" if target_status == "warning" else "#22C55E"
+        draw.ellipse(
+            [px - marker_radius - 3, py - marker_radius - 3, px + marker_radius + 3, py + marker_radius + 3],
+            fill="#FFFFFF",
+        )
+        draw.ellipse(
+            [px - marker_radius, py - marker_radius, px + marker_radius, py + marker_radius],
+            fill=marker_color,
+            outline="#111827",
+            width=1,
+        )
+        number = str(index)
+        number_box = draw.textbbox((0, 0), number, font=font)
+        draw.text(
+            (px - (number_box[2] - number_box[0]) / 2, py - (number_box[3] - number_box[1]) / 2 - 1),
+            number,
+            fill="#FFFFFF",
+            font=font,
+        )
+        yaw = float(pose.get("yaw", 0.0))
+        end = (px + math.cos(yaw) * (marker_radius + 18), py - math.sin(yaw) * (marker_radius + 18))
+        draw.line([(px, py), end], fill="#111827", width=2)
+        draw.ellipse([end[0] - 3, end[1] - 3, end[0] + 3, end[1] + 3], fill="#111827")
+        labels.append(((px + marker_radius + 7, py + marker_radius + 3), str(target.get("name") or target.get("id") or index)))
+
+    for position, label in labels:
+        bounds = draw.textbbox(position, label, font=font)
+        label_draw.rounded_rectangle(
+            [bounds[0] - 5, bounds[1] - 3, bounds[2] + 5, bounds[3] + 3],
+            radius=5,
+            fill=(255, 255, 255, 220),
+            outline=(203, 213, 225, 230),
+        )
+    image = Image.alpha_composite(image.convert("RGBA"), label_overlay).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    for position, label in labels:
+        draw.text(position, label, fill="#111827", font=font)
 
     overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
     overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle([8, 8, 430, 72], fill=(255, 255, 255, 210), outline="#111827")
+    legend_width = min(width - 16, 390)
+    overlay_draw.rounded_rectangle([8, 8, legend_width, 66], radius=8, fill=(255, 255, 255, 220), outline="#CBD5E1")
     image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(image)
-    draw.text(
-        (18, 25),
-        f"{route.get('name', route.get('id', 'route'))} 目标 {len(ordered)} | 蓝=路线 绿/黄/红=安全 | 红区=禁行",
-        fill="#111827",
-        font=font,
-    )
+    draw.line([(18, 24), (48, 24)], fill="#FFFFFF", width=route_line_width + 3)
+    draw.line([(18, 24), (48, 24)], fill="#2563EB", width=route_line_width)
+    draw.text((56, 14), "蓝色路线", fill="#111827", font=font)
+    legend_items = [(145, "#22C55E", "绿色安全"), (235, "#EAB308", "黄色警告")]
+    for x_value, color, label in legend_items:
+        draw.ellipse([x_value, 18, x_value + 10, 28], fill=color, outline="#FFFFFF")
+        draw.text((x_value + 14, 14), label, fill="#111827", font=font)
+    draw.ellipse([18, 43, 28, 53], fill="#DC2626", outline="#FFFFFF")
+    draw.text((32, 37), "红色危险", fill="#111827", font=font)
+    draw.rectangle([145, 43, 157, 53], fill="#EF4444", outline="#991B1B")
+    draw.text((163, 37), "红色区域禁行", fill="#111827", font=font)
     tmp_path = output_path.with_suffix(".tmp.png")
     try:
         image.save(tmp_path, "PNG")

@@ -75,6 +75,8 @@ def test_bridge_page_separates_local_and_cloud_controls():
     assert "backend.setCloudEnabled" in qml
     assert 'target: localAppSwitch' in qml
     assert 'target: cloudSwitch' in qml
+    assert "import QtQml 2.15" in qml
+    assert qml.count("restoreMode: Binding.RestoreBindingOrValue") == 2
     assert 'localAppSwitch.checked =' not in qml
     assert 'cloudSwitch.checked =' not in qml
     assert "setCloudEnabled(local" not in qml
@@ -179,6 +181,7 @@ def test_bridge_switches_receive_mouse_clicks_and_call_independent_services():
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert "Not restoring previous value" not in result.stderr
 
 
 def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():
@@ -221,6 +224,16 @@ def test_route_preview_viewer_has_zoom_pan_and_error_controls():
     assert "property real minZoom: 0.05" in qml
     assert "property real maxZoom: 6.0" in qml
     assert "路线预览图解码失败" in qml
+    assert "function scheduleFit()" in qml
+    assert "interval: 100" in qml
+    assert "onWidthChanged: scheduleFit()" in qml
+    assert "onHeightChanged: scheduleFit()" in qml
+    assert "onWidthChanged: { if (autoFit) fit() }" not in qml
+    assert "onHeightChanged: { if (autoFit) fit() }" not in qml
+    assert "if (routePreviewImage.status !== Image.Ready)" in qml
+    assert "reset()\n            return" not in qml
+    assert "sourceSize.width: 1600" in qml
+    assert "拖动查看 · 双指缩放 · 点击适应恢复全图" in qml
 
 
 def test_patrol_page_sends_controls_to_supervisor():
@@ -237,7 +250,7 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.sendPatrolCommand("resume")' not in qml
     assert 'backend.sendPatrolCommand("cancel")' not in qml
     assert 'backend.sendPatrolCommand("reload")' not in qml
-    assert "一键启动巡逻模式" in qml
+    assert "启动巡逻任务" in qml
     assert "enabled: backend.patrolCanStart" in qml
     assert "!root.patrolStarting && !root.patrolRunning && backend.routePreviewOk" not in qml
     assert 'backend.patrolModeState === "running"' not in qml
@@ -250,29 +263,30 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.patrolCanCancel' in qml
     assert 'backend.setRoutePreviewMode("route_focus")' in qml
     assert 'backend.setRoutePreviewMode("full_map")' in qml
-    controls = qml.split('Label { text: "主控制"', 1)[1].split('Label { text: "路线预览"', 1)[0]
-    assert 'backend.sendSystemCommand("stop_navigation")' not in controls
-    assert 'backend.sendSystemCommand("stop_bringup")' not in controls
-    assert 'backend.sendSystemCommand("reload_patrol_route")' not in controls
-    stop_button = qml.split('backend.sendSystemCommand("stop_robot_stack")', 1)[0].rsplit('WarmButton', 1)[1]
-    assert 'root.patrolCommandSent' not in stop_button
-    assert 'root.navigationActive' not in stop_button
+    assert 'id: startPatrolDialog' in qml
+    assert 'id: stopPatrolDialog' in qml
+    assert 'onClicked: startPatrolDialog.open()' in qml
+    assert 'onClicked: stopPatrolDialog.open()' in qml
+    assert qml.count('backend.startPatrolMode()') == 1
+    assert qml.count('backend.sendSystemCommand("stop_robot_stack")') == 1
+    assert 'onAccepted: backend.startPatrolMode()' in qml
+    assert 'onAccepted: backend.sendSystemCommand("stop_robot_stack")' in qml
 
 
 def test_patrol_page_keeps_advanced_controls_and_lists_collapsed():
     qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
 
-    advanced = qml.split('Label { text: "高级/诊断"', 1)[1]
-    assert 'backend.sendSystemCommand("stop_navigation")' in advanced
-    assert 'backend.sendSystemCommand("stop_bringup")' in advanced
-    assert 'backend.sendSystemCommand("reload_patrol_route")' in advanced
-    assert 'backend.refreshRoutePreview()' in advanced
+    assert 'backend.sendSystemCommand("stop_navigation")' in qml
+    assert 'backend.sendSystemCommand("stop_bringup")' in qml
+    assert 'backend.sendSystemCommand("reload_patrol_route")' in qml
+    assert 'backend.refreshRoutePreview()' in qml
+    assert 'property bool detailsVisible: false' in qml
     assert 'property bool advancedVisible: false' in qml
     assert 'property bool tasksVisible: false' in qml
     assert 'property bool eventsVisible: false' in qml
-    assert 'visible: root.advancedVisible' in qml
-    assert 'visible: root.tasksVisible' in qml
-    assert 'visible: root.eventsVisible' in qml
+    assert 'model: root.detailsVisible && root.diagnosticsVisible' in qml
+    assert 'model: root.detailsVisible && root.tasksVisible' in qml
+    assert 'model: root.detailsVisible && root.eventsVisible' in qml
 
 
 def test_patrol_page_shows_known_and_unknown_startup_steps_and_collapses_diagnostics():
@@ -285,7 +299,112 @@ def test_patrol_page_shows_known_and_unknown_startup_steps_and_collapses_diagnos
     assert 'backend.systemStatus.startup_step_label' in qml
     assert 'property bool diagnosticsVisible: false' in qml
     assert 'checked: root.diagnosticsVisible' in qml
-    assert 'visible: root.diagnosticsVisible' in qml
+    assert 'visible: root.detailsVisible && root.diagnosticsVisible' in qml
+
+
+def test_patrol_page_prioritizes_route_map_and_responsive_workspace():
+    qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
+
+    assert 'objectName: "patrolPage"' in qml
+    assert 'property bool wideLayout: root.availableWidth >= 1200' in qml
+    assert 'property real contentMaxWidth: 1540' in qml
+    assert 'width: Math.min(root.availableWidth - 40, root.contentMaxWidth)' in qml
+    assert 'columns: 12' in qml
+    assert 'Layout.columnSpan: root.wideLayout ? 8 : 12' in qml
+    assert 'Layout.columnSpan: root.wideLayout ? 4 : 12' in qml
+    assert 'property real mapPreferredHeight:' in qml
+    assert 'ScrollBar.horizontal.policy: ScrollBar.AlwaysOff' in qml
+    assert '路线地图' in qml
+    assert '路线聚焦' in qml
+    assert '完整地图' in qml
+    assert '重绘预览' in qml
+    assert '当前目标' in qml
+    assert '总体进度' in qml
+    assert '当前轮次' in qml
+    assert '下一轮' in qml
+
+
+def test_patrol_page_loads_responsively_and_confirms_start_and_stop():
+    repo = Path.cwd()
+    script = textwrap.dedent(f"""
+        from PyQt5.QtCore import QPoint, QPointF, Qt, QUrl
+        from PyQt5.QtGui import QGuiApplication
+        from PyQt5.QtQml import QQmlComponent, QQmlEngine
+        from PyQt5.QtQuick import QQuickItem
+        from PyQt5.QtTest import QTest
+        from ylhb_llm.ui_backend import UiBackend
+        from ylhb_llm.ui_models import UiState
+
+        class Bridge:
+            def __init__(self): self.system = []
+            def publish_system_command(self, command, **extra): self.system.append((command, extra))
+
+        def click(window, item):
+            point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+            QTest.mouseClick(window, Qt.LeftButton, pos=QPoint(round(point.x()), round(point.y())))
+            app.processEvents()
+
+        app = QGuiApplication([])
+        bridge = Bridge()
+        state = UiState(route_preview={{'targets': [], 'safety_warnings': [], 'map_identity': {{}}}})
+        backend = UiBackend(bridge, state, route_preview_loader=lambda **kwargs: {{'ok': False, 'targets': []}})
+        backend.startup_timer.stop()
+        engine = QQmlEngine()
+        engine.rootContext().setContextProperty('backend', backend)
+        component = QQmlComponent(engine)
+        component.setData(b'''import QtQuick 2.12\\nimport QtQuick.Window 2.12\\nimport "file://{repo / 'src/ylhb_llm/qml/pages'}" as Pages\\nWindow {{ width: 1920; height: 1080; visible: true; Pages.PatrolPage {{ anchors.fill: parent }} }}''', QUrl())
+        while component.isLoading(): app.processEvents()
+        window = component.create()
+        assert window is not None, [str(error.toString()) for error in component.errors()]
+        app.processEvents()
+
+        page = window.findChild(QQuickItem, 'patrolPage')
+        assert page is not None
+        heights = []
+        for width, height in ((1920, 1080), (1280, 800), (960, 640)):
+            window.setWidth(width); window.setHeight(height); app.processEvents()
+            assert page.property('contentWidth') <= width
+            heights.append(page.property('mapPreferredHeight'))
+        assert heights[0] > heights[1] > heights[2]
+        window.setWidth(1920); window.setHeight(1080); app.processEvents()
+
+        start = window.findChild(QQuickItem, 'startPatrolButton')
+        click(window, start)
+        assert bridge.system == []
+        cancel = window.findChild(QQuickItem, 'cancelStartPatrolButton')
+        click(window, cancel)
+        assert bridge.system == []
+        click(window, start)
+        confirm = window.findChild(QQuickItem, 'confirmStartPatrolButton')
+        click(window, confirm)
+        assert [item[0] for item in bridge.system] == ['start_patrol_mode']
+
+        backend.update_system_status({{'patrol_executor': 'running', 'patrol_mode_state': 'running'}})
+        backend.update_patrol_status({{'state': 'running'}})
+        app.processEvents()
+        stop = window.findChild(QQuickItem, 'stopPatrolButton')
+        click(window, stop)
+        assert [item[0] for item in bridge.system] == ['start_patrol_mode']
+        cancel_stop = window.findChild(QQuickItem, 'cancelStopPatrolButton')
+        click(window, cancel_stop)
+        click(window, stop)
+        confirm_stop = window.findChild(QQuickItem, 'confirmStopPatrolButton')
+        click(window, confirm_stop)
+        assert [item[0] for item in bridge.system] == ['start_patrol_mode', 'stop_robot_stack']
+    """)
+    env = os.environ.copy()
+    env['QT_QPA_PLATFORM'] = 'offscreen'
+    env['QT_QUICK_BACKEND'] = 'software'
+    env['PYTHONPATH'] = os.pathsep.join((
+        str(repo / 'src/ylhb_llm'),
+        str(repo / 'src/ylhb_mobile_bridge'),
+        env.get('PYTHONPATH', ''),
+    ))
+    result = subprocess.run(
+        ['/usr/bin/python3', '-c', script], cwd=repo, env=env,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_voice_ai_page_sends_text_to_language_agent():

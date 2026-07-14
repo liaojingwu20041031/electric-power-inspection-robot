@@ -1,6 +1,7 @@
 import QtQuick 2.12
 import QtQuick.Controls 2.12
 import QtQuick.Layouts 1.12
+import QtQml 2.15
 import "../components"
 import ".."
 
@@ -132,6 +133,7 @@ ScrollView {
                             property: "checked"
                             value: backend.localAppRequestedEnabled
                             when: !localDisableDialog.visible && !backend.localAppControlPending
+                            restoreMode: Binding.RestoreBindingOrValue
                         }
                     }
                     Label {
@@ -203,6 +205,7 @@ ScrollView {
                             property: "checked"
                             value: backend.cloudRequestedEnabled
                             when: !cloudDisableDialog.visible && !backend.cloudControlPending
+                            restoreMode: Binding.RestoreBindingOrValue
                         }
                     }
                     Label {

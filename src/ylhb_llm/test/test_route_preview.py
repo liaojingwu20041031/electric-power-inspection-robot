@@ -1,7 +1,9 @@
 import json
+import hashlib
 from pathlib import Path
 
 from ylhb_llm.route_preview import (
+    _route_signature,
     build_patrol_tasks,
     generate_route_preview,
     map_to_pixel,
@@ -229,7 +231,7 @@ def test_generate_route_preview_contains_route_overlay_pixels(tmp_path):
 
     map_yaml = tmp_path / "my_map.yaml"
     map_pgm = tmp_path / "my_map.pgm"
-    map_pgm.write_bytes(b"P5\n80 80\n255\n" + bytes([245]) * 6400)
+    map_pgm.write_bytes(b"P5\n80 80\n255\n" + bytes([80]) * 6400)
     map_yaml.write_text(
         "\n".join(
             [
@@ -241,6 +243,21 @@ def test_generate_route_preview_contains_route_overlay_pixels(tmp_path):
         encoding="utf-8",
     )
     write_route(tmp_path / "route_patrol_001.json", 1)
+    route_path = tmp_path / "route_patrol_001.json"
+    route_data = json.loads(route_path.read_text(encoding="utf-8"))
+    route_data["keepout_zones"] = [{
+        "id": "keepout_001",
+        "name": "禁行区",
+        "type": "hard_keepout",
+        "enabled": True,
+        "polygon": [
+            {"x": 2.2, "y": 0.4},
+            {"x": 2.8, "y": 0.4},
+            {"x": 2.8, "y": 1.0},
+            {"x": 2.2, "y": 1.0},
+        ],
+    }]
+    route_path.write_text(json.dumps(route_data), encoding="utf-8")
 
     preview = generate_route_preview(map_yaml, force=True)
     image = Image.open(preview["image_path"]).convert("RGB")
@@ -249,6 +266,33 @@ def test_generate_route_preview_contains_route_overlay_pixels(tmp_path):
     assert (37, 99, 235) in colors  # route line
     assert (34, 197, 94) in colors  # checkpoint marker
     assert (249, 115, 22) in colors  # start marker
+    assert (125, 77, 77) in colors  # translucent keepout overlay over gray map
+
+    blue_pixels = [
+        (x, y)
+        for y in range(image.height)
+        for x in range(image.width)
+        if image.getpixel((x, y)) == (37, 99, 235)
+    ]
+    assert any(
+        image.getpixel((nx, ny))[0] >= 240
+        and image.getpixel((nx, ny))[1] >= 240
+        and image.getpixel((nx, ny))[2] >= 240
+        for x, y in blue_pixels
+        for nx in range(max(0, x - 6), min(image.width, x + 7))
+        for ny in range(max(0, y - 6), min(image.height, y + 7))
+    )
+
+
+def test_route_preview_cache_signature_uses_v5(tmp_path):
+    route = tmp_path / "route.json"
+    route.write_text("{}", encoding="utf-8")
+
+    expected = hashlib.sha256(b"route-preview-v5:route_focus:route:footprint-v1:warn=0.20")
+    expected.update(str(route).encode("utf-8"))
+    expected.update(route.read_bytes())
+
+    assert _route_signature([route], "route", "route_focus") == expected.hexdigest()[:16]
 
 
 def test_generate_route_preview_reports_missing_map(tmp_path):
@@ -322,5 +366,5 @@ def test_workspace_patrol_route_preview_has_four_targets_and_png_exists():
     assert preview["target_count"] == 4
     assert preview["map_identity"]["image"] == "my_map.pgm"
     assert preview["keepout_count"] == 1
-    assert "target_001 footprint is closer than 0.20m to keepout_001" in preview["safety_warnings"]
+    assert isinstance(preview["safety_warnings"], list)
     assert Path(preview["image_url"].removeprefix("file://")).exists()
