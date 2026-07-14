@@ -113,6 +113,17 @@ def test_bridge_page_separates_local_and_cloud_controls():
     assert "cloudControlAvailable" in qml
     assert "启动网桥核心服务" in qml
     assert "sudo systemctl restart ylhb-mobile-bridge.service" in qml
+    assert "backend.localAppStatus.appEndpoints" in qml
+    assert "Math.min(2, endpoints.length)" in qml
+    assert "backend.localAppStatus.appUrl || backend.appUrl" in qml
+    assert "readOnly: true" in qml
+    assert "selectByMouse: true" in qml
+    assert "backend.cloudStatus.cloudEgress" in qml
+    assert "backend.cloudStatus.alternateCloudRoutes" in qml
+    assert "networkMode" in qml
+    assert "切换网卡" not in qml
+    assert "停用网卡" not in qml
+    assert "route metric" not in qml
 
 
 def test_inspection_launch_keeps_ui_as_full_stack_lifecycle_anchor():

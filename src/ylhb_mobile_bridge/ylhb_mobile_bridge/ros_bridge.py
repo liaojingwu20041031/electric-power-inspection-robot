@@ -27,6 +27,7 @@ from .map_snapshot import (
     occupancy_grid_metadata,
     occupancy_grid_to_png_snapshot,
 )
+from .network_status import NetworkStatusProvider
 
 CHASSIS_SAFE_MAX_LINEAR_SPEED = 0.35
 CHASSIS_SAFE_MAX_ANGULAR_SPEED = 0.55
@@ -112,6 +113,9 @@ class MobileRosBridge(Node):
         self.set_cloud_enabled_service_name = str(self.get_parameter('set_cloud_enabled_service_name').value)
         self.local_app_status_topic = str(self.get_parameter('local_app_status_topic').value)
         self.set_local_app_enabled_service_name = str(self.get_parameter('set_local_app_enabled_service_name').value)
+        self.host = str(self.get_parameter('host').value)
+        self.port = int(self.get_parameter('port').value)
+        self.network_status = NetworkStatusProvider()
 
         self._last_odom_time: Optional[float] = None
         self._last_scan_time: Optional[float] = None
@@ -480,6 +484,7 @@ class MobileRosBridge(Node):
         return self._cached_value('robot_status', 0.5, self._robot_status_uncached)
 
     def _robot_status_uncached(self) -> dict:
+        network = self._network_status_snapshot()
         return {
             'online': True,
             'can_status': (
@@ -509,6 +514,12 @@ class MobileRosBridge(Node):
             'mapPose': self._map_pose,
             'odomPose': self._pose,
             'velocity': self._velocity,
+            'network': {
+                'appEndpoints': network['appEndpoints'],
+                'interfaces': network['interfaces'],
+                'preferredAppEndpoint': network['preferredAppEndpoint'],
+                'warnings': network['warnings'],
+            },
             'timestamp': time.time(),
         }
 
@@ -797,14 +808,14 @@ class MobileRosBridge(Node):
         else:
             state = 'DEGRADED'
         system_status = self.system_status()
+        network = self._network_status_snapshot()
         app_url = str(system_status.get('mobile_bridge_url') or '')
         if not app_url:
-            getter = getattr(self, 'get_parameter', None)
-            try:
-                port = int(getter('port').value) if callable(getter) else 8000
-            except (AttributeError, KeyError):
-                port = 8000
-            app_url = f'http://127.0.0.1:{port}'
+            app_url = str(
+                (network['preferredAppEndpoint'] or {}).get('url') or ''
+            )
+        if not app_url:
+            app_url = f"http://127.0.0.1:{getattr(self, 'port', 8000)}"
         lock = getattr(self, '_local_app_lock', None)
         if lock:
             with lock:
@@ -822,8 +833,37 @@ class MobileRosBridge(Node):
             'managedExternally': bool(
                 system_status.get('mobile_bridge_managed_externally', True)
             ),
+            'appEndpoints': network['appEndpoints'],
+            'preferredAppEndpoint': network['preferredAppEndpoint'],
+            'networkInterfaces': network['interfaces'],
+            'networkWarnings': network['warnings'],
             'lastChangedAt': self._local_app_last_changed_at,
             'lastError': self._local_app_last_error,
+        }
+
+    def _network_status_snapshot(self) -> dict:
+        provider = getattr(self, 'network_status', None)
+        empty = {
+            'appEndpoints': [],
+            'preferredAppEndpoint': {},
+            'interfaces': [],
+            'warnings': [],
+        }
+        if provider is None:
+            return empty
+        try:
+            snapshot = provider.snapshot()
+            endpoints = provider.app_endpoints(
+                getattr(self, 'host', '0.0.0.0'),
+                getattr(self, 'port', 8000),
+            )
+        except Exception:
+            return empty
+        return {
+            'appEndpoints': endpoints,
+            'preferredAppEndpoint': endpoints[0] if endpoints else {},
+            'interfaces': list(snapshot.get('interfaces') or []),
+            'warnings': list(snapshot.get('warnings') or []),
         }
 
     def set_local_app_enabled(self, enabled: bool) -> dict:
