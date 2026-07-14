@@ -300,13 +300,30 @@ def test_patrol_page_keeps_advanced_controls_and_lists_collapsed():
     assert 'model: root.detailsVisible && root.eventsVisible' in qml
 
 
-def test_patrol_page_shows_known_and_unknown_startup_steps_and_collapses_diagnostics():
+def test_patrol_page_startup_stages_match_supervisor_flow_and_collapse_diagnostics():
     qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
 
-    assert '"waiting_map_to_odom"' in qml
-    assert '"waiting_nav2_active"' in qml
-    assert '"waiting_executor_response"' in qml
-    assert '"patrol_failed"' in qml
+    for step in (
+        'starting_bringup',
+        'starting_navigation',
+        'navigation_process_spawned',
+        'navigation_ready',
+        'starting_executor',
+        'executor_process_spawned',
+        'executor_ready',
+        'patrol_command_sent',
+        'patrol_started',
+        'patrol_failed',
+    ):
+        assert f'"{step}"' in qml
+    for obsolete_step in (
+        'waiting_after_bringup',
+        'waiting_after_navigation',
+        'waiting_after_executor',
+        'waiting_nav2_active',
+        'patrol_start_sent',
+    ):
+        assert f'"{obsolete_step}"' not in qml
     assert 'backend.systemStatus.startup_step_label' in qml
     assert 'property bool diagnosticsVisible: false' in qml
     assert 'checked: root.diagnosticsVisible' in qml

@@ -31,17 +31,15 @@ ScrollView {
     ]
     property var startupStages: [
         { "label": "启动底盘", "step": "starting_bringup" },
-        { "label": "等待底盘稳定", "step": "waiting_after_bringup" },
         { "label": "启动导航", "step": "starting_navigation" },
-        { "label": "等待导航稳定", "step": "waiting_after_navigation" },
+        { "label": "导航进程已创建", "step": "navigation_process_spawned" },
+        { "label": "导航已就绪", "step": "navigation_ready" },
         { "label": "启动巡逻执行器", "step": "starting_executor" },
-        { "label": "等待执行器发布初始位姿", "step": "waiting_after_executor" },
-        { "label": "等待 map->odom", "step": "waiting_map_to_odom" },
-        { "label": "等待 Nav2 active", "step": "waiting_nav2_active" },
-        { "label": "发送巡逻 start", "step": "patrol_start_sent" },
-        { "label": "等待执行器响应", "step": "waiting_executor_response" },
-        { "label": "巡逻启动失败", "step": "patrol_failed" },
-        { "label": "巡逻运行", "step": "patrol_started" }
+        { "label": "执行器进程已创建", "step": "executor_process_spawned" },
+        { "label": "执行器已就绪", "step": "executor_ready" },
+        { "label": "巡逻命令已发送", "step": "patrol_command_sent" },
+        { "label": "巡逻运行", "step": "patrol_started" },
+        { "label": "巡逻启动失败", "step": "patrol_failed" }
     ]
 
     function stageIndex(step) {

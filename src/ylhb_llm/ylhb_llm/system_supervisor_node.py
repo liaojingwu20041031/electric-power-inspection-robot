@@ -2,6 +2,7 @@ import json
 import math
 import os
 import signal
+import shlex
 import socket
 import subprocess
 import threading
@@ -77,7 +78,7 @@ STARTUP_STEP_LABELS = {
     'waiting_after_navigation': '导航启动后等待',
     'generating_keepout_mask': '生成禁行区',
     'waiting_keepout_active': '等待禁行区',
-    'starting_executor': '发布初始位姿',
+    'starting_executor': '启动巡逻执行器',
     'executor_process_spawned': '巡逻执行器进程已创建',
     'executor_ready': '巡逻执行器已就绪',
     'waiting_executor': '发布初始位姿',
@@ -422,9 +423,7 @@ class SystemSupervisorNode(Node):
             ),
             'patrol_executor': ManagedProcess(
                 'patrol_executor',
-                'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
-                f'route_file_path:={self.patrol_route_request} route_directory:={self.route_directory} '
-                'auto_start:=false publish_initial_pose_on_startup:=true',
+                self.build_patrol_executor_command(),
             ),
         }
 
@@ -817,14 +816,25 @@ class SystemSupervisorNode(Node):
             proc.last_error = ''
             proc.last_started_at = time.time()
             proc.last_message = f'started pid={proc.process.pid}'
-        time.sleep(0.75)
-        with self.lock:
-            exit_code = proc.poll_exit_code()
-            if exit_code is not None:
-                proc.last_error = f'{name} process exited immediately, exit code={exit_code}'
+        deadline = time.monotonic() + (2.5 if name == 'patrol_executor' else 0.75)
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            with self.lock:
+                exit_code = proc.poll_exit_code()
+                if exit_code is None:
+                    continue
+                if name == 'patrol_executor':
+                    mode = 'platform' if getattr(self, 'platform_context', {}) else 'local'
+                    proc.last_error = (
+                        f'patrol_executor {mode} mode launch 参数构建失败，'
+                        f'exit code={exit_code}'
+                    )
+                else:
+                    proc.last_error = f'{name} process exited immediately, exit code={exit_code}'
                 proc.last_message = proc.last_error
                 self.set_result_locked(f'start_{name}', False, proc.last_error)
                 return False
+        with self.lock:
             self.set_result_locked(f'start_{name}', True, f'{name} 启动命令已发送')
         return True
 
@@ -1286,24 +1296,26 @@ class SystemSupervisorNode(Node):
                 'global/local costmap 尚未收到 keepout info 和 mask',
             ):
                 return
+        self.startup_step = 'navigation_ready'
         # 15. patrol executor (no auto initial pose)
         self.startup_step = 'starting_executor'
         started_at = time.time()
         executor = getattr(self, 'processes', {}).get('patrol_executor')
         if executor is not None:
-            context = getattr(self, 'platform_context', {})
-            executor.command = (
-                'ros2 launch ylhb_mobile_bridge patrol_executor.launch.py '
-                f'route_file_path:={self.patrol_route_request} route_directory:={self.route_directory} '
-                'auto_start:=false '
-                f'publish_initial_pose_on_startup:=false startup_id:={self.startup_id}'
-                f" execution_id:={context.get('active_execution_id', '')}"
-                f" deployment_id:={context.get('active_deployment_id', '')}"
-                f" platform_request_id:={context.get('active_request_id', '')}"
-                f" platform_command_id:={context.get('active_command_id', '')}"
-            )
+            try:
+                executor.command = self.build_patrol_executor_command()
+            except (TypeError, ValueError) as exc:
+                mode = 'platform' if getattr(self, 'platform_context', {}) else 'local'
+                self.fail_patrol_start(
+                    f'patrol_executor {mode} mode launch 参数构建失败: {exc}',
+                    generation=generation,
+                )
+                return
         if not self.start_process('patrol_executor'):
-            self.fail_patrol_start('巡逻执行器启动失败', generation=generation)
+            self.fail_patrol_start(
+                getattr(executor, 'last_error', '') or '巡逻执行器启动失败',
+                generation=generation,
+            )
             return
         # 16. executor /patrol/status and /patrol/command
         self.startup_step = 'executor_process_spawned'
@@ -1532,6 +1544,37 @@ class SystemSupervisorNode(Node):
             f'params_file:={self.workspace_dir}/src/ylhb_base/config/nav2_params.yaml '
             'autostart:=false'
         )
+
+    def build_patrol_executor_command(self) -> str:
+        context = dict(getattr(self, 'platform_context', {}) or {})
+        route_file_path = str(getattr(self, 'patrol_route_request', '') or '').strip()
+        route_directory = str(getattr(self, 'route_directory', '') or '').strip()
+        startup_id = str(getattr(self, 'startup_id', '') or 'pending').strip()
+        if not route_file_path or not route_directory:
+            raise ValueError('route_file_path 和 route_directory 不能为空')
+
+        parts = [
+            'ros2',
+            'launch',
+            'ylhb_mobile_bridge',
+            'patrol_executor.launch.py',
+            f'route_file_path:={route_file_path}',
+            f'route_directory:={route_directory}',
+            'auto_start:=false',
+            'publish_initial_pose_on_startup:=false',
+            f'startup_id:={startup_id}',
+        ]
+        optional = {
+            'execution_id': context.get('active_execution_id'),
+            'deployment_id': context.get('active_deployment_id'),
+            'platform_request_id': context.get('active_request_id'),
+            'platform_command_id': context.get('active_command_id'),
+        }
+        for name, raw_value in optional.items():
+            value = str(raw_value or '').strip()
+            if value:
+                parts.append(f'{name}:={value}')
+        return ' '.join(shlex.quote(part) for part in parts)
 
     def prepare_keepout_navigation(self) -> bool:
         if not hasattr(self, 'default_navigation_map'):

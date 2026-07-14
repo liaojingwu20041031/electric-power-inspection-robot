@@ -1,4 +1,6 @@
 import json
+import re
+import shlex
 import threading
 from pathlib import Path
 from unittest.mock import Mock
@@ -973,11 +975,66 @@ def test_reconstruct_3d_map_requires_latest_capture(tmp_path):
     node.set_result.assert_called_with('reconstruct_latest_3d_map', False, '请先完成一次现场采集')
 
 
-def test_patrol_executor_launch_command_disables_auto_start():
-    source = Path("src/ylhb_llm/ylhb_llm/system_supervisor_node.py").read_text(encoding="utf-8")
+def test_local_patrol_executor_command_omits_platform_arguments():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_route_request = '/tmp/routes/local patrol.json'
+    node.route_directory = '/tmp/routes directory'
+    node.startup_id = 'local startup'
+    node.platform_context = {}
 
-    assert 'auto_start:=false publish_initial_pose_on_startup:=true' in source
-    assert 'auto_start:=true publish_initial_pose_on_startup:=true' not in source
+    command = node.build_patrol_executor_command()
+    arguments = shlex.split(command)
+
+    assert 'route_file_path:=/tmp/routes/local patrol.json' in arguments
+    assert 'route_directory:=/tmp/routes directory' in arguments
+    assert 'startup_id:=local startup' in arguments
+    assert not any(argument.startswith((
+        'execution_id:=',
+        'deployment_id:=',
+        'platform_request_id:=',
+        'platform_command_id:=',
+    )) for argument in arguments)
+
+
+def test_platform_patrol_executor_command_includes_platform_arguments():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_route_request = '/tmp/routes/platform patrol.json'
+    node.route_directory = '/tmp/routes directory'
+    node.startup_id = 'platform startup'
+    node.platform_context = {
+        'active_execution_id': 'execution 123',
+        'active_deployment_id': 'deployment 456',
+        'active_request_id': 'request 789',
+        'active_command_id': 'command 012',
+    }
+
+    arguments = shlex.split(node.build_patrol_executor_command())
+
+    assert 'execution_id:=execution 123' in arguments
+    assert 'deployment_id:=deployment 456' in arguments
+    assert 'platform_request_id:=request 789' in arguments
+    assert 'platform_command_id:=command 012' in arguments
+
+
+@pytest.mark.parametrize('context', [
+    {},
+    {
+        'active_execution_id': 'execution-123',
+        'active_deployment_id': 'deployment-456',
+        'active_request_id': 'request-789',
+        'active_command_id': 'command-012',
+    },
+])
+def test_patrol_executor_command_never_contains_empty_launch_arguments(context):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_route_request = '/tmp/route.json'
+    node.route_directory = '/tmp/routes'
+    node.startup_id = 'startup-123'
+    node.platform_context = context
+
+    command = node.build_patrol_executor_command()
+
+    assert re.search(r'\w+:=(?:\s|$)', command) is None
 
 
 def test_nav2_action_diagnostic_uses_topics_not_action_introspection():
