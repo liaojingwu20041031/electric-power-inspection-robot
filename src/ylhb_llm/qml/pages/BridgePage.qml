@@ -246,6 +246,7 @@ ScrollView {
                         }
                     }
                     ColumnLayout {
+                        id: cloudRouteDetails
                         Layout.fillWidth: true
                         spacing: 4
                         property var cloudEgress: backend.cloudStatus.cloudEgress || ({})
@@ -257,17 +258,17 @@ ScrollView {
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: cloudEgress.interface
-                                  ? (cloudEgress.label || "网络") + " · " + cloudEgress.interface
+                            text: cloudRouteDetails.cloudEgress.interface
+                                  ? (cloudRouteDetails.cloudEgress.label || "网络") + " · " + cloudRouteDetails.cloudEgress.interface
                                   : "当前未获取到公网路由"
-                            color: cloudEgress.interface ? Theme.text : Theme.warning
+                            color: cloudRouteDetails.cloudEgress.interface ? Theme.text : Theme.warning
                             font.bold: true
                             wrapMode: Text.Wrap
                         }
                         Label {
                             Layout.fillWidth: true
-                            visible: !!cloudEgress.interface
-                            text: "云平台当前通过 " + (cloudEgress.label || cloudEgress.interface) + "连接"
+                            visible: !!cloudRouteDetails.cloudEgress.interface
+                            text: "云平台当前通过 " + (cloudRouteDetails.cloudEgress.label || cloudRouteDetails.cloudEgress.interface) + "连接"
                             color: Theme.muted
                             wrapMode: Text.Wrap
                         }
@@ -278,16 +279,16 @@ ScrollView {
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: alternateRoute.interface
-                                  ? (alternateRoute.label || "网络") + " · " + alternateRoute.interface
+                            text: cloudRouteDetails.alternateRoute.interface
+                                  ? (cloudRouteDetails.alternateRoute.label || "网络") + " · " + cloudRouteDetails.alternateRoute.interface
                                   : "当前只检测到一条公网路由"
-                            color: alternateRoute.interface ? Theme.success : Theme.warning
+                            color: cloudRouteDetails.alternateRoute.interface ? Theme.success : Theme.warning
                             wrapMode: Text.Wrap
                         }
                         Label {
                             Layout.fillWidth: true
-                            visible: !!alternateRoute.interface
-                            text: "备用 " + (alternateRoute.label || alternateRoute.interface) + "可用"
+                            visible: !!cloudRouteDetails.alternateRoute.interface
+                            text: "备用 " + (cloudRouteDetails.alternateRoute.label || cloudRouteDetails.alternateRoute.interface) + "可用"
                             color: Theme.success
                             wrapMode: Text.Wrap
                         }
