@@ -8,6 +8,7 @@ class UiState:
     system_status: Dict[str, Any] = field(default_factory=dict)
     cloud_status: Dict[str, Any] = field(default_factory=dict)
     local_app_status: Dict[str, Any] = field(default_factory=dict)
+    bridge_availability: Dict[str, Any] = field(default_factory=dict)
     task_context: Dict[str, Any] = field(default_factory=dict)
     localized_objects: str = ''
     voice_status: str = '-'

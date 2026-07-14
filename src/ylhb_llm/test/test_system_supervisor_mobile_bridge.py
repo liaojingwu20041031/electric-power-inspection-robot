@@ -55,6 +55,9 @@ def test_mobile_bridge_commands_start_stop_and_restart():
     node.start_process = Mock()
     node.stop_process = Mock()
     node.set_result = Mock()
+    node.mobile_bridge_managed_externally = False
+    node.mobile_bridge_started_by_supervisor = True
+    node.mobile_bridge_external_instance_present = Mock(return_value=False)
 
     node.handle_command('start_mobile_bridge', {})
     node.start_process.assert_called_once_with('mobile_bridge')
@@ -80,6 +83,74 @@ def test_external_mobile_bridge_ownership_never_spawns_or_stops_process():
     node.start_process.assert_not_called()
     node.stop_process.assert_not_called()
     assert all('systemd' in call.args[2] for call in node.set_result.call_args_list)
+
+
+def test_external_mobile_bridge_status_uses_tcp_not_managed_process(monkeypatch):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.mobile_bridge_managed_externally = True
+    node.mobile_bridge_owner = 'systemd'
+    node.mobile_bridge_http = 'http_ok'
+    node.mobile_bridge_started_by_supervisor = False
+    node.mobile_bridge_last_error = ''
+    node.processes = {'mobile_bridge': FakeProcess(False)}
+    monkeypatch.setattr(node, 'build_light_patrol_readiness', Mock(return_value={}))
+    monkeypatch.setattr(node, 'keepout_required', Mock(return_value=False))
+    monkeypatch.setattr(node, 'navigation_launch_file', Mock(return_value=''))
+    monkeypatch.setattr(node, 'navigation_params_file_name', Mock(return_value=''))
+    monkeypatch.setattr(node, 'has_transform', Mock(return_value=False))
+    monkeypatch.setattr(node, 'has_map_to_odom', Mock(return_value=False))
+    monkeypatch.setattr(node, 'map_to_odom_stable_sec', Mock(return_value=0.0))
+    monkeypatch.setattr(node, 'read_latest_json', Mock(return_value={}))
+    node.last_command = ''
+    node.last_success = True
+    node.last_message = ''
+    node.jetson_ip = '127.0.0.1'
+    node.mobile_bridge_url = 'http://127.0.0.1:8000'
+    node.patrol_mode_state = 'idle'
+    node.lifecycle_states = {}
+    node.latest_mapping3d_status = {}
+    node.latest_mapping3d_result = {}
+
+    payload = node.build_status_payload()
+
+    assert payload['mobile_bridge'] == 'running'
+    assert payload['mobile_bridge_core_state'] == 'running'
+    assert payload['mobile_bridge_owner'] == 'systemd'
+
+
+def test_internal_auto_start_detects_external_bridge_conflict():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.mobile_bridge_managed_externally = False
+    node.mobile_bridge_started_by_supervisor = False
+    node.mobile_bridge_ownership_conflict = False
+    node.mobile_bridge_last_error = ''
+    node.processes = {'mobile_bridge': FakeProcess(False)}
+    node.mobile_bridge_external_instance_present = Mock(return_value=True)
+    node.start_process = Mock()
+    node.publish_status = Mock()
+
+    node.auto_start_mobile_bridge_once()
+
+    node.start_process.assert_not_called()
+    assert node.mobile_bridge_ownership_conflict is True
+
+
+def test_internal_auto_start_starts_mobile_bridge_only_once():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.mobile_bridge_managed_externally = False
+    node._mobile_bridge_auto_start_attempted = False
+    node.mobile_bridge_started_by_supervisor = False
+    node.mobile_bridge_ownership_conflict = False
+    node.mobile_bridge_last_error = ''
+    node.processes = {'mobile_bridge': FakeProcess(False)}
+    node.mobile_bridge_external_instance_present = Mock(return_value=False)
+    node.start_process = Mock(return_value=True)
+
+    node.auto_start_mobile_bridge_once()
+    node.auto_start_mobile_bridge_once()
+
+    node.start_process.assert_called_once_with('mobile_bridge')
+    assert node.mobile_bridge_started_by_supervisor is True
 
 
 def test_start_process_reports_immediate_navigation_exit(monkeypatch):

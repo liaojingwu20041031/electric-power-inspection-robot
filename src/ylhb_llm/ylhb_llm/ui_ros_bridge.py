@@ -27,6 +27,7 @@ class UiSignals(QObject):
     systemStatus = pyqtSignal(dict)
     localAppStatus = pyqtSignal(dict)
     cloudStatus = pyqtSignal(dict)
+    bridgeAvailability = pyqtSignal(dict)
     localAppControlResult = pyqtSignal(bool, bool, str)
     cloudControlResult = pyqtSignal(bool, bool, str)
     taskContext = pyqtSignal(dict)
@@ -127,7 +128,28 @@ class InspectionDisplayRosBridge(Node):
         }
         self.cloud_enabled_client = self.create_client(SetBool, self._param('set_cloud_enabled_service_name'))
         self.local_app_enabled_client = self.create_client(SetBool, self._param('set_local_app_enabled_service_name'))
+        self.create_timer(1.0, self.publish_bridge_availability)
         self.publish_system_mode(str(self.get_parameter('initial_system_mode').value))
+
+    def publish_bridge_availability(self) -> None:
+        try:
+            payload = {
+                'cloudServiceReady': bool(self.cloud_enabled_client.service_is_ready()),
+                'localAppServiceReady': bool(self.local_app_enabled_client.service_is_ready()),
+                'cloudStatusPublishers': len(self.get_publishers_info_by_topic(self._param('cloud_status_topic'))),
+                'localAppStatusPublishers': len(self.get_publishers_info_by_topic(self._param('local_app_status_topic'))),
+                'checkedAt': time.time(),
+            }
+        except Exception as exc:
+            payload = {
+                'cloudServiceReady': False,
+                'localAppServiceReady': False,
+                'cloudStatusPublishers': 0,
+                'localAppStatusPublishers': 0,
+                'checkedAt': time.time(),
+                'error': type(exc).__name__,
+            }
+        self.signals.bridgeAvailability.emit(payload)
 
     def _param(self, name: str) -> str:
         return str(self.get_parameter(name).value)

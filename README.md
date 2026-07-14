@@ -297,3 +297,5 @@ UI 自启动：
 ### 操控台运维
 
 参见[显示 UI 生命周期与 kiosk 指引](docs/robot_display_ui.md)和[云连接状态语义](docs/cloud_platform_connection.md)。UI 有意作为完整 inspection 栈的生命周期锚点；桌面自启动只会重启完整栈。
+
+Mobile Bridge 默认使用 `YLHB_MOBILE_BRIDGE_OWNER=auto`，手工 inspection 与桌面自启动共享 systemd/Supervisor 所有权识别，避免核心服务漏启动或重复启动。

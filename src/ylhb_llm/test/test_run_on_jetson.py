@@ -11,7 +11,7 @@ PREFLIGHT = REPO_ROOT / 'scripts' / 'check_agent_setup.py'
 
 
 class RunOnJetsonTest(unittest.TestCase):
-    def run_script(self, *args, agent_env='', robot_env=''):
+    def run_script(self, *args, agent_env='', robot_env='', mobile_bridge_state='active', owner='auto'):
         with tempfile.TemporaryDirectory() as tmp:
             fake_ros2 = Path(tmp) / 'ros2'
             fake_ros2.write_text(
@@ -25,6 +25,17 @@ class RunOnJetsonTest(unittest.TestCase):
                 encoding='utf-8',
             )
             fake_ros2.chmod(0o755)
+            fake_systemctl = Path(tmp) / 'systemctl'
+            fake_systemctl.write_text(
+                '#!/usr/bin/env bash\n'
+                'case "$1" in\n'
+                '  is-active) [ "${FAKE_MOBILE_BRIDGE_STATE}" = active ] ;;\n'
+                '  is-enabled) [ "${FAKE_MOBILE_BRIDGE_STATE}" = enabled-inactive ] ;;\n'
+                '  list-unit-files) [ "${FAKE_MOBILE_BRIDGE_STATE}" != missing ] && printf "ylhb-mobile-bridge.service enabled\\n" ;;\n'
+                'esac\n',
+                encoding='utf-8',
+            )
+            fake_systemctl.chmod(0o755)
             fake_home = Path(tmp) / 'home'
             fake_home.mkdir()
             if agent_env:
@@ -43,6 +54,8 @@ class RunOnJetsonTest(unittest.TestCase):
             env['HOME'] = str(fake_home)
             env['DISPLAY'] = 'localhost:10.0'
             env['ENABLE_CHINESE_IME'] = 'false'
+            env['FAKE_MOBILE_BRIDGE_STATE'] = mobile_bridge_state
+            env['YLHB_MOBILE_BRIDGE_OWNER'] = owner
             env.pop('DASHSCOPE_API_KEY', None)
             return subprocess.run(
                 ['bash', str(SCRIPT), *args],
@@ -68,6 +81,33 @@ class RunOnJetsonTest(unittest.TestCase):
         self.assertIn('display:=:', result.stdout)
         self.assertIn('xauthority:=', result.stdout)
         self.assertIn('XAUTHORITY=', result.stdout)
+        self.assertIn('mobile_bridge_managed_externally:=true', result.stdout)
+        self.assertIn('Mobile Bridge owner: systemd', result.stderr)
+
+    def test_inspection_auto_owner_falls_back_to_supervisor_without_unit(self):
+        result = self.run_script('inspection', mobile_bridge_state='missing')
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('mobile_bridge_managed_externally:=false', result.stdout)
+        self.assertIn('auto_start_mobile_bridge:=true', result.stdout)
+        self.assertIn('Mobile Bridge owner: supervisor', result.stderr)
+
+    def test_inspection_auto_owner_keeps_enabled_but_inactive_systemd_ownership(self):
+        result = self.run_script('inspection', mobile_bridge_state='enabled-inactive')
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('mobile_bridge_managed_externally:=true', result.stdout)
+        self.assertIn('enabled but not active', result.stderr)
+
+    def test_explicit_mobile_bridge_launch_argument_has_priority(self):
+        result = self.run_script(
+            'inspection', 'mobile_bridge_managed_externally:=true',
+            mobile_bridge_state='missing', owner='supervisor',
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count('mobile_bridge_managed_externally:=true'), 1)
+        self.assertIn('Mobile Bridge owner: systemd', result.stderr)
 
     def test_inspection_rejects_disabling_voice_session_or_tts(self):
         for disabled_arg in ('enable_voice:=false', 'enable_voice_session:=false', 'enable_tts:=false'):

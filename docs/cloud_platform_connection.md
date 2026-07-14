@@ -134,6 +134,10 @@ ros2 service call /mobile_bridge/set_cloud_enabled std_srvs/srv/SetBool '{data: 
 - 两个 Switch 都不会调用 systemd、Shell 或核心进程启停命令。
 - Service 成功只表示请求被接受；Switch 保持用户目标，直到状态 Topic 确认，5 秒无确认会提示而不伪造成功。
 
+UI 不再用 Supervisor 的单个 process 字段全局锁死两张卡。每秒直接检查两个 SetBool Service 与两个状态 Topic publisher：本地 APP 开关只依赖本地 Service/状态，云开关只依赖 Cloud Service/状态和 `configured`。核心未启动、Topic 状态过期、Cloud 网络离线是三种不同状态；本地 APP 关闭也不会被解释为核心进程停止。兼容字段 `mobile_bridge_http` 实际是 8000 TCP 探测，新代码优先使用 `mobile_bridge_core_state` 与 `mobile_bridge_tcp`。
+
+Cloud SetBool 成功或失败后都会立即发布一次 `/mobile_bridge/cloud_status`，无需等待 0.5 秒周期刷新；失败状态只记录脱敏异常类型。
+
 云平台卡显示：
 
 | 状态 | 含义 | 操作 |

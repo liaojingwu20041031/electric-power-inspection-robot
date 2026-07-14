@@ -277,6 +277,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('patrol_nav2_timeout_sec', 25.0)
         self.declare_parameter('patrol_command_timeout_sec', 8.0)
         self.declare_parameter('mobile_bridge_managed_externally', False)
+        self.declare_parameter('auto_start_mobile_bridge', True)
 
         workspace_dir = str(self.get_parameter('workspace_dir').value).strip()
         self.workspace_dir = os.path.expanduser(workspace_dir) if workspace_dir else str(default_workspace_dir())
@@ -326,6 +327,12 @@ class SystemSupervisorNode(Node):
         self.enable_capture_voice = bool(self.get_parameter('enable_capture_voice').value)
         self.enable_tts = bool(self.get_parameter('enable_tts').value)
         self.mobile_bridge_managed_externally = bool(self.get_parameter('mobile_bridge_managed_externally').value)
+        self.auto_start_mobile_bridge = bool(self.get_parameter('auto_start_mobile_bridge').value)
+        self.mobile_bridge_owner = 'systemd' if self.mobile_bridge_managed_externally else 'supervisor'
+        self.mobile_bridge_started_by_supervisor = False
+        self._mobile_bridge_auto_start_attempted = False
+        self.mobile_bridge_ownership_conflict = False
+        self.mobile_bridge_last_error = ''
         self.audio_device = str(self.get_parameter('audio_device').value)
         self.audio_input_device = str(self.get_parameter('audio_input_device').value)
         self.audio_output_device = str(self.get_parameter('audio_output_device').value)
@@ -467,8 +474,60 @@ class SystemSupervisorNode(Node):
             latched_qos(),
         )
         self.create_timer(1.0, self.publish_status)
+        self._mobile_bridge_auto_start_scheduled = False
+        self._mobile_bridge_auto_start_timer = self.create_timer(
+            0.2, self.schedule_mobile_bridge_auto_start
+        )
         self.publish_status()
         self.log_info('系统监督节点已启动')
+
+    def schedule_mobile_bridge_auto_start(self) -> None:
+        if self._mobile_bridge_auto_start_scheduled:
+            return
+        self._mobile_bridge_auto_start_scheduled = True
+        self._mobile_bridge_auto_start_timer.cancel()
+        if self.mobile_bridge_managed_externally or not self.auto_start_mobile_bridge:
+            return
+        threading.Thread(
+            target=self.auto_start_mobile_bridge_once,
+            name='mobile-bridge-auto-start',
+            daemon=True,
+        ).start()
+
+    def mobile_bridge_external_instance_present(self) -> bool:
+        if mobile_bridge_tcp_status(True) == 'tcp_ok':
+            return True
+        try:
+            return 'mobile_bridge' in set(self.get_node_names())
+        except Exception:
+            return False
+
+    def auto_start_mobile_bridge_once(self) -> None:
+        if getattr(self, '_mobile_bridge_auto_start_attempted', False):
+            return
+        self._mobile_bridge_auto_start_attempted = True
+        proc = self.processes.get('mobile_bridge')
+        if self.mobile_bridge_managed_externally or (proc and proc.is_running()):
+            return
+        if self.mobile_bridge_external_instance_present():
+            self.mobile_bridge_ownership_conflict = True
+            self.mobile_bridge_last_error = '检测到外部 Mobile Bridge，Supervisor 未启动第二个实例'
+            self.publish_status()
+            return
+        if self.start_process('mobile_bridge'):
+            self.mobile_bridge_started_by_supervisor = True
+            self.mobile_bridge_last_error = ''
+
+    def start_owned_mobile_bridge(self) -> bool:
+        if self.mobile_bridge_external_instance_present():
+            self.mobile_bridge_ownership_conflict = True
+            self.mobile_bridge_last_error = '检测到外部 Mobile Bridge，拒绝重复启动'
+            self.set_result('start_mobile_bridge', False, self.mobile_bridge_last_error)
+            return False
+        self.mobile_bridge_ownership_conflict = False
+        started = self.start_process('mobile_bridge')
+        self.mobile_bridge_started_by_supervisor = bool(started)
+        return started
 
     def command_callback(self, msg: String) -> None:
         try:
@@ -581,6 +640,22 @@ class SystemSupervisorNode(Node):
         if command in {'start_mobile_bridge', 'stop_mobile_bridge', 'restart_mobile_bridge'} and getattr(self, 'mobile_bridge_managed_externally', False):
             self.set_result(command, True, 'Mobile Bridge 由 systemd 常驻管理')
             return
+        if command == 'start_mobile_bridge':
+            self.start_owned_mobile_bridge()
+            return
+        if command == 'stop_mobile_bridge':
+            if self.mobile_bridge_started_by_supervisor:
+                self.stop_process('mobile_bridge')
+                self.mobile_bridge_started_by_supervisor = False
+            else:
+                self.set_result(command, True, 'Supervisor 没有启动 Mobile Bridge')
+            return
+        if command == 'restart_mobile_bridge':
+            if self.mobile_bridge_started_by_supervisor:
+                self.stop_process('mobile_bridge')
+                self.mobile_bridge_started_by_supervisor = False
+            self.start_owned_mobile_bridge()
+            return
         if command == 'start_platform_patrol':
             required = ('active_execution_id', 'active_deployment_id', 'active_request_id', 'active_route_revision_id', 'active_route_path', 'active_map_yaml_path', 'executor_route_id')
             if any(not str(payload.get(key) or '').strip() for key in required):
@@ -672,10 +747,6 @@ class SystemSupervisorNode(Node):
                 if name == 'mapping':
                     self.publish_mode('ready')
                 return
-        if command == 'restart_mobile_bridge':
-            self.stop_process('mobile_bridge')
-            self.start_process('mobile_bridge')
-            return
         if command == 'restart_navigation':
             self.stop_process('navigation')
             self.start_navigation_process()
@@ -2616,14 +2687,35 @@ class SystemSupervisorNode(Node):
 
     def publish_status(self) -> None:
         mobile_bridge = self.processes.get('mobile_bridge')
-        tcp_status = mobile_bridge_tcp_status(
-            bool(getattr(self, 'mobile_bridge_managed_externally', False) or (mobile_bridge and mobile_bridge.is_running()))
-        )
+        tcp_status = mobile_bridge_tcp_status(True)
+        if tcp_status == 'tcp_error' and not (
+            getattr(self, 'mobile_bridge_managed_externally', False)
+            or (mobile_bridge and mobile_bridge.is_running())
+        ):
+            tcp_status = 'stopped'
+        self.mobile_bridge_tcp = tcp_status
         self.mobile_bridge_http = {'tcp_ok': 'http_ok', 'tcp_error': 'http_error'}.get(tcp_status, tcp_status)
         with self.lock:
             self.publish_status_locked()
 
     def build_status_payload(self) -> Dict[str, Any]:
+        mobile_bridge = self.processes.get('mobile_bridge')
+        process_running = bool(mobile_bridge and mobile_bridge.is_running())
+        tcp_status = getattr(self, 'mobile_bridge_tcp', {
+            'http_ok': 'tcp_ok', 'http_error': 'tcp_error'
+        }.get(getattr(self, 'mobile_bridge_http', 'stopped'), 'stopped'))
+        if getattr(self, 'mobile_bridge_ownership_conflict', False):
+            mobile_bridge_core_state = 'ownership_conflict'
+        elif getattr(self, 'mobile_bridge_managed_externally', False):
+            mobile_bridge_core_state = 'running' if tcp_status == 'tcp_ok' else 'stopped'
+        elif process_running and tcp_status == 'tcp_ok':
+            mobile_bridge_core_state = 'running'
+        elif process_running:
+            mobile_bridge_core_state = 'starting' if time.time() - mobile_bridge.last_started_at < 8.0 else 'unreachable'
+        elif tcp_status == 'tcp_ok':
+            mobile_bridge_core_state = 'ownership_conflict'
+        else:
+            mobile_bridge_core_state = 'stopped'
         payload = {
             'schema_version': '1.0',
             'timestamp': time.time(),
@@ -2660,9 +2752,18 @@ class SystemSupervisorNode(Node):
         if keepout_required:
             keepout_status.update(self.keepout_subscription_status())
         payload.update({
+            'mobile_bridge_owner': getattr(self, 'mobile_bridge_owner', 'systemd' if getattr(self, 'mobile_bridge_managed_externally', False) else 'supervisor'),
+            'mobile_bridge_core_state': mobile_bridge_core_state,
+            'mobile_bridge_tcp': tcp_status,
             'mobile_bridge_http': self.mobile_bridge_http,
             'mobile_bridge_url': self.mobile_bridge_url,
             'mobile_bridge_managed_externally': getattr(self, 'mobile_bridge_managed_externally', False),
+            'mobile_bridge_last_error': (
+                getattr(self, 'mobile_bridge_last_error', '')
+                or getattr(mobile_bridge, 'last_error', '')
+                or ('ylhb-mobile-bridge.service 未运行或 8000 不可达' if getattr(self, 'mobile_bridge_managed_externally', False) and mobile_bridge_core_state != 'running' else '')
+            ),
+            'mobile_bridge_started_by_supervisor': getattr(self, 'mobile_bridge_started_by_supervisor', False),
             'command_result': getattr(self, 'command_result', {}),
             'jetson_ip': self.jetson_ip,
             'patrol_mode_state': patrol_state,
@@ -2730,8 +2831,7 @@ class SystemSupervisorNode(Node):
                 getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
             ),
         })
-        if getattr(self, 'mobile_bridge_managed_externally', False):
-            payload['mobile_bridge'] = 'running' if self.mobile_bridge_http == 'http_ok' else 'stopped'
+        payload['mobile_bridge'] = 'running' if mobile_bridge_core_state == 'running' else 'stopped'
         capture_dir = getattr(self, 'mapping3d_capture_dir', getattr(self, 'mapping3d_output_dir', workspace_path('runs', '3d_capture')))
         reconstruct_dir = getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
         payload['mapping3d_assets'] = {
@@ -2767,6 +2867,11 @@ class SystemSupervisorNode(Node):
             *SHUTDOWN_ORDER[-2:],
         )
         for name in shutdown_order:
+            if name == 'mobile_bridge' and (
+                getattr(self, 'mobile_bridge_managed_externally', False)
+                or not getattr(self, 'mobile_bridge_started_by_supervisor', False)
+            ):
+                continue
             try:
                 self.stop_process(name, ros_cleanup=ros_cleanup, report=False)
             except Exception:

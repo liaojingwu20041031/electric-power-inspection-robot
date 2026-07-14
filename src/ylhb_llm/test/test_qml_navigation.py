@@ -1,3 +1,6 @@
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 
 
@@ -95,11 +98,19 @@ def test_bridge_page_separates_local_and_cloud_controls():
     assert "signals.localAppStatus.connect(backend.update_local_app_status)" in node
     assert "signals.localAppControlResult.connect(backend.update_local_app_control_result)" in node
     assert "signals.cloudControlResult.connect(backend.update_cloud_control_result)" in node
+    assert "signals.bridgeAvailability.connect(backend.update_bridge_availability)" in node
     assert "cloudDisplayState" in qml
     assert "cloudRequestedEnabled" in qml
     assert "Math.min(parent.width - 40, 1540)" in qml
     assert "property real uiScale" in qml
     assert "visible: false" in qml.split("id: diagnosticBody", 1)[1]
+    assert "coreUnavailable" not in qml
+    assert 'objectName: "localAppSwitch"' in qml
+    assert 'objectName: "cloudSwitch"' in qml
+    assert "localAppControlAvailable" in qml
+    assert "cloudControlAvailable" in qml
+    assert "启动网桥核心服务" in qml
+    assert "sudo systemctl restart ylhb-mobile-bridge.service" in qml
 
 
 def test_inspection_launch_keeps_ui_as_full_stack_lifecycle_anchor():
@@ -110,6 +121,64 @@ def test_inspection_launch_keeps_ui_as_full_stack_lifecycle_anchor():
     assert "respawn=True" not in launch
     assert 'run_on_jetson.sh" inspection' in autostart
     assert "crash-loop limit" in autostart
+
+
+def test_bridge_switches_receive_mouse_clicks_and_call_independent_services():
+    repo = Path.cwd()
+    script = textwrap.dedent(f"""
+        import os
+        from PyQt5.QtCore import QObject, QPoint, QPointF, Qt, QUrl
+        from PyQt5.QtGui import QGuiApplication
+        from PyQt5.QtQml import QQmlComponent, QQmlEngine
+        from PyQt5.QtQuick import QQuickItem
+        from PyQt5.QtTest import QTest
+        from ylhb_llm.ui_backend import UiBackend
+        from ylhb_llm.ui_models import UiState
+
+        class Bridge:
+            def __init__(self): self.cloud = []; self.local = []; self.system = []
+            def call_cloud_enabled(self, enabled): self.cloud.append(enabled)
+            def call_local_app_enabled(self, enabled): self.local.append(enabled)
+            def publish_system_command(self, command, **extra): self.system.append(command)
+
+        app = QGuiApplication([])
+        bridge = Bridge()
+        backend = UiBackend(bridge, UiState())
+        backend.startup_timer.stop()
+        backend.update_system_status({{'mobile_bridge_owner': 'supervisor', 'mobile_bridge_core_state': 'running'}})
+        backend.update_local_app_status({{'enabled': False, 'state': 'DISABLED', 'httpAvailable': True}})
+        backend.update_cloud_status({{'configured': True, 'desiredEnabled': False, 'connected': False, 'state': 'DISABLED'}})
+        backend.update_bridge_availability({{'localAppServiceReady': True, 'cloudServiceReady': True, 'localAppStatusPublishers': 1, 'cloudStatusPublishers': 1}})
+        engine = QQmlEngine()
+        engine.rootContext().setContextProperty('backend', backend)
+        component = QQmlComponent(engine)
+        component.setData(b'''import QtQuick 2.12\n        import QtQuick.Window 2.12\n        import "file://{repo / 'src/ylhb_llm/qml/pages'}" as Pages\n        Window {{ width: 1280; height: 800; visible: true; Pages.BridgePage {{ anchors.fill: parent }} }}''', QUrl())
+        while component.isLoading(): app.processEvents()
+        window = component.create()
+        assert window is not None, [str(error.toString()) for error in component.errors()]
+        app.processEvents()
+        for name in ('localAppSwitch', 'cloudSwitch'):
+            switch = window.findChild(QQuickItem, name)
+            assert switch is not None and switch.property('enabled')
+            point = switch.mapToScene(QPointF(switch.width() / 2, switch.height() / 2))
+            QTest.mouseClick(window, Qt.LeftButton, pos=QPoint(round(point.x()), round(point.y())))
+            app.processEvents()
+        assert bridge.local == [True]
+        assert bridge.cloud == [True]
+    """)
+    env = os.environ.copy()
+    env['QT_QPA_PLATFORM'] = 'offscreen'
+    env['QT_QUICK_BACKEND'] = 'software'
+    env['PYTHONPATH'] = os.pathsep.join((
+        str(repo / 'src/ylhb_llm'),
+        str(repo / 'src/ylhb_mobile_bridge'),
+        env.get('PYTHONPATH', ''),
+    ))
+    result = subprocess.run(
+        ['/usr/bin/python3', '-c', script], cwd=repo, env=env,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():

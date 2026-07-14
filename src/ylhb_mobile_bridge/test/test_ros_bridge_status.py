@@ -538,6 +538,24 @@ def test_cloud_toggle_does_not_change_local_app_state():
     assert bridge._local_app_enabled is True
 
 
+def test_cloud_toggle_publishes_status_immediately():
+    bridge = make_bridge()
+    bridge.cloud_client = SimpleNamespace(
+        set_enabled=lambda enabled: {
+            'configured': True, 'desiredEnabled': bool(enabled), 'state': 'CONNECTING',
+        },
+        status=lambda: {'configured': True, 'desiredEnabled': True, 'state': 'CONNECTING'},
+    )
+    bridge._cloud_status_pub = FakePublisher()
+    request = SimpleNamespace(data=True)
+    response = SimpleNamespace(success=False, message='')
+
+    bridge._set_cloud_enabled(request, response)
+
+    assert response.success is True
+    assert len(bridge._cloud_status_pub.messages) == 1
+
+
 def test_invalid_cloud_queue_item_is_rejected_with_event():
     bridge = make_velocity_bridge()
     bridge._cloud_command_queue = queue.Queue()

@@ -19,9 +19,9 @@ while [ "${STOPPED}" = false ]; do
   fi
   echo "$(date -Is) starting full inspection stack DISPLAY=${DISPLAY:-}" >>"${LOG_FILE}"
   if [ "${YLHB_UI_INHIBIT_IDLE:-true}" = "true" ] && systemd-inhibit --help 2>&1 | grep -q -- '--what='; then
-    systemd-inhibit --what=idle:sleep --why='YLHB inspection console' --mode=block "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true mobile_bridge_managed_externally:=true >>"${LOG_FILE}" 2>&1 &
+    systemd-inhibit --what=idle:sleep --why='YLHB inspection console' --mode=block "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true >>"${LOG_FILE}" 2>&1 &
   else
-    "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true mobile_bridge_managed_externally:=true >>"${LOG_FILE}" 2>&1 &
+    "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true >>"${LOG_FILE}" 2>&1 &
   fi
   CHILD_PID=$!
   wait "${CHILD_PID}" || true

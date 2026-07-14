@@ -164,3 +164,25 @@ UI 只接受本机 `:N` X11 socket，不把 `localhost:10.0` SSH 转发当控制
 ```
 
 1080p 页面最大内容宽度为 1540px，双卡布局；960×640 自动单列并纵向滚动。现场锁屏/解锁验证由操作员执行：确认 UI/整栈退出、解锁后 wrapper 仅启动一套完整栈，并用 `pgrep -af 'inspection_agent_node|voice_session_node|voice_output_node|system_supervisor_node|inspection_display_ui_node'` 确认没有残留或重复。
+
+## Mobile Bridge 所有权与连接控制
+
+手工 inspection 与桌面 autostart 都通过 `run_on_jetson.sh` 的同一套解析逻辑选择 Mobile Bridge owner。`YLHB_MOBILE_BRIDGE_OWNER=auto` 为默认值：systemd unit active 时选择 `systemd`；unit 不存在时选择 `supervisor`；unit enabled 但 inactive/failed 时仍保留 systemd 所有权并报告异常，避免 Supervisor 趁 systemd 重启期间创建第二份实例。可显式使用 `systemd` 或 `supervisor`，launch 参数 `mobile_bridge_managed_externally:=true|false` 优先级最高。
+
+Supervisor owner 下，`auto_start_mobile_bridge:=true` 会在初始化后启动一次现有 `mobile_bridge` ManagedProcess；启动前同时检查 8000 和 ROS graph，发现外部实例时报告 `ownership_conflict`。systemd owner 下 Supervisor 永不启动、停止或重启该服务。UI 退出仍通过 `OnProcessExit → Shutdown` 关闭完整 inspection 栈；只有 Supervisor 自己启动的内部 Mobile Bridge 会随它清理。
+
+页面将三层状态分开：核心服务来自 Topic、SetBool Service、Supervisor 核心状态和兼容 TCP 摘要；本地 APP 卡只看本地状态与本地 Service；云平台卡只看 Cloud 状态与 Cloud Service。启动前 8 秒显示“正在等待”，之后才显示“未启动”。状态 3～8 秒为更新延迟，超过 8 秒为过期。Switch 仅在对应状态已收到、对应 Service ready、无 pending（云端还要求 configured）时启用，并始终显示禁用原因。内部 owner 可从主页面启动核心；systemd owner 只显示 `sudo systemctl restart ylhb-mobile-bridge.service` 排障提示，UI 不执行 sudo。
+
+只读检查：
+
+```bash
+systemctl is-active ylhb-mobile-bridge.service
+ss -lntp | grep ':8000'
+ros2 node list | grep mobile_bridge
+ros2 topic info /mobile_bridge/cloud_status -v --no-daemon
+ros2 topic info /mobile_bridge/local_app_status -v --no-daemon
+ros2 service list | grep '/mobile_bridge/set_.*_enabled'
+pgrep -af mobile_bridge_server
+```
+
+通过标准是一个 `/mobile_bridge` 节点、8000 一个监听者、一个实际 `mobile_bridge_server` 子进程。systemd 状态中的 `ros2 run` 父进程与 server 子进程属于同一实例，不应误判为两套 Bridge。

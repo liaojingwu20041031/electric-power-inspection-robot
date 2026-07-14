@@ -86,6 +86,7 @@ class UiBackend(QObject):
     cloudStatusChanged = pyqtSignal()
     localAppControlChanged = pyqtSignal()
     cloudControlChanged = pyqtSignal()
+    connectionFreshnessChanged = pyqtSignal()
     logsChanged = pyqtSignal()
     robotModeChanged = pyqtSignal()
     controlUnlockedChanged = pyqtSignal()
@@ -134,12 +135,18 @@ class UiBackend(QObject):
         self._cloud_control_message = ''
         self._cloud_requested_enabled = None
         self._cloud_control_started_at = 0.0
+        self._ui_started_at = self.clock()
         self._last_cloud_status_received_at = 0.0
+        self._last_local_app_status_received_at = 0.0
+        self._last_bridge_availability_received_at = 0.0
         self._startup_loading_text = '正在准备操控台...'
         self.routePreviewLoaded.connect(self._apply_route_preview_result)
         self.safety_timer = QTimer(self)
         self.safety_timer.timeout.connect(self.checkSafetyTimeout)
         self.safety_timer.start(1000)
+        self.freshness_timer = QTimer(self)
+        self.freshness_timer.timeout.connect(self.connectionFreshnessChanged.emit)
+        self.freshness_timer.start(1000)
         self.startup_timer = QTimer(self)
         self.startup_timer.setSingleShot(True)
         self.startup_timer.timeout.connect(self.finishStartup)
@@ -152,6 +159,79 @@ class UiBackend(QObject):
     @pyqtProperty('QVariantMap', notify=cloudStatusChanged)
     def cloudStatus(self) -> Dict[str, Any]:
         return self.state.cloud_status
+
+    @pyqtProperty('QVariantMap', notify=connectionFreshnessChanged)
+    def bridgeAvailability(self) -> Dict[str, Any]:
+        return self.state.bridge_availability
+
+    @pyqtProperty(bool, notify=connectionFreshnessChanged)
+    def cloudStatusReceived(self) -> bool:
+        return self._last_cloud_status_received_at > 0.0
+
+    @pyqtProperty(bool, notify=connectionFreshnessChanged)
+    def localAppStatusReceived(self) -> bool:
+        return self._last_local_app_status_received_at > 0.0
+
+    @pyqtProperty(float, notify=connectionFreshnessChanged)
+    def localAppStatusAgeSec(self) -> float:
+        return max(0.0, self.clock() - self._last_local_app_status_received_at) if self.localAppStatusReceived else 1e9
+
+    @pyqtProperty(float, notify=connectionFreshnessChanged)
+    def bridgeAvailabilityAgeSec(self) -> float:
+        return max(0.0, self.clock() - self._last_bridge_availability_received_at) if self._last_bridge_availability_received_at else 1e9
+
+    @pyqtProperty(bool, notify=connectionFreshnessChanged)
+    def localAppStatusFresh(self) -> bool:
+        return self.localAppStatusAgeSec <= 3.0
+
+    @pyqtProperty(bool, notify=connectionFreshnessChanged)
+    def bridgeCoreAvailable(self) -> bool:
+        availability = self.state.bridge_availability
+        topics_recent = (
+            self.cloudStatusReceived and self.cloudStatusAgeSec <= 8.0
+            and self.localAppStatusReceived and self.localAppStatusAgeSec <= 8.0
+        )
+        service_ready = self.bridgeAvailabilityAgeSec <= 8.0 and bool(availability.get('cloudServiceReady') or availability.get('localAppServiceReady'))
+        supervisor_running = str(self.state.system_status.get('mobile_bridge_core_state') or '') == 'running'
+        fallback = str(self.state.system_status.get('mobile_bridge_http') or '') == 'http_ok'
+        return topics_recent or service_ready or supervisor_running or fallback
+
+    @pyqtProperty(str, notify=connectionFreshnessChanged)
+    def bridgeCoreState(self) -> str:
+        supervisor_state = str(self.state.system_status.get('mobile_bridge_core_state') or '')
+        if supervisor_state == 'ownership_conflict':
+            return supervisor_state
+        if self.bridgeCoreAvailable:
+            return 'running'
+        if self.clock() - self._ui_started_at <= 8.0:
+            return 'starting'
+        return supervisor_state if supervisor_state in {'starting', 'stopped', 'unreachable'} else 'stopped'
+
+    @pyqtProperty(str, notify=connectionFreshnessChanged)
+    def bridgeCoreStateText(self) -> str:
+        if self.bridgeCoreState == 'starting':
+            return '正在等待网桥核心服务'
+        if self.bridgeCoreState == 'running':
+            return '网桥核心服务运行正常'
+        if self.bridgeCoreState == 'ownership_conflict':
+            return 'Mobile Bridge 所有权冲突'
+        if self.bridgeCoreState == 'unreachable':
+            return '网桥进程运行但端口不可达'
+        if str(self.state.system_status.get('mobile_bridge_owner') or '') == 'systemd':
+            return 'Mobile Bridge systemd 服务未运行'
+        return '网桥核心服务未启动'
+
+    @pyqtProperty(bool, notify=connectionFreshnessChanged)
+    def bridgeRecoveryAvailable(self) -> bool:
+        return str(self.state.system_status.get('mobile_bridge_owner') or 'supervisor') == 'supervisor' and self.bridgeCoreState == 'stopped'
+
+    @pyqtProperty(bool, notify=connectionFreshnessChanged)
+    def cloudControlAvailable(self) -> bool:
+        return self.cloudStatusReceived and self.bridgeAvailabilityAgeSec <= 8.0 and bool(self.state.bridge_availability.get('cloudServiceReady'))
+
+    @pyqtProperty(bool, notify=connectionFreshnessChanged)
+    def localAppControlAvailable(self) -> bool:
+        return self.localAppStatusReceived and self.bridgeAvailabilityAgeSec <= 8.0 and bool(self.state.bridge_availability.get('localAppServiceReady'))
 
     @pyqtProperty('QVariantMap', notify=localAppStatusChanged)
     def localAppStatus(self) -> Dict[str, Any]:
@@ -181,10 +261,12 @@ class UiBackend(QObject):
     def localAppRequestedEnabled(self) -> bool:
         return bool(self._local_app_requested_enabled) if self._local_app_control_pending else bool(self.state.local_app_status.get('enabled'))
 
-    @pyqtProperty(str, notify=cloudStatusChanged)
+    @pyqtProperty(str, notify=connectionFreshnessChanged)
     def cloudDisplayState(self) -> str:
+        if not self.cloudStatusReceived:
+            return 'WAITING'
         status = self.state.cloud_status
-        if not status.get('configured'):
+        if status.get('configured') is False:
             return 'UNCONFIGURED'
         if not status.get('desiredEnabled'):
             return 'DISABLED'
@@ -194,12 +276,14 @@ class UiBackend(QObject):
             return 'BACKOFF'
         return 'CONNECTING'
 
-    @pyqtProperty(str, notify=cloudStatusChanged)
+    @pyqtProperty(str, notify=connectionFreshnessChanged)
     def cloudDisplayStateText(self) -> str:
-        return {'CONNECTED': '云平台已连接', 'CONNECTING': '正在连接云平台', 'BACKOFF': '云平台暂时离线', 'DISABLED': '云平台连接已关闭', 'UNCONFIGURED': '云平台未配置'}[self.cloudDisplayState]
+        return {'WAITING': '正在等待云平台状态', 'CONNECTED': '云平台已连接', 'CONNECTING': '正在连接云平台', 'BACKOFF': '云平台暂时离线', 'DISABLED': '云平台连接已关闭', 'UNCONFIGURED': '云平台未配置'}[self.cloudDisplayState]
 
-    @pyqtProperty(str, notify=cloudStatusChanged)
+    @pyqtProperty(str, notify=connectionFreshnessChanged)
     def cloudDisplayDescription(self) -> str:
+        if not self.cloudStatusReceived:
+            return '正在等待网桥发布云平台状态'
         if not self.cloudStatusFresh:
             return '网桥状态无响应' if self.cloudStatusAgeSec > 8 else '状态更新稍有延迟'
         if self.cloudDisplayState == 'BACKOFF':
@@ -210,16 +294,18 @@ class UiBackend(QObject):
     def cloudHeartbeatInFlight(self) -> bool:
         return bool(self.state.cloud_status.get('heartbeatInFlight'))
 
-    @pyqtProperty(float, notify=cloudStatusChanged)
+    @pyqtProperty(float, notify=connectionFreshnessChanged)
     def cloudStatusAgeSec(self) -> float:
         return max(0.0, self.clock() - self._last_cloud_status_received_at) if self._last_cloud_status_received_at else float('inf')
 
-    @pyqtProperty(bool, notify=cloudStatusChanged)
+    @pyqtProperty(bool, notify=connectionFreshnessChanged)
     def cloudStatusFresh(self) -> bool:
         return self.cloudStatusAgeSec <= 3.0
 
-    @pyqtProperty(str, notify=localAppStatusChanged)
+    @pyqtProperty(str, notify=connectionFreshnessChanged)
     def localAppStateText(self) -> str:
+        if not self.localAppStatusReceived:
+            return '正在等待本地 APP 状态'
         state = str(self.state.local_app_status.get('state') or 'UNAVAILABLE')
         return {
             'ENABLED': '本地 APP 服务已开启',
@@ -228,8 +314,14 @@ class UiBackend(QObject):
             'UNAVAILABLE': '网桥核心服务无响应',
         }.get(state, '网桥核心服务无响应')
 
-    @pyqtProperty(str, notify=localAppStatusChanged)
+    @pyqtProperty(str, notify=connectionFreshnessChanged)
     def localAppDescription(self) -> str:
+        if not self.localAppStatusReceived:
+            return '正在等待网桥发布本地服务状态'
+        if self.localAppStatusAgeSec > 8.0:
+            return '本地 APP 状态已过期'
+        if self.localAppStatusAgeSec > 3.0:
+            return '本地 APP 状态更新延迟'
         state = str(self.state.local_app_status.get('state') or 'UNAVAILABLE')
         return {
             'ENABLED': '手机可以通过局域网连接机器人',
@@ -1127,6 +1219,7 @@ class UiBackend(QObject):
             self.state.mapping3d_result = latest_mapping3d_result
             self.mapping3dStatusChanged.emit()
         self.systemStatusChanged.emit()
+        self.connectionFreshnessChanged.emit()
         self.mapping3dStatusChanged.emit()
         message = payload.get('message')
         log_key = (str(payload.get('last_command') or ''), str(message or ''))
@@ -1143,15 +1236,23 @@ class UiBackend(QObject):
             self._cloud_control_message = ''
             self.cloudControlChanged.emit()
         self.cloudStatusChanged.emit()
+        self.connectionFreshnessChanged.emit()
 
     def update_local_app_status(self, payload: Dict[str, Any]) -> None:
         self.state.local_app_status = dict(payload or {})
+        self._last_local_app_status_received_at = self.clock()
         if self._local_app_control_pending and self.state.local_app_status.get('enabled') == self._local_app_requested_enabled:
             self._local_app_control_pending = False
             self._local_app_requested_enabled = None
             self._local_app_control_message = ''
             self.localAppControlChanged.emit()
         self.localAppStatusChanged.emit()
+        self.connectionFreshnessChanged.emit()
+
+    def update_bridge_availability(self, payload: Dict[str, Any]) -> None:
+        self.state.bridge_availability = dict(payload or {})
+        self._last_bridge_availability_received_at = self.clock()
+        self.connectionFreshnessChanged.emit()
 
     def update_local_app_control_result(
         self, enabled: bool, success: bool, message: str

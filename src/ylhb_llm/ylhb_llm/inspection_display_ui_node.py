@@ -95,6 +95,7 @@ def main(args: Optional[List[str]] = None) -> None:
     signals.systemStatus.connect(backend.update_system_status)
     signals.localAppStatus.connect(backend.update_local_app_status)
     signals.cloudStatus.connect(backend.update_cloud_status)
+    signals.bridgeAvailability.connect(backend.update_bridge_availability)
     signals.localAppControlResult.connect(backend.update_local_app_control_result)
     signals.cloudControlResult.connect(backend.update_cloud_control_result)
     signals.taskContext.connect(backend.update_task_context)

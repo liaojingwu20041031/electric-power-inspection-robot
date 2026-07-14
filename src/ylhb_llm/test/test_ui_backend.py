@@ -246,6 +246,46 @@ def test_cloud_display_stays_connected_while_heartbeat_is_in_flight():
     assert backend.cloudHeartbeatInFlight is True
 
 
+def test_bridge_topic_and_service_availability_override_stale_supervisor_summary():
+    now = [100.0]
+    backend = make_backend(lambda: now[0])
+    backend.update_system_status({'mobile_bridge_core_state': 'stopped', 'mobile_bridge_owner': 'systemd'})
+    backend.update_cloud_status({'configured': True, 'desiredEnabled': True, 'connected': True, 'state': 'CONNECTED'})
+    backend.update_local_app_status({'enabled': True, 'state': 'ENABLED'})
+    backend.update_bridge_availability({
+        'cloudServiceReady': True, 'localAppServiceReady': True,
+        'cloudStatusPublishers': 1, 'localAppStatusPublishers': 1,
+    })
+
+    assert backend.bridgeCoreAvailable is True
+    assert backend.cloudControlAvailable is True
+    assert backend.localAppControlAvailable is True
+    assert backend.bridgeCoreState == 'running'
+
+
+def test_bridge_startup_grace_reports_waiting_before_not_started():
+    now = [100.0]
+    backend = make_backend(lambda: now[0])
+    assert backend.bridgeCoreStateText == '正在等待网桥核心服务'
+    now[0] = 108.1
+    assert backend.bridgeCoreStateText == '网桥核心服务未启动'
+
+
+def test_connection_freshness_signal_updates_time_based_properties():
+    now = [100.0]
+    backend = make_backend(lambda: now[0])
+    backend.update_local_app_status({'enabled': True, 'state': 'ENABLED'})
+    changes = []
+    backend.connectionFreshnessChanged.connect(lambda: changes.append(now[0]))
+
+    now[0] = 104.0
+    backend.freshness_timer.timeout.emit()
+
+    assert changes == [104.0]
+    assert backend.localAppStatusFresh is False
+    assert backend.localAppDescription == '本地 APP 状态更新延迟'
+
+
 def test_connection_control_waits_for_topic_confirmation_and_times_out():
     now = [100.0]
     backend = make_backend(lambda: now[0])
@@ -279,6 +319,8 @@ def test_local_app_and_cloud_controls_have_independent_state_and_services():
     assert backend.bridge.cloud_enabled_requests == []
 
     backend.update_local_app_control_result(False, True, 'DISABLED')
+    assert backend.localAppControlPending is True
+    backend.update_local_app_status({'enabled': False, 'state': 'DISABLED', 'httpAvailable': True})
     backend.setCloudEnabled(False)
     backend.setCloudEnabled(False)
 

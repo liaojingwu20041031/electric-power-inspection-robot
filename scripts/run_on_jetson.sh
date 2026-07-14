@@ -4,6 +4,7 @@ set -euo pipefail
 WS_DIR="${WS_DIR:-$HOME/ros2_DL}"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 MODE="${1:-help}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mobile_bridge_owner.sh"
 
 source_ros_setup() {
   set +u
@@ -228,6 +229,19 @@ case "${MODE}" in
           ;;
       esac
     done
+    mobile_bridge_owner="$(resolve_mobile_bridge_owner "$@")"
+    echo "Mobile Bridge owner: ${mobile_bridge_owner}" >&2
+    explicit_mobile_bridge_owner=false
+    for arg in "$@"; do
+      case "${arg}" in mobile_bridge_managed_externally:=true|mobile_bridge_managed_externally:=false) explicit_mobile_bridge_owner=true ;; esac
+    done
+    if [ "${explicit_mobile_bridge_owner}" = false ]; then
+      if [ "${mobile_bridge_owner}" = systemd ]; then
+        set -- "$@" mobile_bridge_managed_externally:=true auto_start_mobile_bridge:=false
+      else
+        set -- "$@" mobile_bridge_managed_externally:=false auto_start_mobile_bridge:=true
+      fi
+    fi
     export DISPLAY="${DISPLAY:-:0}"
     normalize_local_display
     set_local_xauthority

@@ -5,6 +5,8 @@ test -f /home/nvidia/.config/ylhb/platform.env || install -m 600 /dev/null /home
 # Set YLHB_CLOUD_ENABLED=true, HTTPS YLHB_CLOUD_BASE_URL and YLHB_CLOUD_ROBOT_TOKEN
 # in the protected environment file before enabling outbound cloud connectivity.
 # Production UI/Supervisor launch must pass: mobile_bridge_managed_externally:=true
+# run_on_jetson.sh now resolves YLHB_MOBILE_BRIDGE_OWNER=auto and selects this
+# systemd unit whenever it is active or enabled-but-unhealthy.
 sudo tee /etc/systemd/system/ylhb-mobile-bridge.service >/dev/null <<'EOF'
 [Unit]
 After=network-online.target

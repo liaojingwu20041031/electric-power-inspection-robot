@@ -13,13 +13,8 @@ ScrollView {
     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
     ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
-    function coreUnavailable() {
-        return backend.systemStatus.mobile_bridge === "stopped"
-               && backend.systemStatus.mobile_bridge_http !== "http_ok"
-    }
-
     function localColor() {
-        if (coreUnavailable()) return Theme.danger
+        if (!backend.localAppStatusReceived) return Theme.info
         var state = String(backend.localAppStatus.state || "UNAVAILABLE")
         if (state === "ENABLED") return Theme.success
         if (state === "DEGRADED") return Theme.warning
@@ -28,7 +23,7 @@ ScrollView {
     }
 
     function localSoftColor() {
-        if (coreUnavailable()) return Theme.dangerSoft
+        if (!backend.localAppStatusReceived) return Theme.infoSoft
         var state = String(backend.localAppStatus.state || "UNAVAILABLE")
         if (state === "ENABLED") return Theme.successSoft
         if (state === "DEGRADED") return Theme.warningSoft
@@ -37,8 +32,8 @@ ScrollView {
     }
 
     function cloudColor() {
-        if (coreUnavailable()) return Theme.danger
         var state = backend.cloudDisplayState
+        if (state === "WAITING") return Theme.info
         if (state === "CONNECTED") return Theme.success
         if (state === "CONNECTING") return Theme.info
         if (state === "BACKOFF") return Theme.warning
@@ -47,8 +42,8 @@ ScrollView {
     }
 
     function cloudSoftColor() {
-        if (coreUnavailable()) return Theme.dangerSoft
         var state = backend.cloudDisplayState
+        if (state === "WAITING") return Theme.infoSoft
         if (state === "CONNECTED") return Theme.successSoft
         if (state === "CONNECTING") return Theme.infoSoft
         if (state === "BACKOFF") return Theme.warningSoft
@@ -90,10 +85,9 @@ ScrollView {
                 ConnectionCard {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignTop
-                    Layout.minimumHeight: 300 * root.uiScale
                     title: "本地 APP 服务"
-                    stateTitle: root.coreUnavailable() ? "网桥核心服务无响应" : backend.localAppStateText
-                    description: root.coreUnavailable() ? "请先恢复网桥核心服务" : backend.localAppDescription
+                    stateTitle: backend.localAppStateText
+                    description: backend.localAppDescription
                     statusColor: root.localColor()
                     softColor: root.localSoftColor()
 
@@ -113,8 +107,8 @@ ScrollView {
                         Label { text: "HTTP 可用"; color: Theme.muted }
                         Label {
                             Layout.fillWidth: true
-                            text: !root.coreUnavailable() && backend.localAppStatus.httpAvailable ? "可用" : "不可用"
-                            color: !root.coreUnavailable() && backend.localAppStatus.httpAvailable ? Theme.success : Theme.warning
+                            text: backend.localAppStatus.httpAvailable ? "可用" : "不可用"
+                            color: backend.localAppStatus.httpAvailable ? Theme.success : Theme.warning
                             horizontalAlignment: Text.AlignRight
                         }
                     }
@@ -124,9 +118,10 @@ ScrollView {
                         BusyIndicator { running: backend.localAppControlPending; visible: running; implicitWidth: 28; implicitHeight: 28 }
                         Switch {
                             id: localAppSwitch
-                            implicitWidth: 52
-                            implicitHeight: 44
-                            enabled: !root.coreUnavailable() && !backend.localAppControlPending && String(backend.localAppStatus.state || "UNAVAILABLE") !== "UNAVAILABLE"
+                            objectName: "localAppSwitch"
+                            implicitWidth: 64
+                            implicitHeight: 48
+                            enabled: backend.localAppControlAvailable && !backend.localAppControlPending
                             onClicked: {
                                 if (!checked) localDisableDialog.open()
                                 else backend.setLocalAppEnabled(true)
@@ -141,6 +136,15 @@ ScrollView {
                     }
                     Label {
                         Layout.fillWidth: true
+                        text: backend.localAppControlPending ? "控制请求处理中"
+                              : !backend.localAppStatusReceived ? "正在等待本地 APP 状态"
+                              : !backend.localAppControlAvailable ? (backend.bridgeCoreState === "stopped" ? "网桥核心服务未启动" : "正在等待本地 APP 控制服务")
+                              : "本地 APP 控制服务可用"
+                        color: backend.localAppControlAvailable && !backend.localAppControlPending ? Theme.success : Theme.warning
+                        wrapMode: Text.Wrap
+                    }
+                    Label {
+                        Layout.fillWidth: true
                         visible: backend.localAppControlMessage.length > 0
                         text: backend.localAppControlMessage
                         color: backend.localAppControlMessage.indexOf("失败") >= 0 ? Theme.danger : Theme.muted
@@ -151,10 +155,9 @@ ScrollView {
                 ConnectionCard {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignTop
-                    Layout.minimumHeight: 300 * root.uiScale
                     title: "云平台连接"
-                    stateTitle: root.coreUnavailable() ? "网桥核心服务无响应" : backend.cloudDisplayStateText
-                    description: root.coreUnavailable() ? "请先恢复网桥核心服务" : backend.cloudDisplayDescription
+                    stateTitle: backend.cloudDisplayStateText
+                    description: backend.cloudDisplayDescription
                     statusColor: root.cloudColor()
                     softColor: root.cloudSoftColor()
 
@@ -186,9 +189,10 @@ ScrollView {
                         BusyIndicator { running: backend.cloudControlPending; visible: running; implicitWidth: 28; implicitHeight: 28 }
                         Switch {
                             id: cloudSwitch
-                            implicitWidth: 52
-                            implicitHeight: 44
-                            enabled: !root.coreUnavailable() && !backend.cloudControlPending && !!backend.cloudStatus.configured
+                            objectName: "cloudSwitch"
+                            implicitWidth: 64
+                            implicitHeight: 48
+                            enabled: backend.cloudControlAvailable && !backend.cloudControlPending && !!backend.cloudStatus.configured
                             onClicked: {
                                 if (!checked) cloudDisableDialog.open()
                                 else backend.setCloudEnabled(true)
@@ -201,11 +205,21 @@ ScrollView {
                             when: !cloudDisableDialog.visible && !backend.cloudControlPending
                         }
                     }
+                    Label {
+                        Layout.fillWidth: true
+                        text: backend.cloudControlPending ? "控制请求处理中"
+                              : !backend.cloudStatusReceived ? "正在等待云平台状态"
+                              : !backend.cloudStatus.configured ? "云平台尚未配置"
+                              : !backend.cloudControlAvailable ? (backend.bridgeCoreState === "stopped" ? "网桥核心服务未启动" : "正在等待云平台控制服务")
+                              : "云平台控制服务可用"
+                        color: backend.cloudControlAvailable && backend.cloudStatus.configured && !backend.cloudControlPending ? Theme.success : Theme.warning
+                        wrapMode: Text.Wrap
+                    }
                     RowLayout {
                         Layout.fillWidth: true
                         WarmButton {
                             visible: backend.cloudDisplayState === "BACKOFF"
-                            enabled: !root.coreUnavailable() && !backend.cloudControlPending
+                            enabled: backend.cloudControlAvailable && !backend.cloudControlPending
                             text: "立即重试"
                             buttonColor: Theme.info
                             onClicked: backend.setCloudEnabled(true)
@@ -233,17 +247,14 @@ ScrollView {
                 Layout.fillWidth: true
                 localColor: root.localColor()
                 cloudColor: root.cloudColor()
-                coreRunning: backend.systemStatus.mobile_bridge === "running" || backend.systemStatus.mobile_bridge_http === "http_ok"
+                coreState: backend.bridgeCoreState
             }
 
             Rectangle {
                 Layout.fillWidth: true
                 implicitWidth: 320
                 implicitHeight: 1
-                Layout.preferredHeight: 40 + coreTitle.implicitHeight + coreGrid.implicitHeight
-                                        + (managedLabel.visible ? managedLabel.implicitHeight + 10 : 0)
-                                        + (advancedToggle.visible ? advancedToggle.implicitHeight + 10 : 0)
-                                        + (advancedOperations.visible ? advancedOperations.implicitHeight + 10 : 0)
+                Layout.preferredHeight: coreColumn.implicitHeight + 40
                 radius: 16
                 color: Theme.surface
                 border.color: Theme.border
@@ -262,13 +273,27 @@ ScrollView {
                         columnSpacing: 12
                         rowSpacing: 8
                         Label { text: "运行状态"; color: Theme.muted }
-                        Label { text: backend.localizedStatus(backend.systemStatus.mobile_bridge || "stopped"); color: Theme.text }
+                        Label { text: backend.bridgeCoreStateText; color: backend.bridgeCoreAvailable ? Theme.success : Theme.warning; wrapMode: Text.Wrap }
                         Label { text: "管理方式"; color: Theme.muted }
-                        Label { text: backend.systemStatus.mobile_bridge_managed_externally ? "systemd 自动维护" : "开发模式"; color: Theme.text }
+                        Label { text: backend.systemStatus.mobile_bridge_owner === "systemd" ? "systemd" : "Supervisor"; color: Theme.text }
                         Label { text: "ROS 通信"; color: Theme.muted }
-                        Label { text: backend.systemStatus.mobile_bridge === "running" ? "正常" : "未连接"; color: Theme.text }
+                        Label { text: backend.bridgeCoreAvailable ? "正常" : "未连接"; color: Theme.text }
                         Label { text: "HTTP 进程状态"; color: Theme.muted }
                         Label { text: backend.localizedStatus(backend.systemStatus.mobile_bridge_http || "stopped"); color: Theme.text }
+                    }
+                    WarmButton {
+                        visible: backend.bridgeRecoveryAvailable
+                        Layout.fillWidth: true
+                        text: "启动网桥核心服务"
+                        buttonColor: Theme.info
+                        onClicked: backend.sendSystemCommand("start_mobile_bridge")
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: backend.systemStatus.mobile_bridge_owner === "systemd" && !backend.bridgeCoreAvailable
+                        text: "只读排障：sudo systemctl restart ylhb-mobile-bridge.service"
+                        color: Theme.warning
+                        wrapMode: Text.Wrap
                     }
                     Label {
                         id: managedLabel
@@ -302,8 +327,8 @@ ScrollView {
                 columns: content.width >= 720 ? 4 : 2
                 columnSpacing: 12
                 rowSpacing: 12
-                MetricTile { Layout.fillWidth: true; label: "本地 APP"; value: root.coreUnavailable() ? "不可用" : (backend.localAppStatus.enabled ? "开启" : "关闭"); valueColor: root.localColor() }
-                MetricTile { Layout.fillWidth: true; label: "云平台"; value: root.coreUnavailable() ? "无响应" : backend.cloudDisplayStateText.replace("云平台", ""); valueColor: root.cloudColor() }
+                MetricTile { Layout.fillWidth: true; label: "本地 APP"; value: backend.localAppStateText.replace("本地 APP 服务", ""); valueColor: root.localColor() }
+                MetricTile { Layout.fillWidth: true; label: "云平台"; value: backend.cloudDisplayStateText.replace("云平台", ""); valueColor: root.cloudColor() }
                 MetricTile { Layout.fillWidth: true; label: "待上传事件"; value: Number(backend.cloudStatus.pendingEventCount || 0) === 0 ? "已同步" : backend.cloudStatus.pendingEventCount + " 条" }
                 MetricTile {
                     Layout.fillWidth: true

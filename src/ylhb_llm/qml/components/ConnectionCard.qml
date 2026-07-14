@@ -13,7 +13,7 @@ Rectangle {
     property color softColor: Theme.surfaceAlt
 
     implicitWidth: 320
-    implicitHeight: Math.max(300, body.implicitHeight + 48)
+    implicitHeight: Math.max(300, body.childrenRect.height + 48)
     radius: 16
     color: Theme.surface
     border.color: Theme.border

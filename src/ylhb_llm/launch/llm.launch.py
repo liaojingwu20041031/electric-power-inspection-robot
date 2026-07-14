@@ -35,6 +35,7 @@ def generate_launch_description():
     xauthority = LaunchConfiguration('xauthority')
     force_local_display = LaunchConfiguration('force_local_display')
     mobile_bridge_managed_externally = LaunchConfiguration('mobile_bridge_managed_externally')
+    auto_start_mobile_bridge = LaunchConfiguration('auto_start_mobile_bridge')
     workspace_dir_arg = LaunchConfiguration('workspace_dir')
     route_directory = LaunchConfiguration('route_directory')
     map_output_dir = LaunchConfiguration('map_output_dir')
@@ -100,6 +101,7 @@ def generate_launch_description():
         DeclareLaunchArgument('xauthority', default_value=''),
         DeclareLaunchArgument('force_local_display', default_value='true'),
         DeclareLaunchArgument('mobile_bridge_managed_externally', default_value='false'),
+        DeclareLaunchArgument('auto_start_mobile_bridge', default_value='true'),
         DeclareLaunchArgument('enable_llm_parse', default_value='false'),
         DeclareLaunchArgument('voice_energy_threshold', default_value='800'),
         DeclareLaunchArgument('voice_command_vad_silence_sec', default_value='1.25'),
@@ -183,7 +185,7 @@ def generate_launch_description():
             name='system_supervisor_node',
             output='screen',
             condition=IfCondition(enable_system_supervisor),
-            parameters=[params_file, shared_route_parameters, audio_environment_parameters, {'map_output_dir': map_output_dir, 'perception_model_path': perception_model_path, 'enable_keepout_navigation': ParameterValue(enable_keepout_navigation, value_type=bool), 'keepout_mask_path': keepout_mask_path, 'keepout_route_path': keepout_route_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'mobile_bridge_managed_externally': ParameterValue(mobile_bridge_managed_externally, value_type=bool)}],
+            parameters=[params_file, shared_route_parameters, audio_environment_parameters, {'map_output_dir': map_output_dir, 'perception_model_path': perception_model_path, 'enable_keepout_navigation': ParameterValue(enable_keepout_navigation, value_type=bool), 'keepout_mask_path': keepout_mask_path, 'keepout_route_path': keepout_route_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'mobile_bridge_managed_externally': ParameterValue(mobile_bridge_managed_externally, value_type=bool), 'auto_start_mobile_bridge': ParameterValue(auto_start_mobile_bridge, value_type=bool)}],
         ),
         RegisterEventHandler(
             # The UI is the inspection-console lifecycle anchor: never respawn it alone.

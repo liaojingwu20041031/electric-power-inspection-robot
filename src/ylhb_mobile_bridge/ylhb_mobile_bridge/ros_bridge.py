@@ -738,10 +738,16 @@ class MobileRosBridge(Node):
         context.setdefault('active_command_id', str(patrol.get('command_id') or ''))
         self._cloud_snapshot = {'state': str(patrol.get('state') or 'idle'), 'mapPose': status.get('mapPose'), 'odomPose': status.get('odomPose'), 'platformContext': context, 'health': {'odomAgeSec': status.get('last_odom_age_sec'), 'scanAgeSec': status.get('last_scan_age_sec'), 'imuAgeSec': status.get('last_imu_age_sec'), 'nav2': status.get('nav2_status'), 'systemMode': status.get('system_mode'), 'lastError': patrol.get('last_error') or self._system_status.get('last_error')}}
         if self.cloud_client:
-            msg = String()
-            msg.data = json.dumps(self.cloud_client.status(), ensure_ascii=False)
-            self._cloud_status_pub.publish(msg)
+            self.publish_cloud_status_now()
         self._publish_local_app_status()
+
+    def publish_cloud_status_now(self, status: Optional[dict] = None) -> None:
+        publisher = getattr(self, '_cloud_status_pub', None)
+        if not self.cloud_client or publisher is None:
+            return
+        msg = String()
+        msg.data = json.dumps(status or self.cloud_client.status(), ensure_ascii=False)
+        publisher.publish(msg)
 
     def initialize_local_app_settings(self, store) -> None:
         override = store.bridge_setting(
@@ -862,9 +868,16 @@ class MobileRosBridge(Node):
             response.success = False
             response.message = 'cloud client is not ready'
             return response
-        status = self.cloud_client.set_enabled(bool(request.data))
-        response.success = bool(status.get('configured')) or not bool(request.data)
-        response.message = str(status.get('state') or '')
+        try:
+            status = self.cloud_client.set_enabled(bool(request.data))
+            response.success = bool(status.get('configured')) or not bool(request.data)
+            response.message = str(status.get('state') or '')
+        except Exception as exc:
+            status = dict(self.cloud_client.status())
+            status['lastError'] = f'cloud control failed: {type(exc).__name__}'
+            response.success = False
+            response.message = status['lastError']
+        self.publish_cloud_status_now(status)
         return response
 
     def cloud_status_snapshot(self) -> dict:

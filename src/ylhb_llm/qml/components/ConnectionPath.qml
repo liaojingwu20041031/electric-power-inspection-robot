@@ -7,7 +7,7 @@ Rectangle {
     id: root
     property color localColor: Theme.muted
     property color cloudColor: Theme.muted
-    property bool coreRunning: false
+    property string coreState: "stopped"
 
     implicitHeight: 140
     radius: 16
@@ -30,8 +30,8 @@ Rectangle {
             implicitWidth: 170
             implicitHeight: 72
             radius: 12
-            color: root.coreRunning ? Theme.successSoft : Theme.warningSoft
-            border.color: root.coreRunning ? Theme.success : Theme.warning
+            color: root.coreState === "running" ? Theme.successSoft : (root.coreState === "starting" ? Theme.infoSoft : Theme.dangerSoft)
+            border.color: root.coreState === "running" ? Theme.success : (root.coreState === "starting" ? Theme.info : Theme.danger)
             Label { anchors.centerIn: parent; text: "Jetson 网桥"; color: Theme.text; font.bold: true; font.pixelSize: 17 }
         }
         ColumnLayout {
