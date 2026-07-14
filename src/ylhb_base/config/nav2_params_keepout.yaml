@@ -67,6 +67,9 @@ bt_navigator:
     odom_topic: /odom
     # 行为树内部 TF 查询容忍时间；实车/Foxglove 目标时间戳会有几十毫秒抖动。
     transform_tolerance: 1.5
+    bt_loop_duration: 20
+    default_server_timeout: 500
+    wait_for_service_timeout: 1000
     # 默认行为树禁用恢复动作，失败时不再原地急转或后退。
     default_bt_xml_filename: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_no_recovery.xml"
     default_nav_to_pose_bt_xml: "/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_no_recovery.xml"
@@ -180,13 +183,13 @@ controller_server:
       xy_goal_tolerance: 0.08
       # 低于该平移速度认为底盘已停止。
       trans_stopped_velocity: 0.03
-      # 与普通导航一致；虚拟墙由同一 InflationLayer 产生代价。
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 5.0
+      # 与普通导航一致；完整偏心 footprint 同时检查实体障碍和虚拟墙。
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      ObstacleFootprint.scale: 0.02
       PathAlign.scale: 8.0
       PathAlign.forward_point_distance: 0.1
       PathDist.scale: 10.0
-      GoalAlign.scale: 8.0
+      GoalAlign.scale: 0.0
       GoalAlign.forward_point_distance: 0.1
       GoalDist.scale: 8.0
       RotateToGoal.scale: 20.0

@@ -1,6 +1,6 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="6" name="NavigateWaitRetry">
+    <RecoveryNode number_of_retries="2" name="NavigateWaitRetry">
       <PipelineSequence name="NavigateWithRetry">
         <NormalizeGoal input_goal="{goal}" output_goal="{map_goal}" global_frame="map"/>
         <RateController hz="2.0">
@@ -13,14 +13,14 @@
           <FollowPath path="{path}" controller_id="FollowPath"/>
           <Sequence name="ClearLocalCostmapAndWait">
             <ClearEntireCostmap name="ClearLocalCostmap" service_name="local_costmap/clear_entirely_local_costmap"/>
-            <Wait wait_duration="0.5"/>
+            <Wait wait_duration="1"/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="SmallBackupRecovery">
         <GoalUpdated/>
         <Sequence name="WaitOnly">
-          <Wait wait_duration="0.5"/>
+          <Wait wait_duration="1"/>
         </Sequence>
       </ReactiveFallback>
     </RecoveryNode>

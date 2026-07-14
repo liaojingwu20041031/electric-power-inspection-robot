@@ -8,6 +8,7 @@ import yaml
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 WORKSPACE_DIR = PACKAGE_DIR.parents[1]
 NAV2_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params.yaml"
+NAV2_KEEPOUT_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params_keepout.yaml"
 NAV2_BT_PATH = PACKAGE_DIR / "config" / "nav2_no_recovery.xml"
 CMAKE_PATH = PACKAGE_DIR / "CMakeLists.txt"
 MAP_YAML_PATH = WORKSPACE_DIR / "maps" / "my_map.yaml"
@@ -17,6 +18,10 @@ EXPECTED_FOOTPRINT_POINTS = 16
 
 def load_nav2_params():
     return yaml.safe_load(NAV2_CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def load_keepout_nav2_params():
+    return yaml.safe_load(NAV2_KEEPOUT_CONFIG_PATH.read_text(encoding="utf-8"))
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -156,6 +161,7 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     config = load_nav2_params()
     controller = config["controller_server"]["ros__parameters"]
     follow_path = controller["FollowPath"]
+    keepout_follow_path = load_keepout_nav2_params()["controller_server"]["ros__parameters"]["FollowPath"]
     smoother = config["velocity_smoother"]["ros__parameters"]
 
     assert "current_goal_checker" not in controller
@@ -176,13 +182,15 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     assert follow_path["angular_granularity"] > 0
     assert follow_path["short_circuit_trajectory_evaluation"] is True
     assert follow_path["stateful"] is True
-    assert {"RotateToGoal", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"} <= set(follow_path["critics"])
-    assert "ObstacleFootprint.scale" not in follow_path
-    assert follow_path["BaseObstacle.scale"] > 0
-    assert follow_path["PathAlign.scale"] > 0
+    assert follow_path == keepout_follow_path
+    assert {"RotateToGoal", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"} <= set(follow_path["critics"])
+    assert "BaseObstacle" not in follow_path["critics"]
+    assert "BaseObstacle.scale" not in follow_path
+    assert follow_path["ObstacleFootprint.scale"] == 0.02
+    assert follow_path["PathAlign.scale"] == 8.0
     assert follow_path["PathAlign.forward_point_distance"] > 0
-    assert follow_path["PathDist.scale"] > 0
-    assert follow_path["GoalAlign.scale"] > 0
+    assert follow_path["PathDist.scale"] == 10.0
+    assert follow_path["GoalAlign.scale"] == 0.0
     assert follow_path["GoalAlign.forward_point_distance"] > 0
     assert follow_path["GoalDist.scale"] > 0
     assert follow_path["RotateToGoal.lookahead_time"] >= 0
@@ -216,9 +224,12 @@ def test_navigation_goal_tolerances_are_conservative_and_consistent():
 
 
 def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
-    controller = load_nav2_params()["controller_server"]["ros__parameters"]
+    config = load_nav2_params()
+    controller = config["controller_server"]["ros__parameters"]
+    bt = config["bt_navigator"]["ros__parameters"]
     progress = controller["progress_checker"]
     behavior_tree = load_nav2_behavior_tree()
+    navigate_recovery = behavior_tree.find(".//RecoveryNode[@name='NavigateWaitRetry']")
     follow_path_recovery = behavior_tree.find(".//RecoveryNode[@name='FollowPath']")
     outer_recovery = behavior_tree.find(".//ReactiveFallback[@name='SmallBackupRecovery']")
 
@@ -226,7 +237,12 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
     assert progress["required_movement_radius"] == 0.05
     assert progress["required_movement_angle"] == 0.12
     assert progress["movement_time_allowance"] == 12.0
+    assert bt["bt_loop_duration"] == 20
+    assert bt["default_server_timeout"] >= 500
+    assert bt["wait_for_service_timeout"] >= 1000
     assert behavior_tree.find(".//BackUp") is None
+    assert navigate_recovery is not None
+    assert navigate_recovery.attrib["number_of_retries"] == "2"
 
     assert follow_path_recovery is not None
     assert follow_path_recovery.attrib["number_of_retries"] == "1"
@@ -237,7 +253,7 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
     assert local_recovery.attrib["name"] == "ClearLocalCostmapAndWait"
     local_recovery_children = list(local_recovery)
     assert [child.tag for child in local_recovery_children[:2]] == ["ClearEntireCostmap", "Wait"]
-    assert float(local_recovery_children[1].attrib["wait_duration"]) > 0
+    assert local_recovery_children[1].attrib["wait_duration"] == "1"
 
     assert outer_recovery is not None
     outer_recovery_children = list(outer_recovery)
@@ -246,7 +262,7 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
     assert outer_sequence.attrib["name"] == "WaitOnly"
     outer_sequence_children = list(outer_sequence)
     assert [child.tag for child in outer_sequence_children] == ["Wait"]
-    assert float(outer_sequence_children[0].attrib["wait_duration"]) > 0
+    assert outer_sequence_children[0].attrib["wait_duration"] == "1"
 
 
 def test_smac_planner_avoids_unknown_and_prefers_centered_costs():
