@@ -155,7 +155,7 @@ ros2 service type /mobile_bridge/set_local_app_enabled
 pgrep -af 'ylhb_mobile_bridge mobile_bridge_server'
 ```
 
-完整环境变量、systemd、日志脱敏、SQLite 备份和本地 auto 回退见 [Jetson 云平台连接运维](cloud_platform_connection.md)。
+完整环境变量、systemd、日志脱敏、SQLite 备份和本地 auto 回退见 [Jetson 云平台连接运维](云平台连接运维.md)。
 
 ## 显示会话与自动恢复
 

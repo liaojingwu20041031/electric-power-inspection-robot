@@ -5,7 +5,7 @@ description: Guides testing changes in this ROS2 workspace. Use when modifying, 
 
 # Good Testing
 
-Before adding or changing tests in this repository, read `docs/GOOD_TESTING_GUIDE.md`.
+Before adding or changing tests in this repository, read `docs/好测试规范.md`.
 
 ## Rules
 
