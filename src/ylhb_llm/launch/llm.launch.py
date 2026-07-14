@@ -186,6 +186,8 @@ def generate_launch_description():
             parameters=[params_file, shared_route_parameters, audio_environment_parameters, {'map_output_dir': map_output_dir, 'perception_model_path': perception_model_path, 'enable_keepout_navigation': ParameterValue(enable_keepout_navigation, value_type=bool), 'keepout_mask_path': keepout_mask_path, 'keepout_route_path': keepout_route_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'mobile_bridge_managed_externally': ParameterValue(mobile_bridge_managed_externally, value_type=bool)}],
         ),
         RegisterEventHandler(
+            # The UI is the inspection-console lifecycle anchor: never respawn it alone.
+            # Its exit intentionally shuts down agent, voice and supervisor siblings.
             OnProcessExit(
                 target_action=display_ui,
                 on_exit=[EmitEvent(event=Shutdown(reason='inspection display UI exited'))],

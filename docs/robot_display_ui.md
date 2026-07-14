@@ -148,3 +148,19 @@ pgrep -af 'ylhb_mobile_bridge mobile_bridge_server'
 ```
 
 完整环境变量、systemd、日志脱敏、SQLite 备份和本地 auto 回退见 [Jetson 云平台连接运维](cloud_platform_connection.md)。
+
+## 显示会话与自动恢复
+
+UI 是完整 inspection 栈的生命周期锚点：UI 退出会有意关闭 Agent、语音和 Supervisor，避免后台残留；禁止给 UI 单独 respawn。手工 `./scripts/run_on_jetson.sh inspection` 不自动重启。桌面自启动 wrapper 则在旧节点全部退出、图形会话恢复并等待 4 秒后，重新启动**完整** inspection 栈；60 秒内最多三次，超过即停止。
+
+UI 只接受本机 `:N` X11 socket，不把 `localhost:10.0` SSH 转发当控制台。X11/Xwayland 运行中断开时 Qt 进程退出，整栈关闭；解锁/会话恢复后由自启动 wrapper 恢复。`xset s off; xset s noblank; xset -dpms` 只能禁用 X11 屏保/DPMS，不能替代 GNOME 锁屏或系统挂起。
+
+可选 kiosk 设置（仅当前 GNOME 支持的键，`enable` 前备份、`disable` 恢复；默认不改电池模式）：
+
+```bash
+./scripts/configure_robot_console_kiosk.sh status
+./scripts/configure_robot_console_kiosk.sh enable
+./scripts/configure_robot_console_kiosk.sh disable
+```
+
+1080p 页面最大内容宽度为 1540px，双卡布局；960×640 自动单列并纵向滚动。现场锁屏/解锁验证由操作员执行：确认 UI/整栈退出、解锁后 wrapper 仅启动一套完整栈，并用 `pgrep -af 'inspection_agent_node|voice_session_node|voice_output_node|system_supervisor_node|inspection_display_ui_node'` 确认没有残留或重复。

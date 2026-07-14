@@ -95,6 +95,21 @@ def test_bridge_page_separates_local_and_cloud_controls():
     assert "signals.localAppStatus.connect(backend.update_local_app_status)" in node
     assert "signals.localAppControlResult.connect(backend.update_local_app_control_result)" in node
     assert "signals.cloudControlResult.connect(backend.update_cloud_control_result)" in node
+    assert "cloudDisplayState" in qml
+    assert "cloudRequestedEnabled" in qml
+    assert "Math.min(parent.width - 40, 1540)" in qml
+    assert "property real uiScale" in qml
+    assert "visible: false" in qml.split("id: diagnosticBody", 1)[1]
+
+
+def test_inspection_launch_keeps_ui_as_full_stack_lifecycle_anchor():
+    launch = Path("src/ylhb_llm/launch/llm.launch.py").read_text(encoding="utf-8")
+    autostart = Path("scripts/start_inspection_ui_autostart.sh").read_text(encoding="utf-8")
+    assert "OnProcessExit(" in launch
+    assert "EmitEvent(event=Shutdown(" in launch
+    assert "respawn=True" not in launch
+    assert 'run_on_jetson.sh" inspection' in autostart
+    assert "crash-loop limit" in autostart
 
 
 def test_patrol_page_binds_preview_image_without_showing_url_as_main_text():

@@ -128,8 +128,13 @@ class UiBackend(QObject):
         self._ui_ready = False
         self._local_app_control_pending = False
         self._local_app_control_message = ''
+        self._local_app_requested_enabled = None
+        self._local_app_control_started_at = 0.0
         self._cloud_control_pending = False
         self._cloud_control_message = ''
+        self._cloud_requested_enabled = None
+        self._cloud_control_started_at = 0.0
+        self._last_cloud_status_received_at = 0.0
         self._startup_loading_text = '正在准备操控台...'
         self.routePreviewLoaded.connect(self._apply_route_preview_result)
         self.safety_timer = QTimer(self)
@@ -168,6 +173,51 @@ class UiBackend(QObject):
     def cloudControlMessage(self) -> str:
         return self._cloud_control_message
 
+    @pyqtProperty(bool, notify=cloudControlChanged)
+    def cloudRequestedEnabled(self) -> bool:
+        return bool(self._cloud_requested_enabled) if self._cloud_control_pending else bool(self.state.cloud_status.get('desiredEnabled'))
+
+    @pyqtProperty(bool, notify=localAppControlChanged)
+    def localAppRequestedEnabled(self) -> bool:
+        return bool(self._local_app_requested_enabled) if self._local_app_control_pending else bool(self.state.local_app_status.get('enabled'))
+
+    @pyqtProperty(str, notify=cloudStatusChanged)
+    def cloudDisplayState(self) -> str:
+        status = self.state.cloud_status
+        if not status.get('configured'):
+            return 'UNCONFIGURED'
+        if not status.get('desiredEnabled'):
+            return 'DISABLED'
+        if status.get('connected'):
+            return 'CONNECTED'
+        if str(status.get('state') or '') == 'BACKOFF':
+            return 'BACKOFF'
+        return 'CONNECTING'
+
+    @pyqtProperty(str, notify=cloudStatusChanged)
+    def cloudDisplayStateText(self) -> str:
+        return {'CONNECTED': '云平台已连接', 'CONNECTING': '正在连接云平台', 'BACKOFF': '云平台暂时离线', 'DISABLED': '云平台连接已关闭', 'UNCONFIGURED': '云平台未配置'}[self.cloudDisplayState]
+
+    @pyqtProperty(str, notify=cloudStatusChanged)
+    def cloudDisplayDescription(self) -> str:
+        if not self.cloudStatusFresh:
+            return '网桥状态无响应' if self.cloudStatusAgeSec > 8 else '状态更新稍有延迟'
+        if self.cloudDisplayState == 'BACKOFF':
+            return f"系统将在 {int(float(self.state.cloud_status.get('nextRetrySec') or 0))} 秒后自动重试"
+        return {'CONNECTED': '任务、状态和事件正在安全同步', 'CONNECTING': '正在建立安全连接', 'DISABLED': '本地 APP 仍然可以使用', 'UNCONFIGURED': '请检查服务器地址和机器人令牌'}[self.cloudDisplayState]
+
+    @pyqtProperty(bool, notify=cloudStatusChanged)
+    def cloudHeartbeatInFlight(self) -> bool:
+        return bool(self.state.cloud_status.get('heartbeatInFlight'))
+
+    @pyqtProperty(float, notify=cloudStatusChanged)
+    def cloudStatusAgeSec(self) -> float:
+        return max(0.0, self.clock() - self._last_cloud_status_received_at) if self._last_cloud_status_received_at else float('inf')
+
+    @pyqtProperty(bool, notify=cloudStatusChanged)
+    def cloudStatusFresh(self) -> bool:
+        return self.cloudStatusAgeSec <= 3.0
+
     @pyqtProperty(str, notify=localAppStatusChanged)
     def localAppStateText(self) -> str:
         state = str(self.state.local_app_status.get('state') or 'UNAVAILABLE')
@@ -190,27 +240,11 @@ class UiBackend(QObject):
 
     @pyqtProperty(str, notify=cloudStatusChanged)
     def cloudStateText(self) -> str:
-        state = str(self.state.cloud_status.get('state') or 'UNCONFIGURED')
-        return {
-            'CONNECTED': '云平台已连接',
-            'CONNECTING': '正在连接云平台',
-            'BACKOFF': '云平台暂时离线',
-            'DISABLED': '云平台连接已关闭',
-            'UNCONFIGURED': '云平台未配置',
-        }.get(state, '云平台未配置')
+        return self.cloudDisplayStateText
 
     @pyqtProperty(str, notify=cloudStatusChanged)
     def cloudDescription(self) -> str:
-        state = str(self.state.cloud_status.get('state') or 'UNCONFIGURED')
-        if state == 'BACKOFF':
-            seconds = int(float(self.state.cloud_status.get('nextRetrySec') or 0))
-            return f'系统将在 {seconds} 秒后自动重试'
-        return {
-            'CONNECTED': '任务、状态和事件正在安全同步',
-            'CONNECTING': '正在建立安全连接',
-            'DISABLED': '本地 APP 仍然可以使用',
-            'UNCONFIGURED': '请检查服务器地址和机器人令牌',
-        }.get(state, '请检查服务器地址和机器人令牌')
+        return self.cloudDisplayDescription
 
     @pyqtProperty('QVariantList', notify=logsChanged)
     def logs(self):
@@ -738,6 +772,17 @@ class UiBackend(QObject):
     def checkSafetyTimeout(self) -> None:
         if self._control_unlocked and self.clock() - self._last_control_activity >= 10.0:
             self.setControlUnlocked(False)
+        now = self.clock()
+        if self._cloud_control_pending and now - self._cloud_control_started_at >= 5.0:
+            self._cloud_control_pending = False
+            self._cloud_requested_enabled = None
+            self._cloud_control_message = '控制请求已发送，但未收到状态确认'
+            self.cloudControlChanged.emit()
+        if self._local_app_control_pending and now - self._local_app_control_started_at >= 5.0:
+            self._local_app_control_pending = False
+            self._local_app_requested_enabled = None
+            self._local_app_control_message = '控制请求已发送，但未收到状态确认'
+            self.localAppControlChanged.emit()
 
     @pyqtSlot(str)
     def sendSystemCommand(self, command: str) -> None:
@@ -752,6 +797,8 @@ class UiBackend(QObject):
         if self._cloud_control_pending:
             return
         self._cloud_control_pending = True
+        self._cloud_requested_enabled = bool(enabled)
+        self._cloud_control_started_at = self.clock()
         self._cloud_control_message = (
             '正在开启云平台连接…' if enabled else '正在关闭云平台连接…'
         )
@@ -764,6 +811,8 @@ class UiBackend(QObject):
         if self._local_app_control_pending:
             return
         self._local_app_control_pending = True
+        self._local_app_requested_enabled = bool(enabled)
+        self._local_app_control_started_at = self.clock()
         self._local_app_control_message = (
             '正在开启本地 APP 服务…' if enabled else '正在关闭本地 APP 服务…'
         )
@@ -1087,30 +1136,39 @@ class UiBackend(QObject):
 
     def update_cloud_status(self, payload: Dict[str, Any]) -> None:
         self.state.cloud_status = dict(payload or {})
+        self._last_cloud_status_received_at = self.clock()
+        if self._cloud_control_pending and self.state.cloud_status.get('desiredEnabled') == self._cloud_requested_enabled:
+            self._cloud_control_pending = False
+            self._cloud_requested_enabled = None
+            self._cloud_control_message = ''
+            self.cloudControlChanged.emit()
         self.cloudStatusChanged.emit()
 
     def update_local_app_status(self, payload: Dict[str, Any]) -> None:
         self.state.local_app_status = dict(payload or {})
+        if self._local_app_control_pending and self.state.local_app_status.get('enabled') == self._local_app_requested_enabled:
+            self._local_app_control_pending = False
+            self._local_app_requested_enabled = None
+            self._local_app_control_message = ''
+            self.localAppControlChanged.emit()
         self.localAppStatusChanged.emit()
 
     def update_local_app_control_result(
         self, enabled: bool, success: bool, message: str
     ) -> None:
-        self._local_app_control_pending = False
-        self._local_app_control_message = (
-            ('本地 APP 服务已开启' if enabled else '本地 APP 服务已关闭')
-            if success else f'操作失败：{message}'
-        )
+        if not success:
+            self._local_app_control_pending = False
+            self._local_app_requested_enabled = None
+        self._local_app_control_message = '请求已接受，等待状态确认' if success else f'操作失败：{message}'
         self.localAppControlChanged.emit()
 
     def update_cloud_control_result(
         self, enabled: bool, success: bool, message: str
     ) -> None:
-        self._cloud_control_pending = False
-        self._cloud_control_message = (
-            ('云平台连接已开启' if enabled else '云平台连接已关闭')
-            if success else f'操作失败：{message}'
-        )
+        if not success:
+            self._cloud_control_pending = False
+            self._cloud_requested_enabled = None
+        self._cloud_control_message = '请求已接受，等待状态确认' if success else f'操作失败：{message}'
         self.cloudControlChanged.emit()
 
     def update_patrol_status(self, payload: Dict[str, Any]) -> None:

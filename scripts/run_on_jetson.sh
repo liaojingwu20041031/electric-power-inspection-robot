@@ -85,6 +85,35 @@ find_local_display() {
   printf ':0\n'
 }
 
+display_socket_path() {
+  local value="${DISPLAY:-}" number
+  [[ "${value}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] || return 1
+  number="${BASH_REMATCH[1]}"
+  printf '/tmp/.X11-unix/X%s\n' "${number}"
+}
+
+display_is_local() { display_socket_path >/dev/null; }
+
+display_is_ready() {
+  local socket
+  socket="$(display_socket_path)" || return 1
+  [ -S "${socket}" ] || return 1
+  [ -z "${XAUTHORITY:-}" ] || [ -r "${XAUTHORITY}" ] || return 1
+  timeout 3 xset q >/dev/null 2>&1
+}
+
+wait_for_display() {
+  local retry="${YLHB_UI_DISPLAY_RETRY_SEC:-2}" timeout_sec="${YLHB_UI_DISPLAY_WAIT_TIMEOUT_SEC:-0}" started last_log now
+  [ "${YLHB_UI_WAIT_FOR_DISPLAY:-true}" = "true" ] || { display_is_ready; return; }
+  started="$(date +%s)"; last_log=0
+  until display_is_ready; do
+    now="$(date +%s)"
+    if [ $((now - last_log)) -ge 10 ]; then echo "正在等待本地图形会话恢复" >&2; last_log="${now}"; fi
+    [ "${timeout_sec}" = "0" ] || [ $((now - started)) -lt "${timeout_sec}" ] || return 1
+    sleep "${retry}"
+  done
+}
+
 normalize_local_display() {
   if [ "${DISPLAY}" = "localhost:10.0" ] || [[ "${DISPLAY}" == localhost:* ]]; then
     export DISPLAY="$(find_local_display)"
@@ -202,6 +231,8 @@ case "${MODE}" in
     export DISPLAY="${DISPLAY:-:0}"
     normalize_local_display
     set_local_xauthority
+    # Qt performs the final wait before QGuiApplication; this catches bad SSH DISPLAY early.
+    display_is_local || echo "WARN: DISPLAY=${DISPLAY:-} is not a local X11 display; UI will wait for :N." >&2
     disable_display_sleep
     start_chinese_ime
     require_ylhb_llm_executable inspection_agent_node

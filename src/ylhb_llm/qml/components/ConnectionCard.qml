@@ -13,7 +13,7 @@ Rectangle {
     property color softColor: Theme.surfaceAlt
 
     implicitWidth: 320
-    implicitHeight: body.implicitHeight + 40
+    implicitHeight: Math.max(300, body.implicitHeight + 48)
     radius: 16
     color: Theme.surface
     border.color: Theme.border
@@ -23,7 +23,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: 20
+        anchors.margins: 24
         spacing: 12
 
         RowLayout {
@@ -39,7 +39,7 @@ Rectangle {
                 Layout.fillWidth: true
                 text: root.title
                 color: Theme.text
-                font.pixelSize: 18
+                font.pixelSize: 20
                 font.bold: true
             }
         }
@@ -60,7 +60,7 @@ Rectangle {
                     Layout.fillWidth: true
                     text: root.stateTitle
                     color: Theme.text
-                    font.pixelSize: 17
+                    font.pixelSize: 21
                     font.bold: true
                     wrapMode: Text.Wrap
                 }
@@ -69,7 +69,7 @@ Rectangle {
                     Layout.fillWidth: true
                     text: root.description
                     color: Theme.muted
-                    font.pixelSize: 14
+                    font.pixelSize: 16
                     wrapMode: Text.Wrap
                 }
             }

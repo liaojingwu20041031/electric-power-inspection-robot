@@ -7,6 +7,7 @@ import ".."
 ScrollView {
     id: root
     property bool advancedExpanded: false
+    property real uiScale: Math.max(1.0, Math.min(1.22, root.width / 1350.0))
     anchors.fill: parent
     clip: true
     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -37,7 +38,7 @@ ScrollView {
 
     function cloudColor() {
         if (coreUnavailable()) return Theme.danger
-        var state = String(backend.cloudStatus.state || "UNCONFIGURED")
+        var state = backend.cloudDisplayState
         if (state === "CONNECTED") return Theme.success
         if (state === "CONNECTING") return Theme.info
         if (state === "BACKOFF") return Theme.warning
@@ -47,7 +48,7 @@ ScrollView {
 
     function cloudSoftColor() {
         if (coreUnavailable()) return Theme.dangerSoft
-        var state = String(backend.cloudStatus.state || "UNCONFIGURED")
+        var state = backend.cloudDisplayState
         if (state === "CONNECTED") return Theme.successSoft
         if (state === "CONNECTING") return Theme.infoSoft
         if (state === "BACKOFF") return Theme.warningSoft
@@ -61,34 +62,35 @@ ScrollView {
 
         ColumnLayout {
             id: content
-            width: Math.min(parent.width - 32, 1040)
-            x: Math.max(16, (parent.width - width) / 2)
+            width: Math.min(parent.width - 40, 1540)
+            x: Math.max(20, (parent.width - width) / 2)
             y: 22
-            spacing: 16
+            spacing: 18 * root.uiScale
 
             Label {
                 text: "连接与服务"
                 color: Theme.text
-                font.pixelSize: 27
+                font.pixelSize: 32 * root.uiScale
                 font.bold: true
             }
             Label {
                 Layout.fillWidth: true
                 text: "管理手机 APP、云平台与网桥核心服务"
                 color: Theme.muted
-                font.pixelSize: 15
+                font.pixelSize: 16 * root.uiScale
                 wrapMode: Text.Wrap
             }
 
             GridLayout {
                 Layout.fillWidth: true
-                columns: content.width >= 900 ? 2 : 1
+                columns: content.width >= 960 ? 2 : 1
                 columnSpacing: 16
                 rowSpacing: 16
 
                 ConnectionCard {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignTop
+                    Layout.minimumHeight: 300 * root.uiScale
                     title: "本地 APP 服务"
                     stateTitle: root.coreUnavailable() ? "网桥核心服务无响应" : backend.localAppStateText
                     description: root.coreUnavailable() ? "请先恢复网桥核心服务" : backend.localAppDescription
@@ -133,7 +135,7 @@ ScrollView {
                         Binding {
                             target: localAppSwitch
                             property: "checked"
-                            value: !!backend.localAppStatus.enabled
+                            value: backend.localAppRequestedEnabled
                             when: !localDisableDialog.visible && !backend.localAppControlPending
                         }
                     }
@@ -149,9 +151,10 @@ ScrollView {
                 ConnectionCard {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignTop
+                    Layout.minimumHeight: 300 * root.uiScale
                     title: "云平台连接"
-                    stateTitle: root.coreUnavailable() ? "网桥核心服务无响应" : backend.cloudStateText
-                    description: root.coreUnavailable() ? "请先恢复网桥核心服务" : backend.cloudDescription
+                    stateTitle: root.coreUnavailable() ? "网桥核心服务无响应" : backend.cloudDisplayStateText
+                    description: root.coreUnavailable() ? "请先恢复网桥核心服务" : backend.cloudDisplayDescription
                     statusColor: root.cloudColor()
                     softColor: root.cloudSoftColor()
 
@@ -194,14 +197,14 @@ ScrollView {
                         Binding {
                             target: cloudSwitch
                             property: "checked"
-                            value: !!backend.cloudStatus.desiredEnabled
+                            value: backend.cloudRequestedEnabled
                             when: !cloudDisableDialog.visible && !backend.cloudControlPending
                         }
                     }
                     RowLayout {
                         Layout.fillWidth: true
                         WarmButton {
-                            visible: String(backend.cloudStatus.state || "") === "BACKOFF"
+                            visible: backend.cloudDisplayState === "BACKOFF"
                             enabled: !root.coreUnavailable() && !backend.cloudControlPending
                             text: "立即重试"
                             buttonColor: Theme.info
@@ -300,7 +303,7 @@ ScrollView {
                 columnSpacing: 12
                 rowSpacing: 12
                 MetricTile { Layout.fillWidth: true; label: "本地 APP"; value: root.coreUnavailable() ? "不可用" : (backend.localAppStatus.enabled ? "开启" : "关闭"); valueColor: root.localColor() }
-                MetricTile { Layout.fillWidth: true; label: "云平台"; value: root.coreUnavailable() ? "无响应" : backend.cloudStateText.replace("云平台", ""); valueColor: root.cloudColor() }
+                MetricTile { Layout.fillWidth: true; label: "云平台"; value: root.coreUnavailable() ? "无响应" : backend.cloudDisplayStateText.replace("云平台", ""); valueColor: root.cloudColor() }
                 MetricTile { Layout.fillWidth: true; label: "待上传事件"; value: Number(backend.cloudStatus.pendingEventCount || 0) === 0 ? "已同步" : backend.cloudStatus.pendingEventCount + " 条" }
                 MetricTile {
                     Layout.fillWidth: true
@@ -356,11 +359,15 @@ ScrollView {
                             color: Theme.muted
                             wrapMode: Text.Wrap
                             text: "raw state: " + (backend.cloudStatus.state || "UNCONFIGURED")
+                                  + "    display state: " + backend.cloudDisplayState
+                                  + "    heartbeatInFlight: " + backend.cloudHeartbeatInFlight
                                   + "    serverBaseUrl: " + (backend.cloudStatus.serverBaseUrl || "-")
                                   + "\nlastAttemptAt: " + (backend.cloudStatus.lastAttemptAt || "-")
                                   + "    lastSuccessAt: " + (backend.cloudStatus.lastSuccessAt || "-")
                                   + "    lastServerTime: " + (backend.cloudStatus.lastServerTime || "-")
-                                  + "\nnextRetrySec: " + (backend.cloudStatus.nextRetrySec || 0)
+                                  + "\nnextHeartbeatSec: " + (backend.cloudStatus.nextHeartbeatSec || 0)
+                                  + "    nextRetrySec: " + (backend.cloudStatus.nextRetrySec || 0)
+                                  + "    consecutiveFailures: " + (backend.cloudStatus.consecutiveFailures || 0)
                                   + "    pendingEventCount: " + (backend.cloudStatus.pendingEventCount || 0)
                                   + "    pendingCommandCount: " + (backend.cloudStatus.pendingCommandCount || 0)
                                   + "\nlatestLocalEventSequence: " + (backend.cloudStatus.latestLocalEventSequence || 0)

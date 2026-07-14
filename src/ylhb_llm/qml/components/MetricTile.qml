@@ -10,21 +10,21 @@ Rectangle {
     property string tooltip: ""
     property color valueColor: Theme.text
 
-    implicitHeight: 82
+    implicitHeight: 100
     radius: 12
     color: Theme.surfaceAlt
     border.color: Theme.border
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 12
+        anchors.margins: 16
         spacing: 5
-        Label { text: root.label; color: Theme.muted; font.pixelSize: 12 }
+        Label { text: root.label; color: Theme.muted; font.pixelSize: 14 }
         Label {
             Layout.fillWidth: true
             text: root.value
             color: root.valueColor
-            font.pixelSize: 16
+            font.pixelSize: 19
             font.bold: true
             elide: Text.ElideMiddle
         }

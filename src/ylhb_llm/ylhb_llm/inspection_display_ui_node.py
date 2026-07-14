@@ -1,7 +1,9 @@
 import os
+import re
 import signal
 import sys
 import threading
+import time
 from typing import List, Optional
 
 import rclpy
@@ -25,6 +27,42 @@ def qml_main_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'qml', 'Main.qml'))
 
 
+def display_socket_path(display: str | None = None) -> str:
+    match = re.fullmatch(r':(\d+)(?:\.\d+)?', str(display or os.environ.get('DISPLAY') or ''))
+    return f'/tmp/.X11-unix/X{match.group(1)}' if match else ''
+
+
+def display_is_local() -> bool:
+    return bool(display_socket_path())
+
+
+def display_is_ready() -> bool:
+    xauthority = os.environ.get('XAUTHORITY', '')
+    if not display_is_local() or not os.path.exists(display_socket_path()):
+        return False
+    if xauthority and not os.access(xauthority, os.R_OK):
+        return False
+    return os.system('timeout 3 xset q >/dev/null 2>&1') == 0
+
+
+def wait_for_display() -> bool:
+    if os.environ.get('YLHB_UI_WAIT_FOR_DISPLAY', 'true').lower() not in {'1', 'true', 'yes', 'on'}:
+        return display_is_ready()
+    retry = max(1.0, float(os.environ.get('YLHB_UI_DISPLAY_RETRY_SEC', '2')))
+    timeout = max(0.0, float(os.environ.get('YLHB_UI_DISPLAY_WAIT_TIMEOUT_SEC', '0')))
+    started = time.monotonic()
+    last_log = 0.0
+    while not display_is_ready():
+        now = time.monotonic()
+        if not last_log or now - last_log >= 10.0:
+            print('正在等待本地图形会话恢复', file=sys.stderr, flush=True)
+            last_log = now
+        if timeout and now - started >= timeout:
+            return False
+        time.sleep(retry)
+    return True
+
+
 def main(args: Optional[List[str]] = None) -> None:
     try:
         from PyQt5.QtQml import QQmlApplicationEngine
@@ -38,6 +76,9 @@ def main(args: Optional[List[str]] = None) -> None:
         print(f'QtQml import error: {exc}', file=sys.stderr)
         return
 
+    if not wait_for_display():
+        print('本地图形会话未在等待时限内恢复', file=sys.stderr)
+        return
     rclpy.init(args=args)
     app = QGuiApplication(sys.argv[:1])
     shutdown_requested = threading.Event()

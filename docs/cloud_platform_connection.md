@@ -102,7 +102,9 @@ ros2 topic info /mobile_bridge/cloud_status -v --no-daemon
 ros2 topic echo /mobile_bridge/cloud_status --once
 ```
 
-主要字段：configured、desiredEnabled、connected、state、serverBaseUrl、pendingEventCount、pendingCommandCount、lastReceivedCommandId、lastUploadedSequence、latestLocalEventSequence、activeExecutionId、activeDeploymentId、lastSuccessAt、lastError、nextRetrySec。
+主要字段：configured、desiredEnabled、connected、state、heartbeatInFlight、consecutiveFailures、serverBaseUrl、pendingEventCount、pendingCommandCount、lastReceivedCommandId、lastUploadedSequence、latestLocalEventSequence、activeExecutionId、activeDeploymentId、lastSuccessAt、lastError、nextHeartbeatSec、nextRetrySec。
+
+`CONNECTED` 时下一轮 heartbeat 会保持连接状态，仅 `heartbeatInFlight=true`；`nextHeartbeatSec` 是正常心跳间隔。只有网络/HTTP 通信失败才进入 `BACKOFF`，此时 `nextRetrySec` 是退避重试时间。UI 主卡以 `connected=true` 为优先级，不把短暂 raw `CONNECTING` 显示为断线；raw state 保留在诊断区。
 
 Topic 使用可靠、Transient Local QoS，UI 晚加入也能获得最近状态。
 
@@ -130,6 +132,7 @@ ros2 service call /mobile_bridge/set_cloud_enabled std_srvs/srv/SetBool '{data: 
 - 云平台 Switch 调用 `/mobile_bridge/set_cloud_enabled`；关闭不会改变
   `localAppStatus.enabled`，手机仍可访问本地 API/WS。
 - 两个 Switch 都不会调用 systemd、Shell 或核心进程启停命令。
+- Service 成功只表示请求被接受；Switch 保持用户目标，直到状态 Topic 确认，5 秒无确认会提示而不伪造成功。
 
 云平台卡显示：
 

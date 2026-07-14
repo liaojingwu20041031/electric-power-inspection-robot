@@ -73,6 +73,7 @@ class PlatformCloudClient:
             "connected": False,
             "state": "UNCONFIGURED" if not self.configured else ("CONNECTING" if self.desired_enabled else "DISABLED"),
             "lastAttemptAt": "", "lastSuccessAt": "", "lastError": config_error, "nextRetrySec": 0.0,
+            "nextHeartbeatSec": 0.0, "heartbeatInFlight": False, "consecutiveFailures": 0,
             "lastServerTime": "",
         }
 
@@ -94,7 +95,7 @@ class PlatformCloudClient:
             self._status.update({
                 "connected": False,
                 "state": "UNCONFIGURED" if not self.configured else ("CONNECTING" if enabled else "DISABLED"),
-                "nextRetrySec": 0.0,
+                "nextRetrySec": 0.0, "nextHeartbeatSec": 0.0, "heartbeatInFlight": False,
             })
         self._wake.set()
         return self.status()
@@ -286,6 +287,8 @@ class PlatformCloudClient:
             with self._lock:
                 enabled = self.desired_enabled
             if not enabled:
+                with self._lock:
+                    self._status.update({"connected": False, "state": "UNCONFIGURED" if not self.configured else "DISABLED", "heartbeatInFlight": False, "nextHeartbeatSec": 0.0, "nextRetrySec": 0.0})
                 self._wake.wait()
                 self._wake.clear()
                 continue
@@ -299,29 +302,30 @@ class PlatformCloudClient:
                 if not self.desired_enabled:
                     continue
             with self._lock:
-                self._status.update({"state": "CONNECTING", "lastAttemptAt": _now(), "nextRetrySec": 0.0})
+                # Keep a proven connection visually stable while the next heartbeat is sent.
+                self._status.update({"state": "CONNECTING" if not self._status["connected"] else "CONNECTED", "lastAttemptAt": _now(), "nextRetrySec": 0.0, "heartbeatInFlight": True})
             try:
                 delay = self.run_once()
                 failure = 0
                 with self._lock:
-                    self._status.update({"connected": True, "state": "CONNECTED", "lastSuccessAt": _now(), "lastError": "", "nextRetrySec": delay})
+                    self._status.update({"connected": True, "state": "CONNECTED", "heartbeatInFlight": False, "lastSuccessAt": _now(), "lastError": "", "nextRetrySec": 0.0, "nextHeartbeatSec": delay, "consecutiveFailures": 0})
             except CloudRequestError as exc:
                 base = min(self.max_backoff, BACKOFF_SECONDS[min(failure, len(BACKOFF_SECONDS) - 1)])
                 delay = exc.retry_after if exc.retry_after is not None else base * random.uniform(1.0, 1.2)
                 failure += 1
                 with self._lock:
-                    self._status.update({"connected": False, "state": "BACKOFF", "lastError": str(exc), "nextRetrySec": delay})
+                    self._status.update({"connected": False, "state": "BACKOFF", "heartbeatInFlight": False, "lastError": str(exc), "nextRetrySec": delay, "nextHeartbeatSec": 0.0, "consecutiveFailures": failure})
                 LOG.warning("cloud heartbeat failed: %s", exc)
             except (PlatformStoreError, ValueError) as exc:
                 delay = min(self.max_backoff, BACKOFF_SECONDS[min(failure, len(BACKOFF_SECONDS) - 1)])
                 failure += 1
                 with self._lock:
-                    self._status.update({"connected": True, "state": "CONNECTED", "lastError": str(exc), "nextRetrySec": delay})
+                    self._status.update({"connected": True, "state": "CONNECTED", "heartbeatInFlight": False, "lastError": str(exc), "nextRetrySec": 0.0, "nextHeartbeatSec": delay, "consecutiveFailures": failure})
                 LOG.warning("cloud command handling failed: %s", exc)
             except Exception as exc:
                 delay = min(self.max_backoff, BACKOFF_SECONDS[min(failure, len(BACKOFF_SECONDS) - 1)])
                 failure += 1
                 message = f"local cloud client error: {type(exc).__name__}"
                 with self._lock:
-                    self._status.update({"connected": False, "state": "BACKOFF", "lastError": message, "nextRetrySec": delay})
+                    self._status.update({"connected": False, "state": "BACKOFF", "heartbeatInFlight": False, "lastError": message, "nextRetrySec": delay, "nextHeartbeatSec": 0.0, "consecutiveFailures": failure})
                 LOG.warning("%s", message)

@@ -234,6 +234,33 @@ def test_cloud_status_and_toggle_use_dedicated_service():
     assert backend.bridge.cloud_enabled_requests == [False]
 
 
+def test_cloud_display_stays_connected_while_heartbeat_is_in_flight():
+    backend = make_backend(lambda: 100.0)
+    backend.update_cloud_status({
+        'configured': True, 'desiredEnabled': True, 'connected': True,
+        'state': 'CONNECTING', 'heartbeatInFlight': True,
+    })
+
+    assert backend.cloudDisplayState == 'CONNECTED'
+    assert backend.cloudDisplayStateText == '云平台已连接'
+    assert backend.cloudHeartbeatInFlight is True
+
+
+def test_connection_control_waits_for_topic_confirmation_and_times_out():
+    now = [100.0]
+    backend = make_backend(lambda: now[0])
+    backend.update_cloud_status({'configured': True, 'desiredEnabled': True, 'state': 'CONNECTED'})
+    backend.setCloudEnabled(False)
+    backend.update_cloud_control_result(False, True, 'accepted')
+    assert backend.cloudControlPending is True
+    assert backend.cloudRequestedEnabled is False
+
+    now[0] = 105.1
+    backend.checkSafetyTimeout()
+    assert backend.cloudControlPending is False
+    assert '未收到状态确认' in backend.cloudControlMessage
+
+
 def test_local_app_and_cloud_controls_have_independent_state_and_services():
     backend = make_backend(lambda: 100.0)
     local_status = {'enabled': True, 'state': 'ENABLED', 'httpAvailable': True}
