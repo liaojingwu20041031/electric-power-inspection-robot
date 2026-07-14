@@ -49,6 +49,60 @@ class FakePlatformStore:
         self.bridge_settings[key] = str(value)
 
 
+class FakeNetworkStatusProvider:
+    def snapshot(self):
+        return {
+            'interfaces': [
+                {
+                    'name': 'wlan0',
+                    'type': 'wifi',
+                    'label': 'Wi-Fi 网络',
+                    'address': '192.168.137.100',
+                    'prefixLength': 24,
+                    'gateway': '192.168.137.1',
+                    'defaultRoute': True,
+                    'metric': 600,
+                    'up': True,
+                },
+                {
+                    'name': 'eth0',
+                    'type': 'ethernet',
+                    'label': '5G 有线网络',
+                    'address': '192.168.8.20',
+                    'prefixLength': 24,
+                    'gateway': '192.168.8.1',
+                    'defaultRoute': True,
+                    'metric': 100,
+                    'up': True,
+                },
+            ],
+            'defaultRoutes': [],
+            'warnings': [],
+        }
+
+    def app_endpoints(self, _host, port):
+        return [
+            {
+                'interface': 'wlan0',
+                'type': 'wifi',
+                'label': 'Wi-Fi 网络',
+                'address': '192.168.137.100',
+                'port': port,
+                'url': f'http://192.168.137.100:{port}',
+                'available': True,
+            },
+            {
+                'interface': 'eth0',
+                'type': 'ethernet',
+                'label': '5G 有线网络',
+                'address': '192.168.8.20',
+                'port': port,
+                'url': f'http://192.168.8.20:{port}',
+                'available': True,
+            },
+        ]
+
+
 class FakeTimer:
     def __init__(self, interval, callback) -> None:
         self.interval = interval
@@ -103,6 +157,9 @@ def make_bridge(
     bridge._patrol_status = {}
     bridge._last_command_result_key = ""
     bridge._status_cache = {}
+    bridge.host = '0.0.0.0'
+    bridge.port = 8000
+    bridge.network_status = FakeNetworkStatusProvider()
     bridge._last_stop_motion_time = 0.0
     bridge._last_stop_text_time = 0.0
     bridge._node_names = node_names
@@ -346,6 +403,20 @@ def test_robot_status_includes_system_mode():
     assert "timestamp" in status
 
 
+def test_robot_status_includes_optional_network_snapshot():
+    bridge = make_bridge()
+
+    network = bridge.robot_status()['network']
+
+    assert [item['interface'] for item in network['appEndpoints']] == [
+        'wlan0',
+        'eth0',
+    ]
+    assert network['preferredAppEndpoint']['interface'] == 'wlan0'
+    assert len(network['interfaces']) == 2
+    assert network['warnings'] == []
+
+
 def test_debug_status_includes_expected_node_keys():
     bridge = make_bridge()
     status = bridge.debug_status()
@@ -514,6 +585,10 @@ def test_local_app_override_wins_and_status_has_ui_contract():
         'activeStatusClients': 2,
         'activeMapClients': 1,
         'managedExternally': True,
+        'appEndpoints': bridge.network_status.app_endpoints('0.0.0.0', 8000),
+        'preferredAppEndpoint': bridge.network_status.app_endpoints('0.0.0.0', 8000)[0],
+        'networkInterfaces': bridge.network_status.snapshot()['interfaces'],
+        'networkWarnings': [],
         'lastChangedAt': status['lastChangedAt'],
         'lastError': '',
     }

@@ -14,6 +14,31 @@ ScrollView {
     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
     ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
+    function appEndpointRows() {
+        var endpoints = backend.localAppStatus.appEndpoints || []
+        var rows = []
+        var count = Math.min(2, endpoints.length)
+        for (var index = 0; index < count; index++) rows.push(endpoints[index])
+        if (rows.length === 0) {
+            var fallback = backend.localAppStatus.appUrl || backend.appUrl || ""
+            if (fallback) rows.push({
+                "interface": "",
+                "label": "APP 地址",
+                "url": fallback,
+                "available": !!backend.localAppStatus.httpAvailable
+            })
+        }
+        return rows
+    }
+
+    function alternateCloudRoute() {
+        var routes = backend.cloudStatus.alternateCloudRoutes || []
+        for (var index = 0; index < routes.length; index++) {
+            if (routes[index].type === "wifi" || routes[index].type === "ethernet") return routes[index]
+        }
+        return ({})
+    }
+
     function localColor() {
         if (!backend.localAppStatusReceived) return Theme.info
         var state = String(backend.localAppStatus.state || "UNAVAILABLE")
@@ -92,12 +117,47 @@ ScrollView {
                     statusColor: root.localColor()
                     softColor: root.localSoftColor()
 
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label { text: "可用访问地址"; color: Theme.muted }
+                        Repeater {
+                            model: root.appEndpointRows()
+                            delegate: ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 3
+                                property var endpoint: modelData
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: endpoint.label || endpoint.interface || "APP 地址"
+                                        color: Theme.text
+                                        font.bold: true
+                                    }
+                                    Label {
+                                        visible: endpoint.available === false
+                                        text: "当前不可用"
+                                        color: Theme.warning
+                                    }
+                                }
+                                TextField {
+                                    Layout.fillWidth: true
+                                    text: endpoint.url || "-"
+                                    readOnly: true
+                                    selectByMouse: true
+                                    color: Theme.primary
+                                }
+                            }
+                        }
+                    }
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: "APP 地址"; color: Theme.muted }
+                        Label { text: "首选地址"; color: Theme.muted }
                         Label {
                             Layout.fillWidth: true
-                            text: backend.localAppStatus.appUrl || backend.appUrl || "-"
+                            text: (backend.localAppStatus.preferredAppEndpoint || {}).url
+                                  || backend.localAppStatus.appUrl || backend.appUrl || "-"
                             color: Theme.primary
                             horizontalAlignment: Text.AlignRight
                             elide: Text.ElideMiddle
@@ -183,6 +243,60 @@ ScrollView {
                             color: Theme.text
                             horizontalAlignment: Text.AlignRight
                             elide: Text.ElideRight
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        property var cloudEgress: backend.cloudStatus.cloudEgress || ({})
+                        property var alternateRoute: root.alternateCloudRoute()
+                        Label {
+                            Layout.fillWidth: true
+                            text: "当前云端出口"
+                            color: Theme.muted
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: cloudEgress.interface
+                                  ? (cloudEgress.label || "网络") + " · " + cloudEgress.interface
+                                  : "当前未获取到公网路由"
+                            color: cloudEgress.interface ? Theme.text : Theme.warning
+                            font.bold: true
+                            wrapMode: Text.Wrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: !!cloudEgress.interface
+                            text: "云平台当前通过 " + (cloudEgress.label || cloudEgress.interface) + "连接"
+                            color: Theme.muted
+                            wrapMode: Text.Wrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: "备用网络"
+                            color: Theme.muted
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: alternateRoute.interface
+                                  ? (alternateRoute.label || "网络") + " · " + alternateRoute.interface
+                                  : "当前只检测到一条公网路由"
+                            color: alternateRoute.interface ? Theme.success : Theme.warning
+                            wrapMode: Text.Wrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: !!alternateRoute.interface
+                            text: "备用 " + (alternateRoute.label || alternateRoute.interface) + "可用"
+                            color: Theme.success
+                            wrapMode: Text.Wrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: backend.cloudStatus.networkMode === "system-routing"
+                            text: "出口由 Linux 系统路由自动选择"
+                            color: Theme.muted
+                            wrapMode: Text.Wrap
                         }
                     }
                     RowLayout {

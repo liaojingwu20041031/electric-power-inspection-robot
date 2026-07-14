@@ -61,6 +61,8 @@ class PlatformCloudClient:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self.network_status = getattr(bridge, 'network_status', None)
+        self._last_successful_egress: Dict[str, Any] = {}
         config_error = ""
         try:
             self._context = ssl.create_default_context(cafile=os.environ.get("YLHB_CLOUD_CA_FILE") or None)
@@ -106,6 +108,20 @@ class PlatformCloudClient:
         with self._lock:
             status = dict(self._status)
             desired = self.desired_enabled
+            last_successful_egress = dict(self._last_successful_egress)
+        route = self._route_diagnostics()
+        cloud_egress = {
+            key: route.get(key)
+            for key in (
+                'interface',
+                'type',
+                'label',
+                'sourceAddress',
+                'gateway',
+                'metric',
+            )
+            if route.get(key) not in (None, '')
+        }
         return {
             "configured": self.configured,
             "desiredEnabled": desired,
@@ -118,7 +134,49 @@ class PlatformCloudClient:
             "latestLocalEventSequence": self.store.latest_event_sequence(),
             "activeExecutionId": context.get("active_execution_id") or "",
             "activeDeploymentId": context.get("active_deployment_id") or "",
+            "networkMode": "system-routing",
+            "cloudEgress": cloud_egress,
+            "alternateCloudRoutes": list(
+                route.get("alternateCloudRoutes") or []
+            ),
+            "failoverAvailable": bool(route.get("failoverAvailable")),
+            "lastSuccessfulEgress": last_successful_egress,
         }
+
+    def _cloud_hostname(self) -> str:
+        try:
+            return urllib.parse.urlsplit(self.base_url).hostname or ''
+        except ValueError:
+            return ''
+
+    def _route_diagnostics(self) -> Dict[str, Any]:
+        hostname = self._cloud_hostname()
+        if not hostname or self.network_status is None:
+            return {}
+        try:
+            route = self.network_status.route_to_host(hostname)
+            return dict(route) if isinstance(route, dict) else {}
+        except Exception:
+            return {}
+
+    def _record_successful_egress(self) -> None:
+        route = self._route_diagnostics()
+        if not route:
+            return
+        successful = {
+            key: route.get(key)
+            for key in (
+                'interface',
+                'type',
+                'label',
+                'sourceAddress',
+                'gateway',
+                'metric',
+            )
+            if route.get(key) not in (None, '')
+        }
+        with self._lock:
+            self._last_successful_egress = successful
 
     def _request(self, method: str, path: str, body: Dict[str, Any] | None = None, binary: bool = False):
         data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -129,7 +187,9 @@ class PlatformCloudClient:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout, context=self._context) as response:
                 content = response.read()
-                return content if binary else json.loads(content.decode("utf-8"))
+                result = content if binary else json.loads(content.decode("utf-8"))
+                self._record_successful_egress()
+                return result
         except urllib.error.HTTPError as exc:
             retry_after = exc.headers.get("Retry-After", "")
             try:
