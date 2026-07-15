@@ -50,6 +50,18 @@ ros2 launch ylhb_llm llm.launch.py \
 保留 `enable_display_ui`、`enable_system_supervisor`、`fullscreen`、`display`
 和 `force_local_display` launch 参数。
 
+屏幕外壳遮挡不对称时可独立调整四边安全区域（范围 0～120 像素）：
+
+```bash
+./scripts/run_on_jetson.sh inspection \
+  ui_safe_margin_left:=36 \
+  ui_safe_margin_right:=36 \
+  ui_safe_margin_top:=28 \
+  ui_safe_margin_bottom:=36
+```
+
+背景仍铺满屏幕，侧栏、顶部状态栏、页面、滚动条、关闭和急停按钮都限制在安全区域内。
+
 ## 依赖
 
 ```bash
@@ -123,6 +135,12 @@ scripts/run_on_jetson.sh inspection fullscreen:=true
 
 日志写入 `runs/ui_autostart/inspection_ui_YYYYmmdd_HHMMSS.log`。DISPLAY 异常时先看日志里的 `DISPLAY`、`XAUTHORITY`，再手动执行 wrapper 复现。
 
+用户确认“关闭操控台”后，UI 先发布零速度和一次 `emergency_stop`，再把本轮 session id
+写入 `${XDG_RUNTIME_DIR}/ylhb/inspection-stop-<wrapper-pid>`。完整 inspection 栈退出后，
+wrapper 仅在 marker 与本轮 session 匹配时认定为主动关闭并停止重启。Qt/X11 崩溃或节点异常
+没有匹配 marker，仍按原来的 60 秒最多 3 次策略恢复完整栈。systemd 管理的 Mobile Bridge
+不随 UI 主动关闭而停止。
+
 ## 连接与服务页
 
 生产模式必须让 systemd 独占 mobile bridge，并传：
@@ -160,6 +178,29 @@ pgrep -af 'ylhb_mobile_bridge mobile_bridge_server'
 ## 显示会话与自动恢复
 
 UI 是完整 inspection 栈的生命周期锚点：UI 退出会有意关闭 Agent、语音和 Supervisor，避免后台残留；禁止给 UI 单独 respawn。手工 `./scripts/run_on_jetson.sh inspection` 不自动重启。桌面自启动 wrapper 则在旧节点全部退出、图形会话恢复并等待 4 秒后，重新启动**完整** inspection 栈；60 秒内最多三次，超过即停止。
+
+## 导航动态安全只读诊断
+
+Supervisor 的 `navigationSafety` 字段汇总 `/scan` 新鲜度、`map→laser_link`、local/global
+obstacle layer、Collision Monitor lifecycle 和 `/cmd_vel_safe` 底盘订阅数。巡逻启动会拒绝
+过期 `/scan`、未 active 的 Collision Monitor、缺失 global/local `/scan` 订阅或没有安全速度
+订阅者；手动建图不要求 global costmap 运行。
+
+```bash
+ros2 topic hz /scan
+ros2 topic info /scan -v
+ros2 topic info /cmd_vel -v
+ros2 topic info /cmd_vel_safe -v
+ros2 run tf2_ros tf2_echo map laser_link
+ros2 topic hz /plan
+ros2 lifecycle get /collision_monitor
+ros2 topic echo /inspection_ai/system_status --once
+```
+
+本机 ROS 2 Humble 1.1.20 不发布 `/collision_monitor_state`，因此以
+`ros2 lifecycle get /collision_monitor` 和 Supervisor `navigationSafety.collisionMonitorReady`
+为准。检查 `/scan` 订阅者时应同时看到 Collision Monitor、controller/local costmap 和
+planner/global costmap；`/cmd_vel` 由 Collision Monitor 订阅，`/cmd_vel_safe` 只由实际底盘后端订阅。
 
 UI 只接受本机 `:N` X11 socket，不把 `localhost:10.0` SSH 转发当控制台。X11/Xwayland 运行中断开时 Qt 进程退出，整栈关闭；解锁/会话恢复后由自启动 wrapper 恢复。`xset s off; xset s noblank; xset -dpms` 只能禁用 X11 屏保/DPMS，不能替代 GNOME 锁屏或系统挂起。
 

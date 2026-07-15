@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -487,7 +488,11 @@ public:
     client_->set_clock(get_clock());
 
     cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
-      "cmd_vel", 10, std::bind(&Zlac8015DCanopenController::cmd_vel_callback, this, std::placeholders::_1));
+      cmd_vel_topic_, 10,
+      std::bind(&Zlac8015DCanopenController::cmd_vel_callback, this, std::placeholders::_1));
+    scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
+      scan_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&Zlac8015DCanopenController::scan_callback, this, std::placeholders::_1));
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("odom", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("zlac8015d/status", 10);
     fault_pub_ = create_publisher<std_msgs::msg::String>("zlac8015d/fault", 10);
@@ -526,6 +531,10 @@ private:
   void declare_parameters()
   {
     declare_parameter<std::string>("can_interface", "can0");
+    declare_parameter<std::string>("cmd_vel_topic", "cmd_vel");
+    declare_parameter<std::string>("scan_topic", "/scan");
+    declare_parameter<bool>("require_fresh_scan", false);
+    declare_parameter<double>("scan_timeout_sec", 0.3);
     declare_parameter<int>("node_id", 1);
     declare_parameter<double>("wheel_radius", 0.076);
     declare_parameter<double>("wheel_diameter", 0.0);
@@ -562,6 +571,10 @@ private:
   void load_parameters()
   {
     get_parameter("can_interface", can_interface_);
+    get_parameter("cmd_vel_topic", cmd_vel_topic_);
+    get_parameter("scan_topic", scan_topic_);
+    get_parameter("require_fresh_scan", require_fresh_scan_);
+    get_parameter("scan_timeout_sec", scan_timeout_sec_);
     get_parameter("node_id", node_id_);
     get_parameter("wheel_radius", wheel_radius_);
     if (!has_parameter_override("wheel_radius")) {
@@ -670,10 +683,34 @@ private:
     if (!online_) {
       return;
     }
+    const bool nonzero = std::abs(msg->linear.x) > 1e-6 || std::abs(msg->angular.z) > 1e-6;
+    if (require_fresh_scan_ && nonzero && !scan_is_fresh()) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting non-zero %s: %s is stale or missing", cmd_vel_topic_.c_str(),
+        scan_topic_.c_str());
+      client_->write_target_velocity(0.0, 0.0);
+      return;
+    }
     const auto logical_rpm =
       kinematics_->twist_to_wheel_rpm(msg->linear.x, msg->angular.z);
     const auto channels = channel_mapping_->logical_to_channels(logical_rpm);
     client_->write_target_velocity(channels.low, channels.high);
+  }
+
+  void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
+  {
+    last_scan_received_sec_ = now().seconds();
+    last_scan_stamp_sec_ = rclcpp::Time(msg->header.stamp).seconds();
+  }
+
+  bool scan_is_fresh() const
+  {
+    const double now_sec = now().seconds();
+    const double stamp_age = now_sec - last_scan_stamp_sec_;
+    return last_scan_received_sec_ > 0.0 && last_scan_stamp_sec_ > 0.0 &&
+           now_sec - last_scan_received_sec_ <= scan_timeout_sec_ &&
+           stamp_age >= -0.1 && stamp_age <= scan_timeout_sec_;
   }
 
   void poll_can()
@@ -737,7 +774,9 @@ private:
     const double age = (now() - last_cmd_time_).seconds();
     if (age > cmd_timeout_sec_) {
       if (!timed_out_) {
-        RCLCPP_WARN(get_logger(), "/cmd_vel timeout %.3fs; sending zero target velocity", age);
+        RCLCPP_WARN(
+          get_logger(), "%s timeout %.3fs; sending zero target velocity",
+          cmd_vel_topic_.c_str(), age);
         timed_out_ = true;
       }
       client_->write_target_velocity(0.0, 0.0);
@@ -824,6 +863,10 @@ private:
   }
 
   std::string can_interface_;
+  std::string cmd_vel_topic_ = "cmd_vel";
+  std::string scan_topic_ = "/scan";
+  bool require_fresh_scan_ = false;
+  double scan_timeout_sec_ = 0.3;
   int node_id_ = 1;
   double wheel_radius_ = 0.076;
   double wheel_track_ = 0.25;
@@ -844,6 +887,8 @@ private:
   double can_poll_rate_hz_ = 200.0;
   double status_rate_hz_ = 1.0;
   double cmd_timeout_sec_ = 0.5;
+  double last_scan_received_sec_ = 0.0;
+  double last_scan_stamp_sec_ = 0.0;
   int sdo_timeout_ms_ = 200;
   double target_velocity_unit_per_rpm_ = 1.0;
   double actual_velocity_unit_per_rpm_ = 10.0;
@@ -868,6 +913,7 @@ private:
   std::unique_ptr<OdometryIntegrator> odom_integrator_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr fault_pub_;

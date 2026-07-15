@@ -84,6 +84,10 @@ class InspectionDisplayRosBridge(Node):
             'fullscreen': True,
             'display': ':0',
             'force_local_display': True,
+            'ui_safe_margin_left': 28,
+            'ui_safe_margin_right': 28,
+            'ui_safe_margin_top': 24,
+            'ui_safe_margin_bottom': 28,
         }
         for name, value in parameters.items():
             self.declare_parameter(name, value)

@@ -471,6 +471,7 @@
 
         <section class="section">
           <h2>禁行区</h2>
+          <p class="status">绘制要求：每个禁行区必须是至少 3 个顶点组成的封闭 polygon；两点线段不能作为禁行区导出。不需要的禁行区请直接删除。</p>
           <div class="grid-2" style="margin-bottom: 8px;">
             <button id="addZoneBtn" type="button">新增禁区</button>
             <button id="deleteZoneBtn" class="danger" type="button">删除禁区</button>
@@ -973,7 +974,10 @@
       if (!state.map.yamlName || !state.map.pgmName || state.map.image !== state.map.pgmName || !/^[0-9a-f]{64}$/.test(state.map.imageSha256 || "")) {
         return ["当前地图身份不完整，请重新加载 YAML 和 PGM 后再导出。"];
       }
-      return collectRoutePointProblems();
+      const zoneProblems = state.zones
+        .filter((zone) => zone.polygon.length < 3)
+        .map((zone) => `${zone.name || zone.id} 至少需要 3 个顶点，当前只有 ${zone.polygon.length} 个；两点线段不能作为禁行区导出。`);
+      return [...zoneProblems, ...collectRoutePointProblems()];
     }
 
     function routeSafety() {

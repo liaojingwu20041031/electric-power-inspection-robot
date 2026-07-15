@@ -10,6 +10,12 @@ WORKSPACE_DIR = PACKAGE_DIR.parents[1]
 NAV2_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params.yaml"
 NAV2_KEEPOUT_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params_keepout.yaml"
 NAV2_BT_PATH = PACKAGE_DIR / "config" / "nav2_no_recovery.xml"
+COLLISION_MONITOR_CONFIG_PATH = PACKAGE_DIR / "config" / "collision_monitor_params.yaml"
+BRINGUP_LAUNCH_PATH = PACKAGE_DIR / "launch" / "bringup.launch.py"
+ZLAC_CONTROLLER_PATH = PACKAGE_DIR / "src" / "zlac8015d_canopen_controller.cpp"
+STM32_CONTROLLER_PATH = PACKAGE_DIR / "src" / "base_controller.cpp"
+ZLAC_CONFIG_PATH = PACKAGE_DIR / "config" / "zlac8015d.yaml"
+LLM_CONFIG_PATH = WORKSPACE_DIR / "src" / "ylhb_llm" / "config" / "llm.yaml"
 CMAKE_PATH = PACKAGE_DIR / "CMakeLists.txt"
 MAP_YAML_PATH = WORKSPACE_DIR / "maps" / "my_map.yaml"
 MAP_PGM_PATH = WORKSPACE_DIR / "maps" / "my_map.pgm"
@@ -139,17 +145,32 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     assert global_map["inflation_layer"]["cost_scaling_factor"] > 0
 
 
-def test_global_costmap_is_static_and_does_not_accumulate_lidar_ghosts():
+def test_global_costmaps_use_fresh_lidar_without_accumulating_ghosts():
     normal_global = load_nav2_params()["global_costmap"]["global_costmap"]["ros__parameters"]
     keepout_global = load_keepout_nav2_params()["global_costmap"]["global_costmap"]["ros__parameters"]
 
     assert normal_global["always_send_full_costmap"] is True
     assert keepout_global["always_send_full_costmap"] is True
-    assert normal_global["plugins"] == ["static_layer", "inflation_layer"]
-    assert keepout_global["plugins"] == ["static_layer", "keepout_filter", "inflation_layer"]
-    assert "obstacle_layer" not in normal_global
-    assert "obstacle_layer" not in keepout_global
+    assert normal_global["plugins"] == ["static_layer", "obstacle_layer", "inflation_layer"]
+    assert keepout_global["plugins"] == ["static_layer", "obstacle_layer", "keepout_filter", "inflation_layer"]
+    assert normal_global["plugins"][-1] == "inflation_layer"
+    assert keepout_global["plugins"][-1] == "inflation_layer"
+    assert normal_global["transform_tolerance"] == 0.3
+    assert keepout_global["transform_tolerance"] == 0.3
+    assert normal_global["obstacle_layer"] == keepout_global["obstacle_layer"]
     assert normal_global["inflation_layer"] == keepout_global["inflation_layer"]
+
+    obstacle = normal_global["obstacle_layer"]
+    scan = obstacle["scan"]
+    assert obstacle["enabled"] is True
+    assert obstacle["footprint_clearing_enabled"] is True
+    assert obstacle["combination_method"] == 1
+    assert obstacle["tf_filter_tolerance"] == 0.05
+    assert scan["topic"] == "/scan"
+    assert scan["clearing"] is True
+    assert scan["marking"] is True
+    assert scan["observation_persistence"] == 0.0
+    assert scan["raytrace_max_range"] > scan["obstacle_max_range"]
 
 
 def test_local_costmap_uses_lidar_marking_and_clearing():
@@ -186,6 +207,66 @@ def test_rotation_shim_handles_large_initial_heading_changes():
     assert follow_path["simulate_ahead_time"] > 0
     assert follow_path["rotate_to_goal_heading"] is False
     assert follow_path["closed_loop"] is True
+
+
+def test_behavior_tree_keeps_two_hz_global_replanning():
+    behavior_tree = load_nav2_behavior_tree()
+    pipeline = behavior_tree.find(".//PipelineSequence")
+    rate = behavior_tree.find(".//RateController")
+
+    assert pipeline is not None
+    assert rate is not None
+    assert rate.attrib["hz"] == "2.0"
+    assert rate.find(".//ComputePathToPose") is not None
+    assert pipeline.find(".//FollowPath") is not None
+
+
+def test_collision_monitor_routes_all_velocity_through_safe_chassis_topic():
+    collision = yaml.safe_load(
+        COLLISION_MONITOR_CONFIG_PATH.read_text(encoding="utf-8")
+    )["collision_monitor"]["ros__parameters"]
+    bringup = BRINGUP_LAUNCH_PATH.read_text(encoding="utf-8")
+    zlac = ZLAC_CONTROLLER_PATH.read_text(encoding="utf-8")
+    stm32 = STM32_CONTROLLER_PATH.read_text(encoding="utf-8")
+    zlac_config = yaml.safe_load(ZLAC_CONFIG_PATH.read_text(encoding="utf-8"))[
+        "zlac8015d_canopen_controller"
+    ]["ros__parameters"]
+
+    assert collision["cmd_vel_in_topic"] == "/cmd_vel"
+    assert collision["cmd_vel_out_topic"] == "/cmd_vel_safe"
+    assert collision["cmd_vel_in_topic"] != collision["cmd_vel_out_topic"]
+    assert collision["observation_sources"] == ["scan"]
+    assert collision["scan"]["topic"] == "/scan"
+    assert collision["source_timeout"] <= 0.5
+    assert collision["polygons"] == ["stop_zone", "slowdown_zone"]
+    assert collision["stop_zone"]["action_type"] == "stop"
+    assert collision["slowdown_zone"]["action_type"] == "slowdown"
+    assert 0 < collision["slowdown_zone"]["slowdown_ratio"] < 1
+
+    assert "nav2_collision_monitor" in bringup
+    assert "collision_monitor" in bringup
+    assert "cmd_vel_topic" in zlac
+    assert "cmd_vel_topic" in stm32
+    assert zlac_config["cmd_vel_topic"] == "/cmd_vel_safe"
+    assert zlac_config["scan_topic"] == "/scan"
+    assert zlac_config["scan_timeout_sec"] <= 0.5
+    assert zlac_config["cmd_timeout_sec"] == 0.5
+    assert 'declare_parameter<std::string>("cmd_vel_topic", "cmd_vel")' in zlac
+    assert 'declare_parameter<std::string>("cmd_vel_topic", "cmd_vel")' in stm32
+    assert 'create_subscription<geometry_msgs::msg::Twist>(\n      cmd_vel_topic_' in zlac
+    assert 'create_subscription<geometry_msgs::msg::Twist>(\n            cmd_vel_topic_' in stm32
+    assert '"cmd_vel_safe"' not in zlac
+    assert '"cmd_vel_safe"' not in stm32
+    assert "last_scan_stamp_sec_" in zlac
+    assert "last_scan_stamp_sec_" in stm32
+    llm = yaml.safe_load(LLM_CONFIG_PATH.read_text(encoding="utf-8"))
+    for node_name in (
+        "basic_motion_command_node",
+        "base_motion_skill_node",
+        "inspection_display_ui_node",
+        "system_supervisor_node",
+    ):
+        assert llm[node_name]["ros__parameters"]["cmd_vel_topic"] == "/cmd_vel"
 
 
 def test_dwb_low_speed_limits_match_velocity_smoother():

@@ -92,6 +92,7 @@ def main(args: Optional[List[str]] = None) -> None:
     signals = UiSignals()
     bridge = InspectionDisplayRosBridge(signals)
     backend = UiBackend(bridge, UiState())
+    backend.shutdownRequested.connect(app.quit)
     signals.systemStatus.connect(backend.update_system_status)
     signals.localAppStatus.connect(backend.update_local_app_status)
     signals.cloudStatus.connect(backend.update_cloud_status)

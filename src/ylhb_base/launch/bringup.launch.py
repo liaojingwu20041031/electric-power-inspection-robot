@@ -285,6 +285,9 @@ def generate_launch_description():
     ekf_config_path = os.path.join(pkg_dir, 'config', 'ekf.yaml')
     base_kinematics_path = os.path.join(pkg_dir, 'config', 'base_kinematics.yaml')
     zlac_config_path = os.path.join(pkg_dir, 'config', 'zlac8015d.yaml')
+    collision_monitor_config_path = os.path.join(
+        pkg_dir, 'config', 'collision_monitor_params.yaml'
+    )
 
     # 引入机器人模型的 urdf.xacro 文件定位
     urdf_file = os.path.join(pkg_dir, 'urdf', 'ylhb.urdf.xacro')
@@ -378,7 +381,14 @@ def generate_launch_description():
         condition=use_stm32,
         parameters=[
             {'serial_port': base_port},
-            {'publish_tf': False}  # 重要：防止 TF 冲突
+            {
+                'publish_tf': False,
+                'cmd_vel_topic': '/cmd_vel_safe',
+                'scan_topic': '/scan',
+                'require_fresh_scan': True,
+                'scan_timeout_sec': 0.3,
+                'cmd_timeout_sec': 0.5,
+            }
         ]
     )
 
@@ -400,6 +410,25 @@ def generate_launch_description():
         name='ekf_filter_node',
         output='screen',
         parameters=[ekf_config_path]
+    )
+
+    collision_monitor_node = Node(
+        package='nav2_collision_monitor',
+        executable='collision_monitor',
+        name='collision_monitor',
+        output='screen',
+        parameters=[collision_monitor_config_path],
+    )
+    collision_monitor_lifecycle_manager = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_collision_monitor',
+        output='screen',
+        parameters=[{
+            'autostart': True,
+            'node_names': ['collision_monitor'],
+            'bond_timeout': 4.0,
+        }],
     )
 
     rtk_node = Node(
@@ -435,9 +464,16 @@ def generate_launch_description():
         zlac_base_node,
         stm32_base_node,
         ekf_node,
+        collision_monitor_node,
+        collision_monitor_lifecycle_manager,
         rtk_node,
         critical_exit_handler(robot_state_publisher_node, 'robot_state_publisher'),
         critical_exit_handler(zlac_base_node, 'zlac8015d_canopen_controller'),
         critical_exit_handler(stm32_base_node, 'base_controller'),
         critical_exit_handler(ekf_node, 'ekf_filter_node'),
+        critical_exit_handler(collision_monitor_node, 'collision_monitor'),
+        critical_exit_handler(
+            collision_monitor_lifecycle_manager,
+            'lifecycle_manager_collision_monitor',
+        ),
     ])

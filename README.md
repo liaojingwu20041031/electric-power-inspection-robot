@@ -251,6 +251,12 @@ colcon test-result --verbose
 ./scripts/diagnose_pcan.sh
 ros2 topic list -t
 ros2 topic hz /scan
+ros2 topic info /scan -v
+ros2 topic info /cmd_vel -v
+ros2 topic info /cmd_vel_safe -v
+ros2 run tf2_ros tf2_echo map laser_link
+ros2 topic hz /plan
+ros2 lifecycle get /collision_monitor
 ros2 topic hz /imu/data
 ros2 topic hz /odom
 ros2 topic echo /gps/rtk_status --once

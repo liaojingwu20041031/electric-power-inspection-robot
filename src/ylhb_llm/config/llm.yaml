@@ -105,6 +105,10 @@ inspection_display_ui_node:
     fullscreen: true
     display: ":0"
     force_local_display: true
+    ui_safe_margin_left: 28
+    ui_safe_margin_right: 28
+    ui_safe_margin_top: 24
+    ui_safe_margin_bottom: 28
 
 system_supervisor_node:
   ros__parameters:

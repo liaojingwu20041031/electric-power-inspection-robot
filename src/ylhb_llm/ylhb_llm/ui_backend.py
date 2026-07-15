@@ -101,6 +101,8 @@ class UiBackend(QObject):
     agentMessagesChanged = pyqtSignal()
     agentDebugVisibleChanged = pyqtSignal()
     voiceStatusChanged = pyqtSignal()
+    shutdownRequested = pyqtSignal()
+    shutdownPendingChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -140,6 +142,11 @@ class UiBackend(QObject):
         self._last_local_app_status_received_at = 0.0
         self._last_bridge_availability_received_at = 0.0
         self._startup_loading_text = '正在准备操控台...'
+        self._shutdown_pending = False
+        self._ui_safe_margin_left = self._read_ui_margin('ui_safe_margin_left', 28)
+        self._ui_safe_margin_right = self._read_ui_margin('ui_safe_margin_right', 28)
+        self._ui_safe_margin_top = self._read_ui_margin('ui_safe_margin_top', 24)
+        self._ui_safe_margin_bottom = self._read_ui_margin('ui_safe_margin_bottom', 28)
         self.routePreviewLoaded.connect(self._apply_route_preview_result)
         self.safety_timer = QTimer(self)
         self.safety_timer.timeout.connect(self.checkSafetyTimeout)
@@ -151,6 +158,38 @@ class UiBackend(QObject):
         self.startup_timer.setSingleShot(True)
         self.startup_timer.timeout.connect(self.finishStartup)
         self.startup_timer.start(2500)
+
+    def _read_ui_margin(self, name: str, default: int) -> int:
+        try:
+            requested = int(self.bridge.get_parameter(name).value)
+        except Exception:
+            requested = default
+        bounded = min(120, max(0, requested))
+        if bounded != requested:
+            self.state.add_event(
+                f'UI 安全边距 {name}={requested} 超出 0～120，已调整为 {bounded}'
+            )
+        return bounded
+
+    @pyqtProperty(bool, notify=shutdownPendingChanged)
+    def shutdownPending(self) -> bool:
+        return self._shutdown_pending
+
+    @pyqtProperty(int, constant=True)
+    def uiSafeMarginLeft(self) -> int:
+        return self._ui_safe_margin_left
+
+    @pyqtProperty(int, constant=True)
+    def uiSafeMarginRight(self) -> int:
+        return self._ui_safe_margin_right
+
+    @pyqtProperty(int, constant=True)
+    def uiSafeMarginTop(self) -> int:
+        return self._ui_safe_margin_top
+
+    @pyqtProperty(int, constant=True)
+    def uiSafeMarginBottom(self) -> int:
+        return self._ui_safe_margin_bottom
 
     @pyqtProperty('QVariantMap', notify=systemStatusChanged)
     def systemStatus(self) -> Dict[str, Any]:
@@ -1182,6 +1221,33 @@ class UiBackend(QObject):
         if self._control_unlocked:
             self.setControlUnlocked(False)
         self.addLog('软件急停已发送')
+
+    @pyqtSlot()
+    def requestInspectionShutdown(self) -> None:
+        if self._shutdown_pending:
+            return
+        self._shutdown_pending = True
+        self.shutdownPendingChanged.emit()
+        self.bridge.publish_twist(0.0, 0.0)
+        self.bridge.publish_system_command('emergency_stop')
+        if self._control_unlocked:
+            self.setControlUnlocked(False)
+        self.addLog('正在关闭操控台')
+
+        marker = os.environ.get('YLHB_INSPECTION_STOP_MARKER', '').strip()
+        session_id = os.environ.get('YLHB_INSPECTION_SESSION_ID', '').strip()
+        if marker and session_id:
+            try:
+                directory = os.path.dirname(marker)
+                if directory:
+                    os.makedirs(directory, mode=0o700, exist_ok=True)
+                with open(marker, 'w', encoding='utf-8') as handle:
+                    handle.write(session_id + '\n')
+            except OSError as exc:
+                self.addLog(f'主动关闭标记写入失败: {exc}')
+        else:
+            self.addLog('主动关闭标记未配置，仍将安全关闭操控台')
+        QTimer.singleShot(250, self.shutdownRequested.emit)
 
     def _move(self, linear: float, angular: float, label: str) -> None:
         if not self._control_unlocked:

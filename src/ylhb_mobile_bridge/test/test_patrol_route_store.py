@@ -160,6 +160,19 @@ def test_v3_requires_complete_map_identity_and_valid_keepout_polygon():
     expect_validation_error(data, "area must not be zero")
 
 
+def test_route_map_tool_blocks_incomplete_keepout_polygons():
+    tool = (
+        Path(__file__).resolve().parents[3]
+        / "tools"
+        / "route_map_tool"
+        / "route_map_tool.html"
+    ).read_text(encoding="utf-8")
+
+    assert "zone.polygon.length < 3" in tool
+    assert "至少需要 3 个顶点" in tool
+    assert "两点线段不能作为禁行区导出" in tool
+
+
 def test_v3_map_binding_rejects_changed_pgm(tmp_path):
     map_yaml = tmp_path / "my_map.yaml"
     map_pgm = tmp_path / "my_map.pgm"

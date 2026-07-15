@@ -34,6 +34,10 @@ def generate_launch_description():
     display = LaunchConfiguration('display')
     xauthority = LaunchConfiguration('xauthority')
     force_local_display = LaunchConfiguration('force_local_display')
+    ui_safe_margin_left = LaunchConfiguration('ui_safe_margin_left')
+    ui_safe_margin_right = LaunchConfiguration('ui_safe_margin_right')
+    ui_safe_margin_top = LaunchConfiguration('ui_safe_margin_top')
+    ui_safe_margin_bottom = LaunchConfiguration('ui_safe_margin_bottom')
     mobile_bridge_managed_externally = LaunchConfiguration('mobile_bridge_managed_externally')
     auto_start_mobile_bridge = LaunchConfiguration('auto_start_mobile_bridge')
     workspace_dir_arg = LaunchConfiguration('workspace_dir')
@@ -73,7 +77,16 @@ def generate_launch_description():
         output='screen',
         condition=IfCondition(enable_display_ui),
         additional_env={'DISPLAY': display, 'XAUTHORITY': xauthority},
-        parameters=[params_file, {'initial_system_mode': initial_system_mode, 'fullscreen': ParameterValue(fullscreen, value_type=bool), 'display': display, 'force_local_display': ParameterValue(force_local_display, value_type=bool)}],
+        parameters=[params_file, {
+            'initial_system_mode': initial_system_mode,
+            'fullscreen': ParameterValue(fullscreen, value_type=bool),
+            'display': display,
+            'force_local_display': ParameterValue(force_local_display, value_type=bool),
+            'ui_safe_margin_left': ParameterValue(ui_safe_margin_left, value_type=int),
+            'ui_safe_margin_right': ParameterValue(ui_safe_margin_right, value_type=int),
+            'ui_safe_margin_top': ParameterValue(ui_safe_margin_top, value_type=int),
+            'ui_safe_margin_bottom': ParameterValue(ui_safe_margin_bottom, value_type=int),
+        }],
     )
 
     return LaunchDescription([
@@ -100,6 +113,10 @@ def generate_launch_description():
         DeclareLaunchArgument('display', default_value=':0'),
         DeclareLaunchArgument('xauthority', default_value=''),
         DeclareLaunchArgument('force_local_display', default_value='true'),
+        DeclareLaunchArgument('ui_safe_margin_left', default_value='28'),
+        DeclareLaunchArgument('ui_safe_margin_right', default_value='28'),
+        DeclareLaunchArgument('ui_safe_margin_top', default_value='24'),
+        DeclareLaunchArgument('ui_safe_margin_bottom', default_value='28'),
         DeclareLaunchArgument('mobile_bridge_managed_externally', default_value='false'),
         DeclareLaunchArgument('auto_start_mobile_bridge', default_value='true'),
         DeclareLaunchArgument('enable_llm_parse', default_value='false'),

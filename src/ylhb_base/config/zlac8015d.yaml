@@ -1,5 +1,10 @@
 zlac8015d_canopen_controller:
   ros__parameters:
+    # 生产链路只接收 Collision Monitor 审核后的速度；独立调试默认仍可用 cmd_vel 参数覆盖。
+    cmd_vel_topic: /cmd_vel_safe
+    scan_topic: /scan
+    require_fresh_scan: true
+    scan_timeout_sec: 0.3
     # SocketCAN 网卡名称。当前接 ZLAC8015D 的 CAN 口为 can1；改线或换适配器后再调整。
     can_interface: can1
     # 电机驱动器 CANopen 节点 ID，需要与驱动器参数一致。

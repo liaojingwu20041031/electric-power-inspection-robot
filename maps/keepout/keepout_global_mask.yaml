@@ -2,8 +2,8 @@ image: keepout_global_mask.pgm
 mode: raw
 resolution: 0.025
 origin:
-- -6.09
-- -13.3
+- -3.5
+- -3.15
 - 0
 negate: 0
 occupied_thresh: 0.65

@@ -24,6 +24,7 @@ ament_target_dependencies(base_controller
   rclcpp
   std_msgs
   geometry_msgs
+  sensor_msgs
   nav_msgs
   tf2
   tf2_ros
@@ -36,6 +37,7 @@ ament_target_dependencies(zlac8015d_canopen_controller
   rclcpp
   std_msgs
   geometry_msgs
+  sensor_msgs
   nav_msgs
   tf2
   tf2_ros

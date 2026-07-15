@@ -19,6 +19,7 @@ QtObject {
     readonly property color text: "#1F2937"
     readonly property color muted: "#6B7280"
     readonly property color border: "#FED7AA"
+    readonly property int minimumTouchHeight: 48
 
     function stateColor(state) {
         var value = String(state || "")

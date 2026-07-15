@@ -6,6 +6,9 @@ export WS_DIR
 LOG_DIR="${WS_DIR}/runs/ui_autostart"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/inspection_ui_$(date +%Y%m%d_%H%M%S).log"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/ylhb"
+mkdir -p "${RUNTIME_DIR}"
+chmod 700 "${RUNTIME_DIR}" 2>/dev/null || true
 STOPPED=false
 CHILD_PID=""
 trap 'STOPPED=true; [ -n "${CHILD_PID}" ] && kill -TERM "${CHILD_PID}" 2>/dev/null || true' INT TERM
@@ -17,6 +20,11 @@ while [ "${STOPPED}" = false ]; do
     echo "inspection 已运行，跳过重复启动" >>"${LOG_FILE}"
     exit 0
   fi
+  SESSION_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s-%s-%s' "$$" "$(date +%s%N)" "${RANDOM}")"
+  STOP_MARKER="${RUNTIME_DIR}/inspection-stop-$$"
+  rm -f "${STOP_MARKER}"
+  export YLHB_INSPECTION_SESSION_ID="${SESSION_ID}"
+  export YLHB_INSPECTION_STOP_MARKER="${STOP_MARKER}"
   echo "$(date -Is) starting full inspection stack DISPLAY=${DISPLAY:-}" >>"${LOG_FILE}"
   if [ "${YLHB_UI_INHIBIT_IDLE:-true}" = "true" ] && systemd-inhibit --help 2>&1 | grep -q -- '--what='; then
     systemd-inhibit --what=idle:sleep --why='YLHB inspection console' --mode=block "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true >>"${LOG_FILE}" 2>&1 &
@@ -27,6 +35,19 @@ while [ "${STOPPED}" = false ]; do
   wait "${CHILD_PID}" || true
   CHILD_PID=""
   wait_for_old_stack
+  marker_session=""
+  if [ -f "${STOP_MARKER}" ]; then
+    IFS= read -r marker_session <"${STOP_MARKER}" || true
+  fi
+  if [ -n "${marker_session}" ] && [ "${marker_session}" = "${SESSION_ID}" ]; then
+    rm -f "${STOP_MARKER}"
+    echo "$(date -Is) intentional shutdown session=${SESSION_ID}" >>"${LOG_FILE}"
+    break
+  fi
+  if [ -f "${STOP_MARKER}" ]; then
+    echo "$(date -Is) ignoring mismatched shutdown marker" >>"${LOG_FILE}"
+    rm -f "${STOP_MARKER}"
+  fi
   [ "${STOPPED}" = false ] || break
   [ "${YLHB_INSPECTION_AUTO_RESTART:-true}" = "true" ] || break
   now=$(date +%s); kept=()

@@ -1168,6 +1168,36 @@ def test_status_payload_contains_mobile_bridge_fields():
     assert payload['jetson_ip'] == '192.168.1.50'
 
 
+def test_navigation_safety_status_uses_graph_scan_freshness_and_tf():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.last_scan_received_at = system_supervisor_node.time.time()
+    node.last_scan_stamp_at = system_supervisor_node.time.time() - 2.0
+    node.lifecycle_states = {'/collision_monitor': 'active'}
+    node.patrol_timeout = Mock(return_value=1.0)
+    node.has_transform = Mock(return_value=True)
+    node.count_subscribers = Mock(return_value=1)
+    node.topic_subscriber_nodes = Mock(side_effect=lambda topic: {
+        '/scan': {'/collision_monitor', '/controller_server', '/planner_server'},
+        '/cmd_vel': {'/collision_monitor'},
+    }.get(topic, set()))
+    node.topic_publisher_nodes = Mock(side_effect=lambda topic: {
+        '/cmd_vel_safe': {'/collision_monitor'},
+    }.get(topic, set()))
+
+    assert node.navigation_safety_status()['scanFresh'] is False
+    node.last_scan_stamp_at = system_supervisor_node.time.time()
+    status = node.navigation_safety_status()
+
+    assert status == {
+        'scanFresh': True,
+        'mapToLaserReady': True,
+        'localObstacleLayerReady': True,
+        'globalObstacleLayerReady': True,
+        'collisionMonitorReady': True,
+        'safeCmdVelSubscribers': 1,
+    }
+
+
 def test_status_payload_contains_latest_mapping3d_status_and_result():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.processes = {'3d_capture': FakeProcess(running=True)}
