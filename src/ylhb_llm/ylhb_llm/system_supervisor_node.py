@@ -136,6 +136,8 @@ KEEPOUT_LIFECYCLE_NODES = (
 NAVIGATION_PROFILE_AUTO = 'auto'
 NAVIGATION_PROFILE_NORMAL = 'normal'
 NAVIGATION_PROFILE_KEEPOUT = 'keepout'
+SAFETY_PHASE_BASE = 'base'
+SAFETY_PHASE_NAVIGATION = 'navigation'
 COLLISION_MONITOR_NODE = '/collision_monitor'
 LIFECYCLE_MANAGER_LOCALIZATION = '/lifecycle_manager_localization/manage_nodes'
 LIFECYCLE_MANAGER_NAVIGATION = '/lifecycle_manager_navigation/manage_nodes'
@@ -368,6 +370,7 @@ class SystemSupervisorNode(Node):
         self.last_scan_received_at = 0.0
         self.last_scan_stamp_at = 0.0
         self.last_amcl_received_at = 0.0
+        self.navigation_safety_phase = SAFETY_PHASE_BASE
         self.startup_generation = 0
         self.startup_id = ''
         self.startup_started_at = 0.0
@@ -1108,7 +1111,9 @@ class SystemSupervisorNode(Node):
             ):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
-            if not self.wait_for_navigation_safety(8.0, require_costmaps=True):
+            if not self.wait_for_navigation_safety(
+                8.0, phase=SAFETY_PHASE_NAVIGATION
+            ):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
         self.publish_patrol_command('reload')
@@ -1206,7 +1211,7 @@ class SystemSupervisorNode(Node):
         if not gate(self.wait_for_core_sensors(self.patrol_timeout('patrol_bringup_timeout_sec', 25.0)), '底盘与传感器未就绪'):
             return
         if not gate(
-            self.wait_for_navigation_safety(10.0, require_costmaps=False),
+            self.wait_for_navigation_safety(10.0, phase=SAFETY_PHASE_BASE),
             'Collision Monitor 或安全速度链未就绪',
         ):
             return
@@ -1310,7 +1315,7 @@ class SystemSupervisorNode(Node):
             ):
                 return
         if not gate(
-            self.wait_for_navigation_safety(8.0, require_costmaps=True),
+            self.wait_for_navigation_safety(8.0, phase=SAFETY_PHASE_NAVIGATION),
             '导航安全层未就绪',
         ):
             return
@@ -1889,7 +1894,7 @@ class SystemSupervisorNode(Node):
             'odom': sensors['odom_publisher'] and sensors['odom_fresh'],
             'scan': sensors['scan_publisher'] and sensors['scan_fresh'],
             'collision_monitor': navigation_safety['collisionMonitorReady'],
-            'safe_cmd_vel': navigation_safety['safeCmdVelSubscribers'] > 0,
+            'safe_cmd_vel': navigation_safety['safeCmdVelBaseReady'],
             'local_obstacle_layer': navigation_safety['localObstacleLayerReady'],
             'global_obstacle_layer': navigation_safety['globalObstacleLayerReady'],
             'tf': sensors['odom_to_base'] and sensors['base_to_laser'],
@@ -2381,11 +2386,18 @@ class SystemSupervisorNode(Node):
             return set()
 
     def navigation_safety_status(
-        self, *, refresh_collision_monitor: bool = False
+        self,
+        *,
+        phase: Optional[str] = None,
+        refresh_collision_monitor: bool = False,
     ) -> Dict[str, Any]:
+        phase = phase or getattr(
+            self, 'navigation_safety_phase', SAFETY_PHASE_BASE
+        )
         scan_fresh = self.scan_freshness_status()['scan_fresh']
         scan_nodes = self.topic_subscriber_nodes('/scan')
         cmd_vel_nodes = self.topic_subscriber_nodes('/cmd_vel')
+        safe_subscriber_nodes = self.topic_subscriber_nodes('/cmd_vel_safe')
         safe_publishers = self.topic_publisher_nodes('/cmd_vel_safe')
         if refresh_collision_monitor:
             collision_active = self.lifecycle_node_is_active(COLLISION_MONITOR_NODE)
@@ -2404,47 +2416,101 @@ class SystemSupervisorNode(Node):
             for name in scan_nodes
         )
         collision_graph_ready = (
-            COLLISION_MONITOR_NODE in scan_nodes
-            and COLLISION_MONITOR_NODE in cmd_vel_nodes
-            and COLLISION_MONITOR_NODE in safe_publishers
+            any(name.endswith(COLLISION_MONITOR_NODE) for name in scan_nodes)
+            and any(name.endswith(COLLISION_MONITOR_NODE) for name in cmd_vel_nodes)
+            and any(
+                name.endswith(COLLISION_MONITOR_NODE)
+                for name in safe_publishers
+            )
+        )
+        safe_base_ready = any(
+            name.endswith((
+                '/zlac8015d_canopen_controller',
+                '/base_controller',
+            ))
+            for name in safe_subscriber_nodes
         )
         try:
             safe_subscribers = int(self.count_subscribers('/cmd_vel_safe'))
         except Exception:
             safe_subscribers = 0
         return {
+            'phase': phase,
             'scanFresh': scan_fresh,
+            'baseToLaserReady': self.has_transform(
+                'base_footprint', 'laser_link'
+            ),
             'mapToLaserReady': self.has_transform('map', 'laser_link'),
+            'collisionMonitorReady': collision_active and collision_graph_ready,
+            'safeCmdVelBaseReady': safe_base_ready,
+            'safeCmdVelSubscribers': safe_subscribers,
             'localObstacleLayerReady': local_ready,
             'globalObstacleLayerReady': global_ready,
-            'collisionMonitorReady': collision_active and collision_graph_ready,
-            'safeCmdVelSubscribers': safe_subscribers,
         }
 
     def wait_for_navigation_safety(
-        self, timeout_sec: float, *, require_costmaps: bool
+        self, timeout_sec: float, *, phase: str
     ) -> bool:
+        if phase not in (SAFETY_PHASE_BASE, SAFETY_PHASE_NAVIGATION):
+            raise ValueError(f'unknown navigation safety phase: {phase}')
+        self.navigation_safety_phase = phase
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
-            status = self.navigation_safety_status(refresh_collision_monitor=True)
+            status = self.navigation_safety_status(
+                phase=phase, refresh_collision_monitor=True
+            )
             missing = []
             if not status['scanFresh']:
                 missing.append('/scan 已过期')
-            if not status['mapToLaserReady']:
-                missing.append('map→laser_link TF 未就绪')
+            if not self.has_transform('odom', 'base_footprint'):
+                missing.append('odom→base_footprint TF 未就绪')
+            if not status['baseToLaserReady']:
+                missing.append('base_footprint→laser_link TF 未就绪')
             if not status['collisionMonitorReady']:
                 missing.append('Collision Monitor 未 active')
-            if status['safeCmdVelSubscribers'] < 1:
-                missing.append('/cmd_vel_safe 无底盘订阅者')
-            if require_costmaps and not status['localObstacleLayerReady']:
+            if not status['safeCmdVelBaseReady']:
+                missing.append(
+                    '/cmd_vel_safe 未连接到已知底盘订阅者 '
+                    f"(subscribers={status['safeCmdVelSubscribers']})"
+                )
+            if (
+                phase == SAFETY_PHASE_NAVIGATION
+                and not status['mapToLaserReady']
+            ):
+                missing.append('map→laser_link TF 未就绪')
+            if (
+                phase == SAFETY_PHASE_NAVIGATION
+                and not status['localObstacleLayerReady']
+            ):
                 missing.append('local obstacle layer 未订阅 /scan')
-            if require_costmaps and not status['globalObstacleLayerReady']:
+            if (
+                phase == SAFETY_PHASE_NAVIGATION
+                and not status['globalObstacleLayerReady']
+            ):
                 missing.append('global obstacle layer 未订阅 /scan')
             if not missing:
                 self.patrol_error = ''
                 return True
             self.startup_step = 'waiting_navigation_safety'
-            self.patrol_error = '导航安全门控未就绪: ' + '；'.join(missing)
+            snapshot = '\n'.join(
+                f'{key}={str(status[key]).lower()}'
+                for key in (
+                    'scanFresh',
+                    'baseToLaserReady',
+                    'mapToLaserReady',
+                    'collisionMonitorReady',
+                    'safeCmdVelBaseReady',
+                    'safeCmdVelSubscribers',
+                    'localObstacleLayerReady',
+                    'globalObstacleLayerReady',
+                )
+            )
+            self.patrol_error = (
+                '导航安全门控未就绪:\n'
+                f'phase={phase}\n'
+                f"missing={'；'.join(missing)}\n"
+                f'{snapshot}'
+            )
             time.sleep(0.25)
         return False
 

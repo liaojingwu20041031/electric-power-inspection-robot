@@ -175,13 +175,16 @@ ApplicationWindow {
     Dialog {
         id: shutdownDialog
         objectName: "shutdownDialog"
+        parent: safeArea
         anchors.centerIn: safeArea
         width: Math.min(safeArea.width - 40, 620)
+        height: Math.min(safeArea.height - 40, 340)
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape
         title: "关闭操控台？"
         contentItem: Label {
+            width: shutdownDialog.availableWidth
             text: "关闭后将停止本次操控台、Agent、语音、系统监督，以及由系统监督管理的巡逻、导航、感知和底盘进程。\n\n由systemd管理的Mobile Bridge将继续运行。\n\n确认关闭？"
             color: Theme.text
             font.pixelSize: 16

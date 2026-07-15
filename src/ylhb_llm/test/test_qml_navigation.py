@@ -246,6 +246,10 @@ def test_ui_shutdown_request_is_idempotent_safe_and_marks_its_session(tmp_path):
 
 def test_main_window_uses_configurable_bezel_safe_area_offscreen():
     repo = Path.cwd()
+    qml = (repo / 'src/ylhb_llm/qml/Main.qml').read_text(encoding='utf-8')
+    shutdown_dialog = qml.split('id: shutdownDialog', 1)[1]
+    assert 'height: Math.min(safeArea.height - 40, 340)' in shutdown_dialog
+    assert 'width: shutdownDialog.availableWidth' in shutdown_dialog
     script = textwrap.dedent(f"""
         from types import SimpleNamespace
         from PyQt5.QtCore import QPoint, QPointF, Qt, QUrl
@@ -308,15 +312,24 @@ def test_main_window_uses_configurable_bezel_safe_area_offscreen():
                 assert bottom_right.x() <= width - 34 and bottom_right.y() <= height - 32
             assert close_button.height() >= 48
             assert stop_button.height() >= 52
+            point = close_button.mapToScene(QPointF(close_button.width() / 2, close_button.height() / 2))
+            QTest.mouseClick(window, Qt.LeftButton, pos=QPoint(round(point.x()), round(point.y())))
+            app.processEvents()
+            cancel = window.findChild(QQuickItem, 'cancelShutdownButton')
+            confirm = window.findChild(QQuickItem, 'confirmShutdownButton')
+            assert cancel and confirm and cancel.property('visible') and confirm.property('visible')
+            for item in (cancel, confirm):
+                top_left = item.mapToScene(QPointF(0, 0))
+                bottom_right = item.mapToScene(QPointF(item.width(), item.height()))
+                assert top_left.x() >= 36 and top_left.y() >= 28
+                assert bottom_right.x() <= width - 34 and bottom_right.y() <= height - 32
+            point = cancel.mapToScene(QPointF(cancel.width() / 2, cancel.height() / 2))
+            QTest.mouseClick(window, Qt.LeftButton, pos=QPoint(round(point.x()), round(point.y())))
+            app.processEvents()
         point = stop_button.mapToScene(QPointF(stop_button.width() / 2, stop_button.height() / 2))
         QTest.mouseClick(window, Qt.LeftButton, pos=QPoint(round(point.x()), round(point.y())))
         app.processEvents()
         assert bridge.commands == ['emergency_stop']
-        point = close_button.mapToScene(QPointF(close_button.width() / 2, close_button.height() / 2))
-        QTest.mouseClick(window, Qt.LeftButton, pos=QPoint(round(point.x()), round(point.y())))
-        app.processEvents()
-        cancel = window.findChild(QQuickItem, 'cancelShutdownButton')
-        assert cancel is not None and cancel.property('enabled')
         window.close()
     """)
     env = os.environ.copy()
@@ -328,6 +341,7 @@ def test_main_window_uses_configurable_bezel_safe_area_offscreen():
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert 'Binding loop' not in result.stderr
 
 
 def test_bridge_switches_receive_mouse_clicks_and_call_independent_services():
