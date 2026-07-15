@@ -216,6 +216,7 @@ local_costmap:
       # 局部代价地图跟随机器人滚动，用于近距离避障。
       update_frequency: 10.0
       publish_frequency: 5.0
+      always_send_full_costmap: True
       # 局部地图使用 odom 坐标系，不依赖全局定位跳变。
       global_frame: odom
       robot_base_frame: base_footprint
@@ -241,17 +242,21 @@ local_costmap:
         # 激光障碍层：根据 /scan 标记和清除障碍。
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
+        footprint_clearing_enabled: True
         observation_sources: scan
         scan:
           topic: /scan
-          max_obstacle_height: 2.0
+          data_type: "LaserScan"
           clearing: True
           marking: True
-          data_type: "LaserScan"
+          inf_is_valid: True
+          observation_persistence: 0.0
+          expected_update_rate: 0.0
           raytrace_max_range: 3.0
-          raytrace_min_range: 0.10
+          raytrace_min_range: 0.15
           obstacle_max_range: 2.5
-          obstacle_min_range: 0.10
+          obstacle_min_range: 0.15
+          max_obstacle_height: 2.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
@@ -290,17 +295,21 @@ global_costmap:
         # 激光障碍层：根据 /scan 标记和清除障碍，参数和 local_costmap 保持一致。
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
+        footprint_clearing_enabled: True
         observation_sources: scan
         scan:
           topic: /scan
-          max_obstacle_height: 2.0
+          data_type: "LaserScan"
           clearing: True
           marking: True
-          data_type: "LaserScan"
+          inf_is_valid: True
+          observation_persistence: 0.0
+          expected_update_rate: 0.0
           raytrace_max_range: 3.0
-          raytrace_min_range: 0.10
+          raytrace_min_range: 0.15
           obstacle_max_range: 2.5
-          obstacle_min_range: 0.10
+          obstacle_min_range: 0.15
+          max_obstacle_height: 2.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0

@@ -1,13 +1,13 @@
 {
-  "map_yaml_sha256": "ae32938718b334fed668b899c704bdf892e85c0006aa5d461c6d42357b4c02e6",
-  "map_pgm_sha256": "81ade4d8b354272d012789e1d7b79ea11dd6629447ae20a3e579409086bac270",
-  "route_sha256": "b48f0ed057d9bfb0051bc52723afa9edfaaa993ec23501811255b6642517af85",
-  "nav2_params_sha256": "84e0d1b4c087616fc8ffb8fd96241e0576c52ad713a4739c94a1b222aee1a8ba",
-  "width": 395,
-  "height": 675,
+  "map_yaml_sha256": "2ba53b07bc398165e21f58b6ca3a9d1c435ed4a27b718b9c8209380a439d67b0",
+  "map_pgm_sha256": "574a67de5a04b53b817cb2acb83aaed39fa8769ecb2c64fb236f025cc5858112",
+  "route_sha256": "f3dfe6152382e52fd895e3ae89e80359b4d638b5773d74afb96c15eba0a56192",
+  "nav2_params_sha256": "9ea0eefb3d0ba0964e09e93615f6c1c0c426a4cedfd2002034a48249067fcda4",
+  "width": 371,
+  "height": 656,
   "resolution_m": 0.025,
   "origin": [
-    -7.07,
+    -6.09,
     -13.3,
     0.0
   ],
@@ -19,13 +19,13 @@
   "keepout_mode": "active",
   "enabled_hard_keepout_count": 1,
   "global_mask": {
-    "hard_cells": 154,
+    "hard_cells": 179,
     "weighted_cells": 0,
-    "free_cells": 266471
+    "free_cells": 243197
   },
   "local_mask": {
-    "hard_cells": 154,
+    "hard_cells": 179,
     "weighted_cells": 0,
-    "free_cells": 266471
+    "free_cells": 243197
   }
 }

@@ -6,29 +6,29 @@
     "image": "my_map.pgm",
     "resolution": 0.025,
     "origin": [
-      -7.07,
+      -6.09,
       -13.3,
       0
     ],
-    "width": 395,
-    "height": 675,
-    "image_sha256": "81ade4d8b354272d012789e1d7b79ea11dd6629447ae20a3e579409086bac270"
+    "width": 371,
+    "height": 656,
+    "image_sha256": "574a67de5a04b53b817cb2acb83aaed39fa8769ecb2c64fb236f025cc5858112"
   },
   "active_route_id": "route_patrol_001",
   "start_pose": {
     "name": "初始起点",
     "frame_id": "map",
     "pose": {
-      "x": -0.441,
-      "y": 0.001,
-      "yaw": -0.113
+      "x": -0.184,
+      "y": 0.026,
+      "yaw": -3.026
     },
     "location": {
       "type": "map_pose",
       "frame_id": "map",
-      "x": -0.441,
-      "y": 0.001,
-      "yaw": -0.113
+      "x": -0.184,
+      "y": 0.026,
+      "yaw": -3.026
     },
     "publish_initial_pose": true,
     "covariance": {
@@ -42,20 +42,20 @@
       "id": "target_001",
       "name": "巡检点1",
       "pose": {
-        "x": -1.919,
-        "y": -0.726,
-        "yaw": -1.795
+        "x": -1.313,
+        "y": -0.179,
+        "yaw": -1.544
       },
       "location": {
         "type": "map_pose",
         "frame_id": "map",
-        "x": -1.919,
-        "y": -0.726,
-        "yaw": -1.795
+        "x": -1.313,
+        "y": -0.179,
+        "yaw": -1.544
       },
       "safety": {
         "validation_status": "ok",
-        "min_keepout_distance_m": 0.31638903824802456,
+        "min_keepout_distance_m": 0.33368806703410464,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -64,64 +64,20 @@
       "id": "target_002",
       "name": "巡检点2",
       "pose": {
-        "x": -2.303,
-        "y": -2.921,
-        "yaw": 1.367
+        "x": -1.391,
+        "y": -1.981,
+        "yaw": -1.638
       },
       "location": {
         "type": "map_pose",
         "frame_id": "map",
-        "x": -2.303,
-        "y": -2.921,
-        "yaw": 1.367
+        "x": -1.391,
+        "y": -1.981,
+        "yaw": -1.638
       },
       "safety": {
         "validation_status": "ok",
-        "min_keepout_distance_m": 2.048650892585853,
-        "warnings": []
-      },
-      "task_duration_sec": 5
-    },
-    {
-      "id": "target_003",
-      "name": "巡检点3",
-      "pose": {
-        "x": -2.326,
-        "y": -4.216,
-        "yaw": 1.399
-      },
-      "location": {
-        "type": "map_pose",
-        "frame_id": "map",
-        "x": -2.326,
-        "y": -4.216,
-        "yaw": 1.399
-      },
-      "safety": {
-        "validation_status": "ok",
-        "min_keepout_distance_m": 3.2690556872173895,
-        "warnings": []
-      },
-      "task_duration_sec": 5
-    },
-    {
-      "id": "target_004",
-      "name": "巡检点4",
-      "pose": {
-        "x": -2.519,
-        "y": -0.081,
-        "yaw": -0.108
-      },
-      "location": {
-        "type": "map_pose",
-        "frame_id": "map",
-        "x": -2.519,
-        "y": -0.081,
-        "yaw": -0.108
-      },
-      "safety": {
-        "validation_status": "ok",
-        "min_keepout_distance_m": 1.10132653040707,
+        "min_keepout_distance_m": 0.697026558535202,
         "warnings": []
       },
       "task_duration_sec": 5
@@ -133,18 +89,16 @@
       "name": "本地巡逻路线",
       "target_ids": [
         "target_001",
-        "target_002",
-        "target_003",
-        "target_004"
+        "target_002"
       ],
       "return_to_start": true,
       "loop": {
-        "enabled": true,
-        "wait_sec": 60,
+        "enabled": false,
+        "wait_sec": 600,
         "max_cycles": 0
       },
-      "goal_timeout_sec": 600,
-      "max_retries_per_checkpoint": 1,
+      "goal_timeout_sec": 10000,
+      "max_retries_per_checkpoint": 3,
       "failure_policy": "abort_and_return_home"
     }
   ],
@@ -157,20 +111,20 @@
       "mask_padding_m": 0.025,
       "polygon": [
         {
-          "x": -1.271,
-          "y": -0.426
+          "x": -0.828,
+          "y": -1.08
         },
         {
-          "x": -1.133,
-          "y": -0.434
+          "x": -0.828,
+          "y": -0.476
         },
         {
-          "x": -1.202,
-          "y": -0.923
+          "x": -0.725,
+          "y": -0.468
         },
         {
-          "x": -1.321,
-          "y": -0.901
+          "x": -0.725,
+          "y": -1.072
         }
       ]
     }
@@ -178,7 +132,7 @@
   "schedules": [],
   "safety": {
     "validation_status": "ok",
-    "min_keepout_distance_m": 0.31638903824802456,
+    "min_keepout_distance_m": 0.33368806703410464,
     "warnings": []
   }
 }

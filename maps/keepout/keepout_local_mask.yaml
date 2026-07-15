@@ -2,7 +2,7 @@ image: keepout_local_mask.pgm
 mode: raw
 resolution: 0.025
 origin:
-- -7.07
+- -6.09
 - -13.3
 - 0
 negate: 0

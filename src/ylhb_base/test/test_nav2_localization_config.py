@@ -150,11 +150,32 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     assert global_scan["marking"] is local_scan["marking"] is True
     assert global_scan["max_obstacle_height"] == local_scan["max_obstacle_height"] == 2.0
     assert global_scan["raytrace_max_range"] == local_scan["raytrace_max_range"] == 3.0
-    assert global_scan["raytrace_min_range"] == local_scan["raytrace_min_range"] == 0.10
+    assert global_scan["raytrace_min_range"] == local_scan["raytrace_min_range"] == 0.15
     assert global_scan["obstacle_max_range"] == local_scan["obstacle_max_range"] == 2.5
-    assert global_scan["obstacle_min_range"] == local_scan["obstacle_min_range"] == 0.10
+    assert global_scan["obstacle_min_range"] == local_scan["obstacle_min_range"] == 0.15
     assert 0.30 <= global_map["inflation_layer"]["inflation_radius"] <= 0.70
     assert global_map["inflation_layer"]["cost_scaling_factor"] > 0
+
+
+def test_costmaps_publish_fresh_local_grids_and_clear_infinite_lidar_rays():
+    for params in (load_nav2_params(), load_keepout_nav2_params()):
+        local = params["local_costmap"]["local_costmap"]["ros__parameters"]
+        global_costmap = params["global_costmap"]["global_costmap"]["ros__parameters"]
+
+        assert local["always_send_full_costmap"] is True
+
+        for costmap in (local, global_costmap):
+            obstacle = costmap["obstacle_layer"]
+            scan = obstacle["scan"]
+
+            assert obstacle["footprint_clearing_enabled"] is True
+            assert scan["clearing"] is True
+            assert scan["marking"] is True
+            assert scan["inf_is_valid"] is True
+            assert scan["observation_persistence"] == 0.0
+            assert scan["raytrace_max_range"] > scan["obstacle_max_range"]
+            assert scan["raytrace_min_range"] == 0.15
+            assert scan["obstacle_min_range"] == 0.15
 
 
 def test_dwb_low_speed_limits_match_velocity_smoother():
