@@ -117,10 +117,6 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     config = load_nav2_params()
     local = config["local_costmap"]["local_costmap"]["ros__parameters"]
     global_map = config["global_costmap"]["global_costmap"]["ros__parameters"]
-    local_obstacle = local["obstacle_layer"]
-    global_obstacle = global_map["obstacle_layer"]
-    local_scan = local_obstacle["scan"]
-    global_scan = global_obstacle["scan"]
     local_footprint = ast.literal_eval(local["footprint"])
     global_footprint = ast.literal_eval(global_map["footprint"])
 
@@ -139,43 +135,57 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     assert "robot_radius" not in global_map
     assert local_footprint == global_footprint
     assert len(local_footprint) == EXPECTED_FOOTPRINT_POINTS
-    assert {"static_layer", "obstacle_layer", "inflation_layer"} <= set(global_map["plugins"])
-    assert global_obstacle["plugin"] == "nav2_costmap_2d::ObstacleLayer"
-    assert global_obstacle["enabled"] is True
-    assert global_obstacle["observation_sources"] == "scan"
-    assert global_scan["topic"] == "/scan"
-    assert global_scan["data_type"] == "LaserScan"
-    assert global_scan == local_scan
-    assert global_scan["clearing"] is local_scan["clearing"] is True
-    assert global_scan["marking"] is local_scan["marking"] is True
-    assert global_scan["max_obstacle_height"] == local_scan["max_obstacle_height"] == 2.0
-    assert global_scan["raytrace_max_range"] == local_scan["raytrace_max_range"] == 3.0
-    assert global_scan["raytrace_min_range"] == local_scan["raytrace_min_range"] == 0.15
-    assert global_scan["obstacle_max_range"] == local_scan["obstacle_max_range"] == 2.5
-    assert global_scan["obstacle_min_range"] == local_scan["obstacle_min_range"] == 0.15
     assert 0.30 <= global_map["inflation_layer"]["inflation_radius"] <= 0.70
     assert global_map["inflation_layer"]["cost_scaling_factor"] > 0
 
 
-def test_costmaps_publish_fresh_local_grids_and_clear_infinite_lidar_rays():
+def test_global_costmap_is_static_and_does_not_accumulate_lidar_ghosts():
+    normal_global = load_nav2_params()["global_costmap"]["global_costmap"]["ros__parameters"]
+    keepout_global = load_keepout_nav2_params()["global_costmap"]["global_costmap"]["ros__parameters"]
+
+    assert normal_global["always_send_full_costmap"] is True
+    assert keepout_global["always_send_full_costmap"] is True
+    assert normal_global["plugins"] == ["static_layer", "inflation_layer"]
+    assert keepout_global["plugins"] == ["static_layer", "keepout_filter", "inflation_layer"]
+    assert "obstacle_layer" not in normal_global
+    assert "obstacle_layer" not in keepout_global
+    assert normal_global["inflation_layer"] == keepout_global["inflation_layer"]
+
+
+def test_local_costmap_uses_lidar_marking_and_clearing():
     for params in (load_nav2_params(), load_keepout_nav2_params()):
         local = params["local_costmap"]["local_costmap"]["ros__parameters"]
-        global_costmap = params["global_costmap"]["global_costmap"]["ros__parameters"]
+        obstacle = local["obstacle_layer"]
+        scan = obstacle["scan"]
 
+        assert "obstacle_layer" in local["plugins"]
         assert local["always_send_full_costmap"] is True
+        assert obstacle["footprint_clearing_enabled"] is True
+        assert scan["clearing"] is True
+        assert scan["marking"] is True
+        assert scan["inf_is_valid"] is True
+        assert scan["observation_persistence"] == 0.0
+        assert scan["raytrace_max_range"] > scan["obstacle_max_range"]
+        assert scan["raytrace_min_range"] == 0.15
+        assert scan["obstacle_min_range"] == 0.15
 
-        for costmap in (local, global_costmap):
-            obstacle = costmap["obstacle_layer"]
-            scan = obstacle["scan"]
 
-            assert obstacle["footprint_clearing_enabled"] is True
-            assert scan["clearing"] is True
-            assert scan["marking"] is True
-            assert scan["inf_is_valid"] is True
-            assert scan["observation_persistence"] == 0.0
-            assert scan["raytrace_max_range"] > scan["obstacle_max_range"]
-            assert scan["raytrace_min_range"] == 0.15
-            assert scan["obstacle_min_range"] == 0.15
+def test_rotation_shim_handles_large_initial_heading_changes():
+    config = load_nav2_params()
+    follow_path = config["controller_server"]["ros__parameters"]["FollowPath"]
+    keepout_follow_path = load_keepout_nav2_params()["controller_server"]["ros__parameters"]["FollowPath"]
+    smoother = config["velocity_smoother"]["ros__parameters"]
+
+    assert follow_path == keepout_follow_path
+    assert follow_path["plugin"] == "nav2_rotation_shim_controller::RotationShimController"
+    assert follow_path["primary_controller"] == "dwb_core::DWBLocalPlanner"
+    assert 0 < follow_path["angular_disengage_threshold"] < follow_path["angular_dist_threshold"] <= 3.1416
+    assert follow_path["forward_sampling_distance"] > 0
+    assert 0 < follow_path["rotate_to_heading_angular_vel"] <= smoother["max_velocity"][2]
+    assert follow_path["max_angular_accel"] == smoother["max_accel"][2]
+    assert follow_path["simulate_ahead_time"] > 0
+    assert follow_path["rotate_to_goal_heading"] is False
+    assert follow_path["closed_loop"] is True
 
 
 def test_dwb_low_speed_limits_match_velocity_smoother():
