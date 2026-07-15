@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import shlex
 import socket
 import subprocess
 import threading
@@ -39,16 +40,20 @@ class NetworkStatusProvider:
         sys_class_net: Path | str = Path('/sys/class/net'),
         clock: Callable[[], float] = time.monotonic,
         resolver: Callable[[str], str] = socket.gethostbyname,
+        wifi_reconnect_env: Path | str = Path('/etc/ylhb/wifi-reconnect.env'),
     ) -> None:
         self.cache_seconds = max(0.0, float(cache_seconds))
         self._runner = runner
         self._sys_class_net = Path(sys_class_net)
         self._clock = clock
         self._resolver = resolver
+        self._wifi_reconnect_env = Path(wifi_reconnect_env)
         self._lock = threading.Lock()
         self._snapshot_at = 0.0
         self._snapshot: dict[str, list[dict[str, Any]]] | None = None
         self._route_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._wifi_reconnect_at = 0.0
+        self._wifi_reconnect: dict[str, Any] | None = None
 
     def _run_json(self, args: list[str]) -> list[dict[str, Any]]:
         try:
@@ -72,6 +77,108 @@ class NetworkStatusProvider:
             ValueError,
         ):
             return []
+
+    def _run_text(self, args: list[str]) -> tuple[int, str]:
+        try:
+            completed = self._runner(
+                args,
+                capture_output=True,
+                text=True,
+                check=False,
+                shell=False,
+                timeout=2,
+            )
+            return int(completed.returncode), str(completed.stdout or '').strip()
+        except (
+            FileNotFoundError,
+            subprocess.TimeoutExpired,
+            OSError,
+            TypeError,
+            ValueError,
+        ):
+            return 1, ''
+
+    def _wifi_reconnect_config(self) -> dict[str, str]:
+        try:
+            lines = self._wifi_reconnect_env.read_text(encoding='utf-8').splitlines()
+        except OSError:
+            return {}
+        values: dict[str, str] = {}
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            if key not in {'YLHB_WIFI_CONNECTION', 'YLHB_WIFI_INTERFACE'}:
+                continue
+            try:
+                parsed = shlex.split(value, posix=True)
+            except ValueError:
+                return {}
+            values[key] = parsed[0] if len(parsed) == 1 else ''
+        return values
+
+    def wifi_reconnect_status(self) -> dict[str, Any]:
+        now = self._clock()
+        with self._lock:
+            if (
+                self._wifi_reconnect is not None
+                and now - self._wifi_reconnect_at < self.cache_seconds
+            ):
+                return self._wifi_reconnect
+        config = self._wifi_reconnect_config()
+        connection = config.get('YLHB_WIFI_CONNECTION', '')
+        interface = config.get('YLHB_WIFI_INTERFACE', '')
+        if not connection or not interface:
+            result: dict[str, Any] = {'configured': False}
+        else:
+            errors = []
+            code, device_rows = self._run_text(
+                ['nmcli', '-t', '-f', 'DEVICE,TYPE,STATE', 'device']
+            )
+            if code:
+                errors.append('nmcli device unavailable')
+            device_state = ''
+            for row in device_rows.splitlines():
+                fields = row.split(':')
+                if len(fields) >= 3 and fields[0] == interface:
+                    device_state = fields[-1]
+                    break
+            code, active_rows = self._run_text(
+                [
+                    'nmcli', '-t', '--escape', 'no', '-f', 'NAME,TYPE,DEVICE',
+                    'connection', 'show', '--active',
+                ]
+            )
+            if code:
+                errors.append('nmcli active connections unavailable')
+            active = any(
+                row.rsplit(':', 2) == [connection, '802-11-wireless', interface]
+                for row in active_rows.splitlines()
+            )
+            code, ipv4 = self._run_text(
+                ['nmcli', '-g', 'IP4.ADDRESS', 'device', 'show', interface]
+            )
+            if code:
+                errors.append('nmcli IPv4 unavailable')
+            timer_code, timer_state = self._run_text(
+                ['systemctl', 'is-active', 'ylhb-wifi-reconnect.timer']
+            )
+            result = {
+                'configured': True,
+                'connection': connection,
+                'interface': interface,
+                'deviceState': device_state,
+                'active': active,
+                'ipv4Available': bool(ipv4),
+                'timerActive': timer_code == 0 and timer_state == 'active',
+            }
+            if errors:
+                result['error'] = '; '.join(errors)
+        with self._lock:
+            self._wifi_reconnect = result
+            self._wifi_reconnect_at = now
+        return result
 
     def _interface_type(self, name: str) -> str:
         if (self._sys_class_net / name / 'wireless').exists():

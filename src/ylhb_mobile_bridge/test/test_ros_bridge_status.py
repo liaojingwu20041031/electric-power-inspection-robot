@@ -50,6 +50,17 @@ class FakePlatformStore:
 
 
 class FakeNetworkStatusProvider:
+    def wifi_reconnect_status(self):
+        return {
+            'configured': True,
+            'connection': 'hotspot',
+            'interface': 'wlan0',
+            'deviceState': 'connected',
+            'active': True,
+            'ipv4Available': True,
+            'timerActive': True,
+        }
+
     def snapshot(self):
         return {
             'interfaces': [
@@ -604,6 +615,7 @@ def test_local_app_override_wins_and_status_has_ui_contract():
         'preferredAppEndpoint': {},
         'networkInterfaces': bridge.network_status.snapshot()['interfaces'],
         'networkWarnings': [],
+        'wifiReconnect': bridge.network_status.wifi_reconnect_status(),
         'lastChangedAt': status['lastChangedAt'],
         'lastError': '',
     }

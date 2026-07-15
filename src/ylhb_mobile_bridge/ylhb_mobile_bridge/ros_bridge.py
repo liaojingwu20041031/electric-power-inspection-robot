@@ -520,6 +520,7 @@ class MobileRosBridge(Node):
                 'interfaces': network['interfaces'],
                 'preferredAppEndpoint': network['preferredAppEndpoint'],
                 'warnings': network['warnings'],
+                'wifiReconnect': network['wifiReconnect'],
             },
             'timestamp': time.time(),
         }
@@ -839,6 +840,7 @@ class MobileRosBridge(Node):
             'preferredAppEndpoint': network['preferredAppEndpoint'],
             'networkInterfaces': network['interfaces'],
             'networkWarnings': network['warnings'],
+            'wifiReconnect': network['wifiReconnect'],
             'lastChangedAt': self._local_app_last_changed_at,
             'lastError': self._local_app_last_error,
         }
@@ -851,6 +853,7 @@ class MobileRosBridge(Node):
             'preferredAppEndpoint': {},
             'interfaces': [],
             'warnings': [],
+            'wifiReconnect': {'configured': False},
         }
         if provider is None:
             return empty
@@ -859,6 +862,12 @@ class MobileRosBridge(Node):
             endpoints = provider.app_endpoints(
                 getattr(self, 'host', '0.0.0.0'),
                 getattr(self, 'port', 8000),
+            )
+            reconnect_reader = getattr(provider, 'wifi_reconnect_status', None)
+            wifi_reconnect = (
+                reconnect_reader()
+                if callable(reconnect_reader)
+                else {'configured': False}
             )
         except Exception:
             return empty
@@ -876,6 +885,7 @@ class MobileRosBridge(Node):
             'preferredAppEndpoint': {},
             'interfaces': list(snapshot.get('interfaces') or []),
             'warnings': list(snapshot.get('warnings') or []),
+            'wifiReconnect': wifi_reconnect,
         }
 
     def set_local_app_enabled(self, enabled: bool) -> dict:

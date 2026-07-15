@@ -181,3 +181,46 @@ def test_route_to_host_returns_interface_source_gateway_and_alternates(tmp_path)
     assert route['metric'] == 100
     assert route['alternateCloudRoutes'][0]['interface'] == 'wlan0'
     assert route['failoverAvailable'] is True
+
+
+def test_wifi_reconnect_status_is_cached_and_read_only(tmp_path):
+    env_file = tmp_path / 'wifi-reconnect.env'
+    env_file.write_text(
+        'YLHB_WIFI_CONNECTION="hotspot"\nYLHB_WIFI_INTERFACE="wlan0"\n',
+        encoding='utf-8',
+    )
+    calls = []
+
+    def runner(args, **kwargs):
+        calls.append(tuple(args))
+        outputs = {
+            ('nmcli', '-t', '-f', 'DEVICE,TYPE,STATE', 'device'):
+                'wlan0:wifi:connected\n',
+            ('nmcli', '-t', '--escape', 'no', '-f', 'NAME,TYPE,DEVICE', 'connection', 'show', '--active'):
+                'hotspot:802-11-wireless:wlan0\n',
+            ('nmcli', '-g', 'IP4.ADDRESS', 'device', 'show', 'wlan0'):
+                '192.168.137.100/24\n',
+            ('systemctl', 'is-active', 'ylhb-wifi-reconnect.timer'):
+                'active\n',
+        }
+        return subprocess.CompletedProcess(args, 0, outputs[tuple(args)], '')
+
+    provider = NetworkStatusProvider(
+        runner=runner,
+        sys_class_net=tmp_path,
+        wifi_reconnect_env=env_file,
+    )
+
+    first = provider.wifi_reconnect_status()
+    second = provider.wifi_reconnect_status()
+
+    assert first == second == {
+        'configured': True,
+        'connection': 'hotspot',
+        'interface': 'wlan0',
+        'deviceState': 'connected',
+        'active': True,
+        'ipv4Available': True,
+        'timerActive': True,
+    }
+    assert len(calls) == 4
