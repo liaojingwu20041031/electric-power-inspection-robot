@@ -32,9 +32,9 @@ zlac8015d_canopen_controller:
     target_velocity_unit_per_rpm: 1.0
     # 实际速度单位换算：驱动器反馈速度单位 / RPM。影响里程计速度和距离估计。
     actual_velocity_unit_per_rpm: 10.0
-    # 驱动器内部加速度参数，单位取决于 ZLAC8015D 协议。数值越大加速越快。
-    profile_acceleration: 100
+    # 当前实车最佳转弯基线；驱动器内部加速度参数，数值越大加速越快。
+    profile_acceleration: 200
     # 驱动器内部减速度参数，单位取决于 ZLAC8015D 协议。数值越大减速越快。
-    profile_deceleration: 100
+    profile_deceleration: 200
     # 本地协议文档目录，仅用于调试/查阅，不影响运行控制逻辑。
     protocol_docs_dir: "/home/nvidia/ros2_DL/官方通信协议"

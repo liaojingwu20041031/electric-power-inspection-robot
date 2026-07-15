@@ -15,6 +15,7 @@ PACKAGE_XML_PATH = PACKAGE_DIR / "package.xml"
 ZLAC_CONTROLLER_PATH = PACKAGE_DIR / "src" / "zlac8015d_canopen_controller.cpp"
 STM32_CONTROLLER_PATH = PACKAGE_DIR / "src" / "base_controller.cpp"
 ZLAC_CONFIG_PATH = PACKAGE_DIR / "config" / "zlac8015d.yaml"
+BASE_KINEMATICS_PATH = PACKAGE_DIR / "config" / "base_kinematics.yaml"
 LLM_CONFIG_PATH = WORKSPACE_DIR / "src" / "ylhb_llm" / "config" / "llm.yaml"
 CMAKE_PATH = PACKAGE_DIR / "CMakeLists.txt"
 MAP_YAML_PATH = WORKSPACE_DIR / "maps" / "my_map.yaml"
@@ -225,7 +226,7 @@ def test_rotation_shim_handles_large_initial_heading_changes():
     assert follow_path["primary_controller"] == "dwb_core::DWBLocalPlanner"
     assert 0 < follow_path["angular_disengage_threshold"] < follow_path["angular_dist_threshold"] <= 3.1416
     assert follow_path["forward_sampling_distance"] > 0
-    assert 0.40 <= follow_path["rotate_to_heading_angular_vel"] <= smoother["max_velocity"][2]
+    assert 0.55 <= follow_path["rotate_to_heading_angular_vel"] <= smoother["max_velocity"][2]
     assert follow_path["max_angular_accel"] == smoother["max_accel"][2]
     assert follow_path["simulate_ahead_time"] > 0
     assert follow_path["rotate_to_goal_heading"] is True
@@ -293,6 +294,12 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     follow_path = controller["FollowPath"]
     keepout_follow_path = load_keepout_nav2_params()["controller_server"]["ros__parameters"]["FollowPath"]
     smoother = config["velocity_smoother"]["ros__parameters"]
+    base = yaml.safe_load(BASE_KINEMATICS_PATH.read_text(encoding="utf-8"))[
+        "zlac8015d_canopen_controller"
+    ]["ros__parameters"]
+    zlac = yaml.safe_load(ZLAC_CONFIG_PATH.read_text(encoding="utf-8"))[
+        "zlac8015d_canopen_controller"
+    ]["ros__parameters"]
 
     assert "current_goal_checker" not in controller
     assert controller["progress_checker_plugin"] == "progress_checker"
@@ -304,8 +311,13 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     assert follow_path["min_vel_x"] == 0.0
     assert follow_path["max_speed_xy"] == 0.12
     assert follow_path["max_vel_theta"] == smoother["max_velocity"][2]
-    assert follow_path["max_vel_theta"] >= 0.50
-    assert follow_path["min_speed_theta"] == 0.18
+    assert follow_path["max_vel_theta"] >= 0.65
+    assert follow_path["min_speed_theta"] >= 0.25
+    assert follow_path["acc_lim_theta"] >= 0.80
+    assert follow_path["decel_lim_theta"] <= -0.80
+    assert base["max_angular_speed"] >= follow_path["max_vel_theta"]
+    assert zlac["profile_acceleration"] >= 200
+    assert zlac["profile_deceleration"] >= 200
     assert follow_path["vx_samples"] >= 3
     assert follow_path["vtheta_samples"] >= 3
     assert 1.0 <= follow_path["sim_time"] <= 3.0

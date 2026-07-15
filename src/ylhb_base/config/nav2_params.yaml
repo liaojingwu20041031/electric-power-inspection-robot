@@ -153,8 +153,9 @@ controller_server:
       angular_dist_threshold: 0.785
       angular_disengage_threshold: 0.35
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.40
-      max_angular_accel: 0.50
+      # 当前实车最佳转弯基线：原地对齐已一次通过，后续只做小幅微调。
+      rotate_to_heading_angular_vel: 0.55
+      max_angular_accel: 0.80
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: True
       closed_loop: True
@@ -167,18 +168,18 @@ controller_server:
       max_vel_x: 0.12
       max_vel_y: 0.0
       # Nav2 输出角速度上限，给大角度掉头留出有效角速度。
-      max_vel_theta: 0.50
+      max_vel_theta: 0.65
       min_speed_xy: 0.0
       # 平面合速度上限，与 max_vel_x 保持一致。
       max_speed_xy: 0.12
-      min_speed_theta: 0.18
+      min_speed_theta: 0.25
       # 加速度/减速度限制，避免 /cmd_vel 突变。
       acc_lim_x: 0.30
       acc_lim_y: 0.0
-      acc_lim_theta: 0.50
+      acc_lim_theta: 0.80
       decel_lim_x: -0.30
       decel_lim_y: 0.0
-      decel_lim_theta: -0.50
+      decel_lim_theta: -0.80
       # 速度采样数量；4 个点保留零速，并避开过多低于底盘死区的小速度。
       vx_samples: 4
       vy_samples: 5
@@ -395,12 +396,12 @@ velocity_smoother:
     # 开环平滑，不等待里程计反馈闭环修正。
     feedback: "OPEN_LOOP"
     # 平滑后的最大速度：[x, y, theta]，差速底盘 y 保持 0。
-    max_velocity: [0.12, 0.0, 0.50]
+    max_velocity: [0.12, 0.0, 0.65]
     # 允许很小倒车速度，角速度正负对称限幅。
-    min_velocity: [-0.05, 0.0, -0.50]
+    min_velocity: [-0.05, 0.0, -0.65]
     # 平滑器加速度/减速度限制，与 DWB 限制保持一致。
-    max_accel: [0.30, 0.0, 0.50]
-    max_decel: [-0.30, 0.0, -0.50]
+    max_accel: [0.30, 0.0, 0.80]
+    max_decel: [-0.30, 0.0, -0.80]
     # 里程计话题和反馈时间窗口，保留给平滑器参数完整性。
     odom_topic: "odom"
     odom_duration: 0.1

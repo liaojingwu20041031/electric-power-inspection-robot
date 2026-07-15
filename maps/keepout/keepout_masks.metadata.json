@@ -2,7 +2,7 @@
   "map_yaml_sha256": "fdae1202aef85258eef28163a0ee1ca78e51ad8715985213b9207c96031607d7",
   "map_pgm_sha256": "952e407bd2c076ac77907338a8c5cc7ce51f2e38e0f0dfab5fbd31cc0d924435",
   "route_sha256": "bf4a735a389318d66a901ded4b57a6c7f78c251fabebd895eac066ac765fcfb1",
-  "nav2_params_sha256": "736fa401296e57f40c50da818e9f65660b402c0a66ec787b80f32a87e909c1e5",
+  "nav2_params_sha256": "2aa6abe1cce7fc33571c234279df6be17739531e2586e36bc11f72fcca8e7b27",
   "width": 391,
   "height": 649,
   "resolution_m": 0.025,
