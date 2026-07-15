@@ -238,9 +238,13 @@ def test_collision_monitor_routes_all_velocity_through_safe_chassis_topic():
     assert collision["observation_sources"] == ["scan"]
     assert collision["scan"]["topic"] == "/scan"
     assert collision["source_timeout"] <= 0.5
-    assert collision["polygons"] == ["stop_zone", "slowdown_zone"]
+    assert collision["polygons"] == []
     assert collision["stop_zone"]["action_type"] == "stop"
+    assert collision["stop_zone"]["enabled"] is False
+    assert collision["stop_zone"]["visualize"] is False
     assert collision["slowdown_zone"]["action_type"] == "slowdown"
+    assert collision["slowdown_zone"]["enabled"] is False
+    assert collision["slowdown_zone"]["visualize"] is False
     assert 0 < collision["slowdown_zone"]["slowdown_ratio"] < 1
 
     assert "nav2_collision_monitor" in bringup
@@ -249,8 +253,13 @@ def test_collision_monitor_routes_all_velocity_through_safe_chassis_topic():
     assert "cmd_vel_topic" in stm32
     assert zlac_config["cmd_vel_topic"] == "/cmd_vel_safe"
     assert zlac_config["scan_topic"] == "/scan"
-    assert zlac_config["scan_timeout_sec"] <= 0.5
+    assert zlac_config["require_fresh_scan"] is True
+    assert zlac_config["scan_timeout_sec"] == 0.3
     assert zlac_config["cmd_timeout_sec"] == 0.5
+    assert "'cmd_vel_topic': '/cmd_vel_safe'" in bringup
+    assert "'require_fresh_scan': True" in bringup
+    assert "'scan_timeout_sec': 0.3" in bringup
+    assert "'cmd_timeout_sec': 0.5" in bringup
     assert 'declare_parameter<std::string>("cmd_vel_topic", "cmd_vel")' in zlac
     assert 'declare_parameter<std::string>("cmd_vel_topic", "cmd_vel")' in stm32
     assert 'create_subscription<geometry_msgs::msg::Twist>(\n      cmd_vel_topic_' in zlac
