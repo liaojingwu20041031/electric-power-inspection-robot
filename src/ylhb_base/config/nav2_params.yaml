@@ -153,10 +153,10 @@ controller_server:
       angular_dist_threshold: 0.785
       angular_disengage_threshold: 0.35
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.35
+      rotate_to_heading_angular_vel: 0.40
       max_angular_accel: 0.50
       simulate_ahead_time: 1.0
-      rotate_to_goal_heading: False
+      rotate_to_goal_heading: True
       closed_loop: True
       # 关闭轨迹调试，降低控制循环日志和计算开销。
       debug_trajectory_details: False
@@ -167,7 +167,7 @@ controller_server:
       max_vel_x: 0.12
       max_vel_y: 0.0
       # Nav2 输出角速度上限，给大角度掉头留出有效角速度。
-      max_vel_theta: 0.40
+      max_vel_theta: 0.50
       min_speed_xy: 0.0
       # 平面合速度上限，与 max_vel_x 保持一致。
       max_speed_xy: 0.12
@@ -267,10 +267,10 @@ local_costmap:
           obstacle_min_range: 0.15
           max_obstacle_height: 2.0
       inflation_layer:
-        # 旧控制器基线 + 当前地图实机膨胀适配；6.0/0.20 已在 2.5cm 地图验证。
+        # 恢复实车稳定的 0.20m 软代价范围；完整 footprint 继续负责实体碰撞边界。
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
-        inflation_radius: 0.35
+        inflation_radius: 0.20
 
 global_costmap:
   global_costmap:
@@ -292,34 +292,33 @@ global_costmap:
       footprint: "[ [0.18650, 0.00000], [0.16543, 0.10591], [0.10544, 0.19569], [0.01566, 0.25568], [-0.09025, 0.27675], [-0.19616, 0.25568], [-0.28594, 0.19569], [-0.34593, 0.10591], [-0.36700, 0.00000], [-0.34593, -0.10591], [-0.28594, -0.19569], [-0.19616, -0.25568], [-0.09025, -0.27675], [0.01566, -0.25568], [0.10544, -0.19569], [0.16543, -0.10591] ]"
       # 给实车圆柱外廓保留 10mm 参数边界，和 local_costmap 保持一致。
       footprint_padding: 0.01
-      # 2Hz 全局重规划读取实时 /scan 障碍；InflationLayer 必须最后执行。
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # 每周期重建实时激光障碍，避免历史投影累积；InflationLayer 必须最后执行。
+      plugins: ["static_layer", "nonpersistent_obstacle_layer", "inflation_layer"]
       static_layer:
         # 从 map_server 订阅静态地图。
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
-      obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+      nonpersistent_obstacle_layer:
+        plugin: "nav2_costmap_2d/NonPersistentVoxelLayer"
         enabled: True
         footprint_clearing_enabled: True
         combination_method: 1
-        tf_filter_tolerance: 0.05
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        mark_threshold: 0
         observation_sources: scan
         scan:
           topic: /scan
           data_type: "LaserScan"
-          clearing: True
+          clearing: False
           marking: True
-          inf_is_valid: True
           observation_persistence: 0.0
-          expected_update_rate: 0.0
-          raytrace_max_range: 3.0
-          raytrace_min_range: 0.15
           obstacle_max_range: 2.5
           obstacle_min_range: 0.15
           max_obstacle_height: 2.0
       inflation_layer:
-        # 旧控制器基线 + 当前地图实机膨胀适配；和 local_costmap 保持一致。
+        # 全局规划保留 0.35m 软代价范围，促使路径远离墙壁和障碍边缘。
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
         inflation_radius: 0.35
@@ -349,8 +348,8 @@ planner_server:
       max_iterations: 100000
       max_on_approach_iterations: 1000
       max_planning_time: 2.0
-      # 保持适中的代价偏好，先回到稳定 DWB 基线再单独处理贴边。
-      cost_travel_multiplier: 1.5
+      # 提高代价偏好，使全局路径更靠走廊中线、远离墙壁和障碍边缘。
+      cost_travel_multiplier: 2.0
 
 behavior_server:
   ros__parameters:
@@ -396,9 +395,9 @@ velocity_smoother:
     # 开环平滑，不等待里程计反馈闭环修正。
     feedback: "OPEN_LOOP"
     # 平滑后的最大速度：[x, y, theta]，差速底盘 y 保持 0。
-    max_velocity: [0.12, 0.0, 0.40]
+    max_velocity: [0.12, 0.0, 0.50]
     # 允许很小倒车速度，角速度正负对称限幅。
-    min_velocity: [-0.05, 0.0, -0.40]
+    min_velocity: [-0.05, 0.0, -0.50]
     # 平滑器加速度/减速度限制，与 DWB 限制保持一致。
     max_accel: [0.30, 0.0, 0.50]
     max_decel: [-0.30, 0.0, -0.50]

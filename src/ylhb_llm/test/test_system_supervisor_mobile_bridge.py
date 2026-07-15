@@ -46,36 +46,6 @@ def allow_patrol_start_gates(node):
     node.log_patrol_start_readiness = Mock()
 
 
-def navigation_safety_node(*, map_ready=False, costmaps_ready=False):
-    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
-    now = system_supervisor_node.time.time()
-    node.last_scan_received_at = now
-    node.last_scan_stamp_at = now
-    node.lifecycle_states = {'/collision_monitor': 'active'}
-    node.patrol_error = ''
-    node.startup_step = ''
-    node.patrol_timeout = Mock(return_value=1.0)
-    node.has_transform = Mock(side_effect=lambda parent, child: {
-        ('odom', 'base_footprint'): True,
-        ('base_footprint', 'laser_link'): True,
-        ('map', 'laser_link'): map_ready,
-    }.get((parent, child), False))
-    node.lifecycle_node_is_active = Mock(return_value=True)
-    node.count_subscribers = Mock(return_value=1)
-    node.topic_subscriber_nodes = Mock(side_effect=lambda topic: {
-        '/scan': {
-            '/robot/collision_monitor',
-            *({'/nav/local_costmap', '/nav/global_costmap'} if costmaps_ready else set()),
-        },
-        '/cmd_vel': {'/robot/collision_monitor'},
-        '/cmd_vel_safe': {'/robot/zlac8015d_canopen_controller'},
-    }.get(topic, set()))
-    node.topic_publisher_nodes = Mock(side_effect=lambda topic: {
-        '/cmd_vel_safe': {'/robot/collision_monitor'},
-    }.get(topic, set()))
-    return node
-
-
 @pytest.fixture(autouse=True)
 def skip_supervisor_sleeps(monkeypatch):
     monkeypatch.setattr(system_supervisor_node.time, 'sleep', lambda _sec: None)
@@ -1196,100 +1166,6 @@ def test_status_payload_contains_mobile_bridge_fields():
     assert payload['mobile_bridge_http'] == 'http_ok'
     assert payload['mobile_bridge_url'] == 'http://192.168.1.50:8000'
     assert payload['jetson_ip'] == '192.168.1.50'
-
-
-def test_base_safety_allows_navigation_runtime_to_be_absent():
-    node = navigation_safety_node(map_ready=False, costmaps_ready=False)
-
-    node.last_scan_stamp_at = system_supervisor_node.time.time() - 2.0
-    assert node.navigation_safety_status(phase='base')['scanFresh'] is False
-    node.last_scan_stamp_at = system_supervisor_node.time.time()
-    assert node.wait_for_navigation_safety(0.01, phase='base') is True
-    assert node.navigation_safety_status(phase='base') == {
-        'phase': 'base',
-        'scanFresh': True,
-        'baseToLaserReady': True,
-        'mapToLaserReady': False,
-        'collisionMonitorReady': True,
-        'safeCmdVelBaseReady': True,
-        'safeCmdVelSubscribers': 1,
-        'localObstacleLayerReady': False,
-        'globalObstacleLayerReady': False,
-    }
-
-
-def test_navigation_safety_requires_map_tf_and_both_obstacle_layers():
-    node = navigation_safety_node(map_ready=False, costmaps_ready=False)
-
-    assert node.wait_for_navigation_safety(0.01, phase='navigation') is False
-    assert 'phase=navigation' in node.patrol_error
-    assert 'mapToLaserReady=false' in node.patrol_error
-
-    node = navigation_safety_node(map_ready=True, costmaps_ready=True)
-    assert node.wait_for_navigation_safety(0.01, phase='navigation') is True
-
-
-def test_patrol_start_applies_safety_gates_in_lifecycle_order():
-    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
-    sequence = []
-    node.patrol_mode_state = 'idle'
-    node.patrol_error = ''
-    node.patrol_warning = ''
-    node.patrol_route_request = ''
-    node.patrol_navigation_profile = 'normal'
-    node.active_patrol_navigation_mode = system_supervisor_node.NAVIGATION_PROFILE_NORMAL
-    node.active_hard_keepout_count = 0
-    node.startup_id = 'startup-1'
-    node.initial_pose_request_sent_at = 1.0
-    node.platform_context = {}
-    node.processes = {}
-    node.is_current_patrol_start = Mock(return_value=True)
-    node.prepare_patrol_navigation_assets = Mock(return_value=True)
-    node.keepout_required = Mock(return_value=False)
-    node.navigation_launch_file = Mock(return_value='/tmp/navigation.launch.py')
-    node.navigation_params_file_name = Mock(return_value='nav2_params.yaml')
-    node.log_info = Mock()
-    node.patrol_timeout = Mock(side_effect=lambda _name, default: default)
-    node.start_process = Mock(side_effect=lambda name: (
-        sequence.append('start patrol executor')
-        if name == 'patrol_executor'
-        else None
-    ) or True)
-    node.wait_for_core_sensors = Mock(side_effect=lambda _timeout: sequence.append('wait_for_core_sensors') or True)
-    node.wait_for_navigation_safety = Mock(side_effect=lambda _timeout, *, phase: sequence.append(
-        f'{phase} safety'
-    ) or True)
-    node.start_navigation_process = Mock(side_effect=lambda: sequence.append('start_navigation_process') or True)
-    node.wait_for_lifecycle_manager_services = Mock(return_value=True)
-    node.wait_for_nav2_components_loaded = Mock(return_value=True)
-    node.manage_lifecycle_nodes = Mock(return_value=True)
-    node.wait_for_lifecycle_nodes_active = Mock(side_effect=lambda names, _timeout: sequence.append(
-        'navigation lifecycle active'
-    ) or True if names == system_supervisor_node.NAVIGATION_LIFECYCLE_NODES else True)
-    node.wait_for_navigation_ready = Mock(return_value=True)
-    node.initialize_amcl_with_confirmation = Mock(side_effect=lambda _generation: sequence.append('AMCL initialization') or True)
-    node.wait_for_stable_map_to_odom = Mock(side_effect=lambda **_kwargs: sequence.append('wait_for_stable_map_to_odom') or True)
-    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
-    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
-    node.wait_for_patrol_executor_ready = Mock(return_value=True)
-    node.log_patrol_start_readiness = Mock()
-    node.publish_patrol_command = Mock()
-    node.wait_for_patrol_command_ack = Mock(return_value=True)
-    node.set_result = Mock()
-    node.fail_patrol_start = Mock()
-
-    node._start_patrol_transaction('navigation', '', 1)
-
-    assert sequence == [
-        'wait_for_core_sensors',
-        'base safety',
-        'start_navigation_process',
-        'AMCL initialization',
-        'wait_for_stable_map_to_odom',
-        'navigation lifecycle active',
-        'navigation safety',
-        'start patrol executor',
-    ]
 
 
 def test_status_payload_contains_latest_mapping3d_status_and_result():

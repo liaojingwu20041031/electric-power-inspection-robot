@@ -1,6 +1,6 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="2" name="NavigateWaitRetry">
+    <RecoveryNode number_of_retries="1" name="NavigateWaitRetry">
       <PipelineSequence name="NavigateWithRetry">
         <NormalizeGoal input_goal="{goal}" output_goal="{map_goal}" global_frame="map"/>
         <RateController hz="2.0">
@@ -19,9 +19,7 @@
       </PipelineSequence>
       <ReactiveFallback name="SmallBackupRecovery">
         <GoalUpdated/>
-        <Sequence name="WaitOnly">
-          <Wait wait_duration="1"/>
-        </Sequence>
+        <BackUp backup_dist="0.08" backup_speed="0.03" time_allowance="4.0"/>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

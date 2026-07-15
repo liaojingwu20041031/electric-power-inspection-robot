@@ -10,8 +10,8 @@ WORKSPACE_DIR = PACKAGE_DIR.parents[1]
 NAV2_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params.yaml"
 NAV2_KEEPOUT_CONFIG_PATH = PACKAGE_DIR / "config" / "nav2_params_keepout.yaml"
 NAV2_BT_PATH = PACKAGE_DIR / "config" / "nav2_no_recovery.xml"
-COLLISION_MONITOR_CONFIG_PATH = PACKAGE_DIR / "config" / "collision_monitor_params.yaml"
 BRINGUP_LAUNCH_PATH = PACKAGE_DIR / "launch" / "bringup.launch.py"
+PACKAGE_XML_PATH = PACKAGE_DIR / "package.xml"
 ZLAC_CONTROLLER_PATH = PACKAGE_DIR / "src" / "zlac8015d_canopen_controller.cpp"
 STM32_CONTROLLER_PATH = PACKAGE_DIR / "src" / "base_controller.cpp"
 ZLAC_CONFIG_PATH = PACKAGE_DIR / "config" / "zlac8015d.yaml"
@@ -121,8 +121,11 @@ def test_amcl_waits_for_operator_initial_pose_instead_of_forcing_origin():
 
 def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     config = load_nav2_params()
+    keepout_config = load_keepout_nav2_params()
     local = config["local_costmap"]["local_costmap"]["ros__parameters"]
     global_map = config["global_costmap"]["global_costmap"]["ros__parameters"]
+    keepout_local = keepout_config["local_costmap"]["local_costmap"]["ros__parameters"]
+    keepout_global = keepout_config["global_costmap"]["global_costmap"]["ros__parameters"]
     local_footprint = ast.literal_eval(local["footprint"])
     global_footprint = ast.literal_eval(global_map["footprint"])
 
@@ -132,7 +135,8 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     assert local["height"] == 4
     assert local["footprint_padding"] == 0.01
     assert "robot_radius" not in local
-    assert 0.30 <= local["inflation_layer"]["inflation_radius"] <= 0.70
+    assert 0.20 <= local["inflation_layer"]["inflation_radius"] < global_map["inflation_layer"]["inflation_radius"]
+    assert local["inflation_layer"] == keepout_local["inflation_layer"]
     assert local["inflation_layer"]["cost_scaling_factor"] > 0
 
     assert global_map["update_frequency"] == 2.0
@@ -142,35 +146,50 @@ def test_costmaps_use_static_global_map_and_stable_inflation_baseline():
     assert local_footprint == global_footprint
     assert len(local_footprint) == EXPECTED_FOOTPRINT_POINTS
     assert 0.30 <= global_map["inflation_layer"]["inflation_radius"] <= 0.70
+    assert global_map["inflation_layer"] == keepout_global["inflation_layer"]
     assert global_map["inflation_layer"]["cost_scaling_factor"] > 0
 
 
-def test_global_costmaps_use_fresh_lidar_without_accumulating_ghosts():
+def test_global_costmaps_use_nonpersistent_lidar_for_dynamic_replanning():
     normal_global = load_nav2_params()["global_costmap"]["global_costmap"]["ros__parameters"]
     keepout_global = load_keepout_nav2_params()["global_costmap"]["global_costmap"]["ros__parameters"]
+    package = ET.parse(PACKAGE_XML_PATH).getroot()
+    exec_dependencies = {dependency.text for dependency in package.findall("exec_depend")}
 
     assert normal_global["always_send_full_costmap"] is True
     assert keepout_global["always_send_full_costmap"] is True
-    assert normal_global["plugins"] == ["static_layer", "obstacle_layer", "inflation_layer"]
-    assert keepout_global["plugins"] == ["static_layer", "obstacle_layer", "keepout_filter", "inflation_layer"]
+    assert normal_global["plugins"] == ["static_layer", "nonpersistent_obstacle_layer", "inflation_layer"]
+    assert keepout_global["plugins"] == [
+        "static_layer",
+        "nonpersistent_obstacle_layer",
+        "keepout_filter",
+        "inflation_layer",
+    ]
     assert normal_global["plugins"][-1] == "inflation_layer"
     assert keepout_global["plugins"][-1] == "inflation_layer"
     assert normal_global["transform_tolerance"] == 0.3
     assert keepout_global["transform_tolerance"] == 0.3
-    assert normal_global["obstacle_layer"] == keepout_global["obstacle_layer"]
+    assert normal_global["nonpersistent_obstacle_layer"] == keepout_global["nonpersistent_obstacle_layer"]
     assert normal_global["inflation_layer"] == keepout_global["inflation_layer"]
+    assert "nonpersistent_voxel_layer" in exec_dependencies
 
-    obstacle = normal_global["obstacle_layer"]
+    obstacle = normal_global["nonpersistent_obstacle_layer"]
     scan = obstacle["scan"]
+    assert obstacle["plugin"] == "nav2_costmap_2d/NonPersistentVoxelLayer"
     assert obstacle["enabled"] is True
-    assert obstacle["footprint_clearing_enabled"] is True
     assert obstacle["combination_method"] == 1
-    assert obstacle["tf_filter_tolerance"] == 0.05
+    assert obstacle["origin_z"] == 0.0
+    assert obstacle["z_resolution"] == 0.05
+    assert obstacle["z_voxels"] == 16
+    assert obstacle["mark_threshold"] == 0
+    assert "tf_filter_tolerance" not in obstacle
     assert scan["topic"] == "/scan"
-    assert scan["clearing"] is True
+    assert scan["data_type"] == "LaserScan"
     assert scan["marking"] is True
+    assert scan["clearing"] is False
     assert scan["observation_persistence"] == 0.0
-    assert scan["raytrace_max_range"] > scan["obstacle_max_range"]
+    assert scan["obstacle_max_range"] == 2.5
+    assert not any(key.startswith("raytrace_") for key in scan)
 
 
 def test_local_costmap_uses_lidar_marking_and_clearing():
@@ -181,7 +200,9 @@ def test_local_costmap_uses_lidar_marking_and_clearing():
 
         assert "obstacle_layer" in local["plugins"]
         assert local["always_send_full_costmap"] is True
+        assert obstacle["plugin"] == "nav2_costmap_2d::ObstacleLayer"
         assert obstacle["footprint_clearing_enabled"] is True
+        assert scan["topic"] == "/scan"
         assert scan["clearing"] is True
         assert scan["marking"] is True
         assert scan["inf_is_valid"] is True
@@ -196,16 +217,18 @@ def test_rotation_shim_handles_large_initial_heading_changes():
     follow_path = config["controller_server"]["ros__parameters"]["FollowPath"]
     keepout_follow_path = load_keepout_nav2_params()["controller_server"]["ros__parameters"]["FollowPath"]
     smoother = config["velocity_smoother"]["ros__parameters"]
+    keepout_smoother = load_keepout_nav2_params()["velocity_smoother"]["ros__parameters"]
 
     assert follow_path == keepout_follow_path
+    assert smoother == keepout_smoother
     assert follow_path["plugin"] == "nav2_rotation_shim_controller::RotationShimController"
     assert follow_path["primary_controller"] == "dwb_core::DWBLocalPlanner"
     assert 0 < follow_path["angular_disengage_threshold"] < follow_path["angular_dist_threshold"] <= 3.1416
     assert follow_path["forward_sampling_distance"] > 0
-    assert 0 < follow_path["rotate_to_heading_angular_vel"] <= smoother["max_velocity"][2]
+    assert 0.40 <= follow_path["rotate_to_heading_angular_vel"] <= smoother["max_velocity"][2]
     assert follow_path["max_angular_accel"] == smoother["max_accel"][2]
     assert follow_path["simulate_ahead_time"] > 0
-    assert follow_path["rotate_to_goal_heading"] is False
+    assert follow_path["rotate_to_goal_heading"] is True
     assert follow_path["closed_loop"] is True
 
 
@@ -221,42 +244,26 @@ def test_behavior_tree_keeps_two_hz_global_replanning():
     assert pipeline.find(".//FollowPath") is not None
 
 
-def test_collision_monitor_routes_all_velocity_through_safe_chassis_topic():
-    collision = yaml.safe_load(
-        COLLISION_MONITOR_CONFIG_PATH.read_text(encoding="utf-8")
-    )["collision_monitor"]["ros__parameters"]
+def test_chassis_uses_direct_cmd_vel_with_driver_watchdogs():
     bringup = BRINGUP_LAUNCH_PATH.read_text(encoding="utf-8")
+    package_xml = PACKAGE_XML_PATH.read_text(encoding="utf-8")
     zlac = ZLAC_CONTROLLER_PATH.read_text(encoding="utf-8")
     stm32 = STM32_CONTROLLER_PATH.read_text(encoding="utf-8")
     zlac_config = yaml.safe_load(ZLAC_CONFIG_PATH.read_text(encoding="utf-8"))[
         "zlac8015d_canopen_controller"
     ]["ros__parameters"]
 
-    assert collision["cmd_vel_in_topic"] == "/cmd_vel"
-    assert collision["cmd_vel_out_topic"] == "/cmd_vel_safe"
-    assert collision["cmd_vel_in_topic"] != collision["cmd_vel_out_topic"]
-    assert collision["observation_sources"] == ["scan"]
-    assert collision["scan"]["topic"] == "/scan"
-    assert collision["source_timeout"] <= 0.5
-    assert collision["polygons"] == []
-    assert collision["stop_zone"]["action_type"] == "stop"
-    assert collision["stop_zone"]["enabled"] is False
-    assert collision["stop_zone"]["visualize"] is False
-    assert collision["slowdown_zone"]["action_type"] == "slowdown"
-    assert collision["slowdown_zone"]["enabled"] is False
-    assert collision["slowdown_zone"]["visualize"] is False
-    assert 0 < collision["slowdown_zone"]["slowdown_ratio"] < 1
-
-    assert "nav2_collision_monitor" in bringup
-    assert "collision_monitor" in bringup
+    assert "nav2_collision_monitor" not in bringup
+    assert "collision_monitor" not in bringup
+    assert "nav2_collision_monitor" not in package_xml
     assert "cmd_vel_topic" in zlac
     assert "cmd_vel_topic" in stm32
-    assert zlac_config["cmd_vel_topic"] == "/cmd_vel_safe"
+    assert zlac_config["cmd_vel_topic"] == "/cmd_vel"
     assert zlac_config["scan_topic"] == "/scan"
     assert zlac_config["require_fresh_scan"] is True
     assert zlac_config["scan_timeout_sec"] == 0.3
     assert zlac_config["cmd_timeout_sec"] == 0.5
-    assert "'cmd_vel_topic': '/cmd_vel_safe'" in bringup
+    assert "'cmd_vel_topic': '/cmd_vel'" in bringup
     assert "'require_fresh_scan': True" in bringup
     assert "'scan_timeout_sec': 0.3" in bringup
     assert "'cmd_timeout_sec': 0.5" in bringup
@@ -264,6 +271,8 @@ def test_collision_monitor_routes_all_velocity_through_safe_chassis_topic():
     assert 'declare_parameter<std::string>("cmd_vel_topic", "cmd_vel")' in stm32
     assert 'create_subscription<geometry_msgs::msg::Twist>(\n      cmd_vel_topic_' in zlac
     assert 'create_subscription<geometry_msgs::msg::Twist>(\n            cmd_vel_topic_' in stm32
+    assert "/cmd_vel_safe" not in bringup
+    assert "/cmd_vel_safe" not in ZLAC_CONFIG_PATH.read_text(encoding="utf-8")
     assert '"cmd_vel_safe"' not in zlac
     assert '"cmd_vel_safe"' not in stm32
     assert "last_scan_stamp_sec_" in zlac
@@ -294,7 +303,8 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     assert follow_path["max_vel_x"] == 0.12
     assert follow_path["min_vel_x"] == 0.0
     assert follow_path["max_speed_xy"] == 0.12
-    assert follow_path["max_vel_theta"] == 0.40
+    assert follow_path["max_vel_theta"] == smoother["max_velocity"][2]
+    assert follow_path["max_vel_theta"] >= 0.50
     assert follow_path["min_speed_theta"] == 0.18
     assert follow_path["vx_samples"] >= 3
     assert follow_path["vtheta_samples"] >= 3
@@ -316,8 +326,9 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     assert follow_path["GoalDist.scale"] > 0
     assert follow_path["RotateToGoal.lookahead_time"] >= 0
 
-    assert smoother["max_velocity"] == [0.12, 0.0, 0.40]
-    assert smoother["min_velocity"] == [-0.05, 0.0, -0.40]
+    assert smoother["max_velocity"][:2] == [0.12, 0.0]
+    assert smoother["min_velocity"][:2] == [-0.05, 0.0]
+    assert smoother["min_velocity"][2] == -follow_path["max_vel_theta"]
     assert smoother["max_accel"] == [
         follow_path["acc_lim_x"],
         follow_path["acc_lim_y"],
@@ -353,6 +364,7 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
     navigate_recovery = behavior_tree.find(".//RecoveryNode[@name='NavigateWaitRetry']")
     follow_path_recovery = behavior_tree.find(".//RecoveryNode[@name='FollowPath']")
     outer_recovery = behavior_tree.find(".//ReactiveFallback[@name='SmallBackupRecovery']")
+    backups = behavior_tree.findall(".//BackUp")
 
     assert progress["plugin"] == "nav2_controller::PoseProgressChecker"
     assert progress["required_movement_radius"] == 0.05
@@ -361,9 +373,8 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
     assert bt["bt_loop_duration"] == 20
     assert bt["default_server_timeout"] >= 500
     assert bt["wait_for_service_timeout"] >= 1000
-    assert behavior_tree.find(".//BackUp") is None
     assert navigate_recovery is not None
-    assert navigate_recovery.attrib["number_of_retries"] == "2"
+    assert navigate_recovery.attrib["number_of_retries"] == "1"
 
     assert follow_path_recovery is not None
     assert follow_path_recovery.attrib["number_of_retries"] == "1"
@@ -378,19 +389,28 @@ def test_navigation_recovers_from_stalls_with_checked_low_speed_backup():
 
     assert outer_recovery is not None
     outer_recovery_children = list(outer_recovery)
-    assert [child.tag for child in outer_recovery_children[:2]] == ["GoalUpdated", "Sequence"]
-    outer_sequence = outer_recovery_children[1]
-    assert outer_sequence.attrib["name"] == "WaitOnly"
-    outer_sequence_children = list(outer_sequence)
-    assert [child.tag for child in outer_sequence_children] == ["Wait"]
-    assert outer_sequence_children[0].attrib["wait_duration"] == "1"
+    assert [child.tag for child in outer_recovery_children] == ["GoalUpdated", "BackUp"]
+    assert len(backups) == 1
+    assert backups[0].attrib == {
+        "backup_dist": "0.08",
+        "backup_speed": "0.03",
+        "time_allowance": "4.0",
+    }
+
+    for params in (load_nav2_params(), load_keepout_nav2_params()):
+        behavior = params["behavior_server"]["ros__parameters"]
+        assert behavior["behavior_plugins"] == ["backup", "wait"]
+        assert behavior["costmap_topic"] == "local_costmap/costmap_raw"
+        assert behavior["footprint_topic"] == "local_costmap/published_footprint"
 
 
 def test_smac_planner_avoids_unknown_and_prefers_centered_costs():
     planner = load_nav2_params()["planner_server"]["ros__parameters"]["GridBased"]
+    keepout_planner = load_keepout_nav2_params()["planner_server"]["ros__parameters"]["GridBased"]
 
     assert planner["allow_unknown"] is False
-    assert planner["cost_travel_multiplier"] == 1.5
+    assert planner == keepout_planner
+    assert planner["cost_travel_multiplier"] >= 2.0
 
 
 def test_relocalization_scripts_are_installed_without_py_extension():

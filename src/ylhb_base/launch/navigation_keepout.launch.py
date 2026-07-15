@@ -171,7 +171,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'autostart': True,
+            'autostart': False,
             'node_names': [
                 'keepout_global_mask_server',
                 'keepout_global_filter_info_server',

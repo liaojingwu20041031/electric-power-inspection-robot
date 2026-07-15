@@ -25,7 +25,7 @@
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
-  <exec_depend>nav2_collision_monitor</exec_depend>
+  <exec_depend>nonpersistent_voxel_layer</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>

@@ -136,11 +136,9 @@ KEEPOUT_LIFECYCLE_NODES = (
 NAVIGATION_PROFILE_AUTO = 'auto'
 NAVIGATION_PROFILE_NORMAL = 'normal'
 NAVIGATION_PROFILE_KEEPOUT = 'keepout'
-SAFETY_PHASE_BASE = 'base'
-SAFETY_PHASE_NAVIGATION = 'navigation'
-COLLISION_MONITOR_NODE = '/collision_monitor'
 LIFECYCLE_MANAGER_LOCALIZATION = '/lifecycle_manager_localization/manage_nodes'
 LIFECYCLE_MANAGER_NAVIGATION = '/lifecycle_manager_navigation/manage_nodes'
+LIFECYCLE_MANAGER_KEEPOUT = '/lifecycle_manager_keepout/manage_nodes'
 SHUTDOWN_ORDER = (
     'patrol_executor',
     'navigation',
@@ -370,7 +368,6 @@ class SystemSupervisorNode(Node):
         self.last_scan_received_at = 0.0
         self.last_scan_stamp_at = 0.0
         self.last_amcl_received_at = 0.0
-        self.navigation_safety_phase = SAFETY_PHASE_BASE
         self.startup_generation = 0
         self.startup_id = ''
         self.startup_started_at = 0.0
@@ -382,6 +379,7 @@ class SystemSupervisorNode(Node):
         self.initial_pose_confirmed_at = 0.0
         self.localization_lifecycle_started = False
         self.navigation_lifecycle_started = False
+        self.keepout_lifecycle_started = False
         self.latest_mapping3d_status: Dict[str, Any] = {}
         self.latest_mapping3d_result: Dict[str, Any] = {}
         self.inflight_commands = set()
@@ -884,6 +882,19 @@ class SystemSupervisorNode(Node):
             self.stop_lidar_motor()
 
     def shutdown_started_lifecycles(self) -> None:
+        if getattr(self, 'keepout_lifecycle_started', False):
+            keepout_unconfigured = all(
+                self.lifecycle_node_state(name) == State.PRIMARY_STATE_UNCONFIGURED
+                for name in KEEPOUT_LIFECYCLE_NODES
+            )
+            if not keepout_unconfigured:
+                self.manage_lifecycle_nodes(
+                    LIFECYCLE_MANAGER_KEEPOUT,
+                    ManageLifecycleNodes.Request.SHUTDOWN,
+                    timeout_sec=3.0,
+                    required=False,
+                )
+            self.keepout_lifecycle_started = False
         if getattr(self, 'navigation_lifecycle_started', False):
             nav_unconfigured = all(
                 self.lifecycle_node_state(name) == State.PRIMARY_STATE_UNCONFIGURED
@@ -1046,6 +1057,7 @@ class SystemSupervisorNode(Node):
             self.initial_pose_confirmed_at = 0.0
             self.localization_lifecycle_started = False
             self.navigation_lifecycle_started = False
+            self.keepout_lifecycle_started = False
             if not self.start_process_raw('navigation'):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
@@ -1072,14 +1084,20 @@ class SystemSupervisorNode(Node):
             if not self.wait_for_navigation_ready(self.patrol_timeout('patrol_navigation_timeout_sec', 35.0)):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
-            if (
-                self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT
-                and not self.wait_for_lifecycle_nodes_active(
+            if self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT:
+                if not self.manage_lifecycle_nodes(
+                    LIFECYCLE_MANAGER_KEEPOUT,
+                    ManageLifecycleNodes.Request.STARTUP,
+                    timeout_sec=12.0,
+                ):
+                    self.set_result('reload_patrol_route', False, '路线刷新失败: Keepout lifecycle 启动失败')
+                    return
+                self.keepout_lifecycle_started = True
+                if not self.wait_for_lifecycle_nodes_active(
                     KEEPOUT_LIFECYCLE_NODES, 12.0
-                )
-            ):
-                self.set_result('reload_patrol_route', False, '路线刷新失败: Keepout lifecycle 尚未 active')
-                return
+                ):
+                    self.set_result('reload_patrol_route', False, '路线刷新失败: Keepout lifecycle 尚未 active')
+                    return
             if not self.initialize_amcl_with_confirmation(generation):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: AMCL 初始定位失败')
                 return
@@ -1108,11 +1126,6 @@ class SystemSupervisorNode(Node):
             if (
                 self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT
                 and not self.wait_for_keepout_runtime_ready(12.0)
-            ):
-                self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
-                return
-            if not self.wait_for_navigation_safety(
-                8.0, phase=SAFETY_PHASE_NAVIGATION
             ):
                 self.set_result('reload_patrol_route', False, '路线刷新失败: ' + self.patrol_error)
                 return
@@ -1145,6 +1158,7 @@ class SystemSupervisorNode(Node):
             self.initial_pose_confirmed_at = 0.0
             self.localization_lifecycle_started = False
             self.navigation_lifecycle_started = False
+            self.keepout_lifecycle_started = False
         try:
             self._start_patrol_transaction(profile, route_id, generation)
         finally:
@@ -1210,12 +1224,6 @@ class SystemSupervisorNode(Node):
         # 2. core sensors
         if not gate(self.wait_for_core_sensors(self.patrol_timeout('patrol_bringup_timeout_sec', 25.0)), '底盘与传感器未就绪'):
             return
-        if not gate(
-            self.wait_for_navigation_safety(10.0, phase=SAFETY_PHASE_BASE),
-            'Collision Monitor 或安全速度链未就绪',
-        ):
-            return
-
         # 3. inspection peripherals
         if profile == 'inspection':
             self.startup_step = 'starting_inspection'
@@ -1266,6 +1274,16 @@ class SystemSupervisorNode(Node):
         # 9. Keepout lifecycle is only part of the keepout profile.
         if self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT:
             if not gate(
+                self.manage_lifecycle_nodes(
+                    LIFECYCLE_MANAGER_KEEPOUT,
+                    ManageLifecycleNodes.Request.STARTUP,
+                    timeout_sec=12.0,
+                ),
+                'Keepout lifecycle 启动失败',
+            ):
+                return
+            self.keepout_lifecycle_started = True
+            if not gate(
                 self.wait_for_lifecycle_nodes_active(KEEPOUT_LIFECYCLE_NODES, 12.0),
                 'Keepout lifecycle 尚未 active',
             ):
@@ -1314,11 +1332,6 @@ class SystemSupervisorNode(Node):
                 'global/local costmap 尚未收到 keepout info 和 mask',
             ):
                 return
-        if not gate(
-            self.wait_for_navigation_safety(8.0, phase=SAFETY_PHASE_NAVIGATION),
-            '导航安全层未就绪',
-        ):
-            return
         self.startup_step = 'navigation_ready'
         # 15. patrol executor (no auto initial pose)
         self.startup_step = 'starting_executor'
@@ -1885,7 +1898,6 @@ class SystemSupervisorNode(Node):
         keepout_lifecycle_active = self.lifecycle_nodes_cached_active(
             KEEPOUT_LIFECYCLE_NODES
         )
-        navigation_safety = self.navigation_safety_status()
         readiness = {
             'bringup': bool(bringup and bringup.is_running()),
             'navigation': bool(navigation and navigation.is_running()),
@@ -1893,10 +1905,6 @@ class SystemSupervisorNode(Node):
             'route_file': self.has_patrol_route_file(),
             'odom': sensors['odom_publisher'] and sensors['odom_fresh'],
             'scan': sensors['scan_publisher'] and sensors['scan_fresh'],
-            'collision_monitor': navigation_safety['collisionMonitorReady'],
-            'safe_cmd_vel': navigation_safety['safeCmdVelBaseReady'],
-            'local_obstacle_layer': navigation_safety['localObstacleLayerReady'],
-            'global_obstacle_layer': navigation_safety['globalObstacleLayerReady'],
             'tf': sensors['odom_to_base'] and sensors['base_to_laser'],
             'map': self.topic_has_publishers('/map'),
             'map_to_odom': self.has_map_to_odom(),
@@ -1943,10 +1951,6 @@ class SystemSupervisorNode(Node):
             'route_file': self.has_patrol_route_file(),
             'odom': False,
             'scan': False,
-            'collision_monitor': False,
-            'safe_cmd_vel': False,
-            'local_obstacle_layer': False,
-            'global_obstacle_layer': False,
             'tf': False,
             'map': False,
             'map_to_odom': False,
@@ -2089,10 +2093,12 @@ class SystemSupervisorNode(Node):
         return False
 
     def wait_for_lifecycle_manager_services(self, timeout_sec: float) -> bool:
-        required = (
+        required = [
             LIFECYCLE_MANAGER_LOCALIZATION,
             LIFECYCLE_MANAGER_NAVIGATION,
-        )
+        ]
+        if self.active_patrol_navigation_mode == NAVIGATION_PROFILE_KEEPOUT:
+            required.append(LIFECYCLE_MANAGER_KEEPOUT)
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             missing = [name for name in required if not self.service_exists(name)]
@@ -2360,159 +2366,6 @@ class SystemSupervisorNode(Node):
             return bool(self.get_subscriptions_info_by_topic(topic))
         except Exception:
             return False
-
-    @staticmethod
-    def _endpoint_node_name(info: Any) -> str:
-        namespace = str(getattr(info, 'node_namespace', '') or '').rstrip('/')
-        name = str(getattr(info, 'node_name', '') or '').lstrip('/')
-        return f'{namespace}/{name}' if namespace else f'/{name}'
-
-    def topic_subscriber_nodes(self, topic: str) -> set[str]:
-        try:
-            return {
-                self._endpoint_node_name(info)
-                for info in self.get_subscriptions_info_by_topic(topic)
-            }
-        except Exception:
-            return set()
-
-    def topic_publisher_nodes(self, topic: str) -> set[str]:
-        try:
-            return {
-                self._endpoint_node_name(info)
-                for info in self.get_publishers_info_by_topic(topic)
-            }
-        except Exception:
-            return set()
-
-    def navigation_safety_status(
-        self,
-        *,
-        phase: Optional[str] = None,
-        refresh_collision_monitor: bool = False,
-    ) -> Dict[str, Any]:
-        phase = phase or getattr(
-            self, 'navigation_safety_phase', SAFETY_PHASE_BASE
-        )
-        scan_fresh = self.scan_freshness_status()['scan_fresh']
-        scan_nodes = self.topic_subscriber_nodes('/scan')
-        cmd_vel_nodes = self.topic_subscriber_nodes('/cmd_vel')
-        safe_subscriber_nodes = self.topic_subscriber_nodes('/cmd_vel_safe')
-        safe_publishers = self.topic_publisher_nodes('/cmd_vel_safe')
-        if refresh_collision_monitor:
-            collision_active = self.lifecycle_node_is_active(COLLISION_MONITOR_NODE)
-        else:
-            collision_active = (
-                getattr(self, 'lifecycle_states', {}).get(COLLISION_MONITOR_NODE)
-                == 'active'
-            )
-
-        local_ready = any(
-            name.endswith('/controller_server') or name.endswith('/local_costmap')
-            for name in scan_nodes
-        )
-        global_ready = any(
-            name.endswith('/planner_server') or name.endswith('/global_costmap')
-            for name in scan_nodes
-        )
-        collision_graph_ready = (
-            any(name.endswith(COLLISION_MONITOR_NODE) for name in scan_nodes)
-            and any(name.endswith(COLLISION_MONITOR_NODE) for name in cmd_vel_nodes)
-            and any(
-                name.endswith(COLLISION_MONITOR_NODE)
-                for name in safe_publishers
-            )
-        )
-        safe_base_ready = any(
-            name.endswith((
-                '/zlac8015d_canopen_controller',
-                '/base_controller',
-            ))
-            for name in safe_subscriber_nodes
-        )
-        try:
-            safe_subscribers = int(self.count_subscribers('/cmd_vel_safe'))
-        except Exception:
-            safe_subscribers = 0
-        return {
-            'phase': phase,
-            'scanFresh': scan_fresh,
-            'baseToLaserReady': self.has_transform(
-                'base_footprint', 'laser_link'
-            ),
-            'mapToLaserReady': self.has_transform('map', 'laser_link'),
-            'collisionMonitorReady': collision_active and collision_graph_ready,
-            'safeCmdVelBaseReady': safe_base_ready,
-            'safeCmdVelSubscribers': safe_subscribers,
-            'localObstacleLayerReady': local_ready,
-            'globalObstacleLayerReady': global_ready,
-        }
-
-    def wait_for_navigation_safety(
-        self, timeout_sec: float, *, phase: str
-    ) -> bool:
-        if phase not in (SAFETY_PHASE_BASE, SAFETY_PHASE_NAVIGATION):
-            raise ValueError(f'unknown navigation safety phase: {phase}')
-        self.navigation_safety_phase = phase
-        deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
-            status = self.navigation_safety_status(
-                phase=phase, refresh_collision_monitor=True
-            )
-            missing = []
-            if not status['scanFresh']:
-                missing.append('/scan 已过期')
-            if not self.has_transform('odom', 'base_footprint'):
-                missing.append('odom→base_footprint TF 未就绪')
-            if not status['baseToLaserReady']:
-                missing.append('base_footprint→laser_link TF 未就绪')
-            if not status['collisionMonitorReady']:
-                missing.append('Collision Monitor 未 active')
-            if not status['safeCmdVelBaseReady']:
-                missing.append(
-                    '/cmd_vel_safe 未连接到已知底盘订阅者 '
-                    f"(subscribers={status['safeCmdVelSubscribers']})"
-                )
-            if (
-                phase == SAFETY_PHASE_NAVIGATION
-                and not status['mapToLaserReady']
-            ):
-                missing.append('map→laser_link TF 未就绪')
-            if (
-                phase == SAFETY_PHASE_NAVIGATION
-                and not status['localObstacleLayerReady']
-            ):
-                missing.append('local obstacle layer 未订阅 /scan')
-            if (
-                phase == SAFETY_PHASE_NAVIGATION
-                and not status['globalObstacleLayerReady']
-            ):
-                missing.append('global obstacle layer 未订阅 /scan')
-            if not missing:
-                self.patrol_error = ''
-                return True
-            self.startup_step = 'waiting_navigation_safety'
-            snapshot = '\n'.join(
-                f'{key}={str(status[key]).lower()}'
-                for key in (
-                    'scanFresh',
-                    'baseToLaserReady',
-                    'mapToLaserReady',
-                    'collisionMonitorReady',
-                    'safeCmdVelBaseReady',
-                    'safeCmdVelSubscribers',
-                    'localObstacleLayerReady',
-                    'globalObstacleLayerReady',
-                )
-            )
-            self.patrol_error = (
-                '导航安全门控未就绪:\n'
-                f'phase={phase}\n'
-                f"missing={'；'.join(missing)}\n"
-                f'{snapshot}'
-            )
-            time.sleep(0.25)
-        return False
 
     def has_initial_pose_published(self, generation: Optional[int] = None) -> bool:
         event = getattr(self, 'last_initial_pose_event', {}) or {}
@@ -3027,7 +2880,6 @@ class SystemSupervisorNode(Node):
             'nav2_params_file': self.navigation_params_file_name(),
             'keepout_required': keepout_required,
             'keepout_ready': keepout_status['ready'],
-            'navigationSafety': self.navigation_safety_status(),
             'keepout_lifecycle_active': keepout_lifecycle_active,
             'lifecycle': {
                 name.lstrip('/'): getattr(self, 'lifecycle_states', {}).get(
@@ -3037,7 +2889,6 @@ class SystemSupervisorNode(Node):
                     *LOCALIZATION_LIFECYCLE_NODES,
                     *NAVIGATION_LIFECYCLE_NODES,
                     *KEEPOUT_LIFECYCLE_NODES,
-                    COLLISION_MONITOR_NODE,
                 )
             },
             'tf': {

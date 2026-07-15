@@ -1,7 +1,6 @@
 zlac8015d_canopen_controller:
   ros__parameters:
-    # 生产链路只接收 Collision Monitor 审核后的速度；独立调试默认仍可用 cmd_vel 参数覆盖。
-    cmd_vel_topic: /cmd_vel_safe
+    cmd_vel_topic: /cmd_vel
     scan_topic: /scan
     require_fresh_scan: true
     scan_timeout_sec: 0.3
