@@ -11,6 +11,8 @@
 新增一个手动留档脚本。用户完成实机验证并确认运动良好后执行脚本，脚本在
 `docs/navigation_patrol_parameter_history/` 下创建不可覆盖的时间戳目录。
 
+同时更新 `skills/ros2-practice-first/SKILL.md`：处理 Nav2、巡逻或底盘参数调整时，若用户现场确认运动良好，必须立即调用该脚本保存基线；未获得用户确认时不得自行标记为良好版本。
+
 每份快照保存：
 
 - Nav2 普通与禁行区参数；
@@ -36,3 +38,5 @@ scripts/save_navigation_patrol_baseline.sh "现场验证说明"
 脚本只读取和复制仓库文件，不启动 ROS2、Nav2、巡逻执行器，不发布 topic，不改变机器人状态。
 
 静态验证只检查脚本语法、首份快照内容和校验值；实机“运动良好”结论始终由用户现场确认。
+
+技能更新使用现有 `ros2-practice-first`，不新增重复技能或额外资源目录。
