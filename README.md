@@ -281,7 +281,7 @@ ros2 topic echo /gps/rtk_status --once
 
 ### 平台连接
 
-- [Robot Platform Protocol v1](docs/protocol/机器人平台协议-v1.md)：公网 heartbeat、命令、事件、deployment、鉴权与恢复合同
+- [Robot Platform Protocol v1](docs/protocol/robot-platform-v1.md)：公网 heartbeat、命令、事件、deployment、鉴权与恢复合同
 - [Jetson 云平台连接运维](docs/云平台连接运维.md)：platform.env、systemd、Cloud UI、日志脱敏、备份和本地回退
 - [移动端 APP 仓库](https://github.com/liaojingwu20041031/ylhb-robot-mobile)：Expo React Native 局域网调试端
 
