@@ -19,6 +19,7 @@ from std_srvs.srv import Trigger
 from ylhb_interfaces.msg import SayText, VoiceStatus
 
 from .qwen_client import QwenClient, QwenClientError
+from .local_wake_word import LocalWakeWord
 from .voice_stability import normalize_voice_text
 from .ros_params import declare_string_array_parameter
 
@@ -39,6 +40,7 @@ class VoiceSessionNode(Node):
     def __init__(self) -> None:
         super().__init__('voice_session_node')
         self.declare_parameter('agent_request_topic', '/inspection_ai/agent_request')
+        self.declare_parameter('agent_chat_topic', '/inspection_ai/agent_chat')
         self.declare_parameter('voice_session_status_topic', '/inspection_ai/voice_session_status')
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
         self.declare_parameter('voice_status_topic', '/inspection_ai/voice_status')
@@ -48,6 +50,22 @@ class VoiceSessionNode(Node):
         self.declare_parameter('audio_device', 'default')
         self.declare_parameter('audio_input_device', 'default')
         self.declare_parameter('enabled', False)
+        self.declare_parameter('auto_start_standby', True)
+        self.declare_parameter('silent_start', True)
+        self.declare_parameter('local_kws_enabled', True)
+        default_kws_dir = os.path.expanduser(
+            '~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20')
+        self.declare_parameter(
+            'kws_encoder', os.path.join(default_kws_dir, 'encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx'))
+        self.declare_parameter(
+            'kws_decoder', os.path.join(default_kws_dir, 'decoder-epoch-13-avg-2-chunk-8-left-64.onnx'))
+        self.declare_parameter(
+            'kws_joiner', os.path.join(default_kws_dir, 'joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx'))
+        self.declare_parameter('kws_tokens', os.path.join(default_kws_dir, 'tokens.txt'))
+        self.declare_parameter('kws_keywords', os.path.join(default_kws_dir, 'keywords.txt'))
+        self.declare_parameter('kws_keywords_score', 1.0)
+        self.declare_parameter('kws_keywords_threshold', 0.25)
+        self.declare_parameter('agent_response_timeout_sec', 30.0)
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
         self.declare_parameter('asr_model', 'qwen3-asr-flash')
         self.declare_parameter('request_timeout_sec', 15.0)
@@ -67,7 +85,7 @@ class VoiceSessionNode(Node):
         self.declare_parameter('asr_fail_standby_threshold', 3)
         self.declare_parameter('post_event_listen_pause_sec', 3.0)
         self.declare_parameter('ignore_empty_asr_after_event_sec', 6.0)
-        self.declare_parameter('context_followup_timeout_sec', 8.0)
+        self.declare_parameter('context_followup_timeout_sec', 12.0)
         self.declare_parameter('start_prompt_cooldown_sec', 8.0)
         self.declare_parameter('repeat_start_feedback', False)
         self.declare_parameter('pre_roll_sec', 0.4)
@@ -81,8 +99,12 @@ class VoiceSessionNode(Node):
         self.declare_parameter('debug_state_transitions', False)
         declare_string_array_parameter(self, 'wake_aliases')
         declare_string_array_parameter(self, 'voice_close_words')
+        declare_string_array_parameter(self, 'conversation_end_words')
 
         self.enabled = bool(self.get_parameter('enabled').value)
+        self.auto_start_standby = bool(self.get_parameter('auto_start_standby').value)
+        self.silent_start = bool(self.get_parameter('silent_start').value)
+        self.local_kws_enabled = bool(self.get_parameter('local_kws_enabled').value)
         input_device = str(self.get_parameter('audio_input_device').value)
         legacy_device = str(self.get_parameter('audio_device').value)
         self.audio_device = input_device if input_device and input_device != 'default' else legacy_device
@@ -119,6 +141,8 @@ class VoiceSessionNode(Node):
         self.wait_wake_threshold_multiplier = float(
             self.get_parameter('wait_wake_threshold_multiplier').value)
         self.tts_tail_pause_sec = float(self.get_parameter('tts_tail_pause_sec').value)
+        self.agent_response_timeout_sec = float(
+            self.get_parameter('agent_response_timeout_sec').value)
         self.debug_save_asr_audio = bool(self.get_parameter('debug_save_asr_audio').value)
         self.debug_audio_dir = str(self.get_parameter('debug_audio_dir').value)
         self.debug_audio_keep = int(self.get_parameter('debug_audio_keep').value)
@@ -128,8 +152,27 @@ class VoiceSessionNode(Node):
             for value in self.get_parameter('voice_close_words').value
             if str(value)
         )
+        self.conversation_end_words = tuple(
+            str(value)
+            for value in self.get_parameter('conversation_end_words').value
+            if str(value)
+        )
 
         self.qwen = QwenClient(str(self.get_parameter('dashscope_base_url').value))
+        self.local_kws = LocalWakeWord(
+            encoder=str(self.get_parameter('kws_encoder').value),
+            decoder=str(self.get_parameter('kws_decoder').value),
+            joiner=str(self.get_parameter('kws_joiner').value),
+            tokens=str(self.get_parameter('kws_tokens').value),
+            keywords=str(self.get_parameter('kws_keywords').value),
+            audio_device=self.audio_device,
+            sample_rate=self.sample_rate,
+            score=float(self.get_parameter('kws_keywords_score').value),
+            threshold=float(self.get_parameter('kws_keywords_threshold').value),
+        )
+        self.local_kws_error = ''
+        if self.local_kws_enabled and not self.local_kws.load():
+            self.local_kws_error = self.local_kws.error
         self.agent_request_pub = self.create_publisher(String, self.get_parameter('agent_request_topic').value, 10)
         self.status_pub = self.create_publisher(
             String, self.get_parameter('voice_session_status_topic').value, transient_qos())
@@ -138,6 +181,12 @@ class VoiceSessionNode(Node):
             VoiceStatus,
             self.get_parameter('voice_status_topic').value,
             self.voice_status_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            self.get_parameter('agent_chat_topic').value,
+            self.agent_chat_callback,
             10,
         )
         self.create_subscription(
@@ -182,13 +231,26 @@ class VoiceSessionNode(Node):
         self.last_say_at = 0.0
         self.last_recording_stats = {}
         self.last_status_payload_json = ''
+        self.awaiting_turn_id = ''
+        self.awaiting_response_deadline = 0.0
+        self.awaiting_answer_received = False
+        self.answer_received_at = 0.0
+        self.response_tts_started = False
+        self.resume_after_tts_at = 0.0
+        self.current_recording_proc = None
+
+        if self.enabled and self.auto_start_standby:
+            if self.local_kws_enabled and self.local_kws.ready and self.qwen.available():
+                self.activate_standby()
+            else:
+                self.last_error = self.local_kws_error or 'DASHSCOPE_API_KEY 未设置，无法调用云端 ASR。'
 
         self.worker = threading.Thread(target=self.session_loop, daemon=True)
         self.worker.start()
         self.create_timer(0.5, self.publish_status)
         self.get_logger().info(
             f'连续语音节点已启动：enabled={self.enabled}, 录音设备={self.audio_device}, '
-            f'唤醒词={self.wake_phrase}'
+            f'唤醒词={self.wake_phrase}, 本地KWS={self.local_kws.ready}'
         )
 
     def start_callback(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
@@ -200,33 +262,52 @@ class VoiceSessionNode(Node):
             response.success = False
             response.message = 'DASHSCOPE_API_KEY 未设置，无法调用云端 ASR。'
             return response
+        if not self.local_kws_enabled:
+            response.success = False
+            response.message = '本地唤醒未启用，拒绝回退到云端环境监听。'
+            return response
+        if not self.local_kws.ready:
+            response.success = False
+            response.message = f'本地唤醒不可用：{self.local_kws.error or self.local_kws_error}'
+            self.last_error = response.message
+            self.publish_status(force=True)
+            return response
         with self.lock:
             if self.session_enabled:
                 now = time.monotonic()
-                if self.repeat_start_feedback and now - self.last_start_prompt_at >= self.start_prompt_cooldown_sec:
+                if (
+                    not self.silent_start
+                    and self.repeat_start_feedback
+                    and now - self.last_start_prompt_at >= self.start_prompt_cooldown_sec
+                ):
                     self.say('voice_session', '语音模式已经开启。', priority=5)
                     self.last_start_prompt_at = now
                 response.success = True
                 response.message = '语音模式已经开启。'
                 return response
-            self.session_enabled = True
-            self.awakened = False
-            self.session_id = time.strftime('voice_%Y%m%d_%H%M%S')
-            self.utterance_seq = 0
-            self.asr_fail_count = 0
-            self.last_error = ''
-            self.last_active_at = time.monotonic()
-            self.pause_listen_until = 0.0
-            self.last_request_published_at = 0.0
-            self.context_followup_until = 0.0
-            self.in_context_followup = False
-            self.set_state('WAIT_WAKE')
-        self.say('voice_session', f'语音模式已开启，请先说{self.wake_phrase}。', priority=6)
+            self.activate_standby()
+        if not self.silent_start:
+            self.say('voice_session', f'语音模式已开启，请先说{self.wake_phrase}。', priority=6)
         self.last_start_prompt_at = time.monotonic()
         self.publish_status(force=True)
         response.success = True
         response.message = '语音模式已开启。'
         return response
+
+    def activate_standby(self) -> None:
+        self.session_enabled = True
+        self.awakened = False
+        self.session_id = time.strftime('voice_%Y%m%d_%H%M%S')
+        self.utterance_seq = 0
+        self.asr_fail_count = 0
+        self.last_error = ''
+        self.last_active_at = time.monotonic()
+        self.pause_listen_until = 0.0
+        self.last_request_published_at = 0.0
+        self.context_followup_until = 0.0
+        self.in_context_followup = False
+        self.clear_waiting_turn()
+        self.set_state('WAIT_WAKE')
 
     def stop_callback(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         self.stop_session('语音模式已关闭。', say=True)
@@ -239,36 +320,20 @@ class VoiceSessionNode(Node):
         now = time.monotonic()
         if speaking:
             self.pause_listen_until = max(self.pause_listen_until, now + 0.5)
+            if self.awaiting_turn_id and self.awaiting_answer_received:
+                self.response_tts_started = True
         if self.last_tts_speaking and not speaking:
             self.last_active_at = now
             self.pause_listen_until = max(self.pause_listen_until, now + self.tts_tail_pause_sec)
             if self.in_context_followup:
                 self.context_followup_until = now + self.context_followup_timeout_sec
+            if self.awaiting_turn_id and self.response_tts_started:
+                self.resume_after_tts_at = now + self.tts_tail_pause_sec
         self.is_tts_playing = speaking
         self.last_tts_speaking = speaking
 
     def task_context_status_callback(self, msg: String) -> None:
-        if not self.session_enabled:
-            self.in_context_followup = False
-            self.context_followup_until = 0.0
-            return
-        try:
-            status = json.loads(msg.data)
-        except json.JSONDecodeError:
-            return
-        state = str(status.get('state') or '')
-        waiting_for = str(status.get('waiting_for') or '')
-        active_task_id = str(status.get('active_task_id') or '')
-        active = state not in ('', 'idle', 'ready') or bool(active_task_id)
-        if active and (waiting_for or active_task_id or state):
-            now = time.monotonic()
-            self.context_followup_until = now + self.context_followup_timeout_sec
-            self.in_context_followup = True
-            self.last_active_at = now
-            self.set_state('CONTEXT_FOLLOWUP')
-            return
-        self.in_context_followup = False
-        self.context_followup_until = 0.0
+        _ = msg
 
     def set_state(self, state: str) -> None:
         if self.state == state:
@@ -285,36 +350,29 @@ class VoiceSessionNode(Node):
             if not self.session_enabled:
                 time.sleep(0.1)
                 continue
-            if self.is_tts_playing:
-                self.set_state('TTS_PAUSED')
-                time.sleep(0.1)
-                continue
-            if time.monotonic() < self.pause_listen_until:
-                self.set_state('WAITING_RESPONSE')
+            if self.awaiting_turn_id:
+                self.update_waiting_response()
                 time.sleep(0.05)
                 continue
-            if self.awakened and time.monotonic() - self.last_active_at > self.session_idle_timeout_sec:
-                with self.lock:
-                    self.awakened = False
-                    self.set_state('WAIT_WAKE')
-                self.say('voice_session', f'语音会话已待机，请说{self.wake_phrase}重新唤醒。', priority=4)
+            self.update_followup_window()
+            if not self.awakened:
+                self.set_state('WAIT_WAKE')
+                self.wait_for_local_wake()
+                continue
+            if self.is_tts_playing or time.monotonic() < self.pause_listen_until:
+                self.set_state('TTS_PAUSED')
+                time.sleep(0.05)
                 continue
 
-            self.update_followup_window()
-            listen_without_wake = self.awakened or self.in_context_followup
-            self.set_state('LISTENING' if listen_without_wake else 'WAIT_WAKE')
-            idle_deadline = (
-                self.last_active_at + self.session_idle_timeout_sec
-                if listen_without_wake else 0.0
-            )
-            audio = self.wait_and_record_by_vad(idle_deadline=idle_deadline)
+            self.set_state('LISTENING')
+            audio = self.wait_and_record_by_vad()
             if not audio:
                 continue
             self.set_state('ASR_PROCESSING')
             text = self.transcribe_pcm(audio)
             if text == ASR_TIMEOUT_MARKER:
                 self.save_debug_asr_audio(audio, '', 'timeout')
-                self.set_state('AWAKENED_IDLE' if self.awakened else 'WAIT_WAKE')
+                self.return_to_wait_wake()
                 self.get_logger().info('Ignoring ASR timeout audio segment.')
                 continue
             self.save_debug_asr_audio(audio, text, 'asr')
@@ -325,30 +383,29 @@ class VoiceSessionNode(Node):
             self.last_asr_text = text
             self.handle_asr_text(text)
 
+    def wait_for_local_wake(self) -> bool:
+        if not self.session_enabled or not self.local_kws_enabled or not self.local_kws.ready:
+            return False
+        detected = self.local_kws.listen(
+            lambda: self.stop_event.is_set() or not self.session_enabled or self.state != 'WAIT_WAKE')
+        if detected and self.session_enabled:
+            now = time.monotonic()
+            self.awakened = True
+            self.last_error = ''
+            self.last_active_at = now
+            self.pause_listen_until = max(self.pause_listen_until, now + 0.3)
+            self.set_state('LISTENING')
+            return True
+        if self.local_kws.error:
+            self.last_error = self.local_kws.error
+            self.session_enabled = False
+            self.set_state('OFF')
+            self.publish_status(force=True)
+        return False
+
     def handle_empty_asr(self) -> None:
-        now = time.monotonic()
-        if self.last_request_published_at > 0.0 and (
-            now - self.last_request_published_at < self.ignore_empty_asr_after_event_sec
-        ):
-            self.set_state('AWAKENED_IDLE')
-            self.get_logger().info('Ignoring empty ASR shortly after valid voice event.')
-            return
-        if not self.awakened and not self.in_context_followup:
-            self.asr_fail_count = 0
-            self.set_state('WAIT_WAKE')
-            return
         self.asr_fail_count += 1
-        if self.asr_fail_count >= self.asr_fail_standby_threshold:
-            self.awakened = False
-            self.in_context_followup = False
-            self.context_followup_until = 0.0
-            self.set_state('WAIT_WAKE')
-            self.say('voice_session', f'多次没有听清，已回到待唤醒。请说{self.wake_phrase}。', priority=5)
-            return
-        if self.asr_empty_silent_first and self.asr_fail_count < self.asr_fail_prompt_threshold:
-            self.set_state('AWAKENED_IDLE')
-            return
-        self.say('voice_session', '我没有听清，请再说一遍。', priority=5)
+        self.return_to_wait_wake()
 
     def wait_and_record_by_vad(self, idle_deadline: float = 0.0) -> bytes:
         frame_bytes = int(self.sample_rate * 2 * self.frame_ms / 1000)
@@ -376,6 +433,7 @@ class VoiceSessionNode(Node):
             self.get_logger().warn(self.last_error)
             time.sleep(1.0)
             return b''
+        self.current_recording_proc = proc
 
         frames: List[bytes] = []
         pending_loud_frames: List[bytes] = []
@@ -451,7 +509,9 @@ class VoiceSessionNode(Node):
             return b''.join(frames)
         finally:
             self.is_recording = False
-            proc.terminate()
+            self.current_recording_proc = None
+            if proc.poll() is None:
+                proc.terminate()
             try:
                 proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
@@ -533,36 +593,26 @@ class VoiceSessionNode(Node):
 
     def handle_asr_text(self, raw_text: str) -> None:
         normalized = normalize_voice_text(raw_text)
+        if self.awaiting_turn_id:
+            return
+        if any(word in normalized for word in self.voice_close_words):
+            self.stop_session('语音模式已关闭。', say=False)
+            return
+        if any(word in normalized for word in self.conversation_end_words):
+            self.return_to_wait_wake()
+            return
+        if not self.awakened or not normalized:
+            self.return_to_wait_wake()
+            return
         contains_wake = self.has_wake_phrase(normalized)
         command = self.strip_wake_phrase(normalized) if contains_wake else normalized
-        if any(word in command for word in self.voice_close_words):
-            self.stop_session('语音模式已关闭。', say=True)
-            return
-
-        self.update_followup_window()
-        interaction_phase = 'wake_command'
-        if self.in_context_followup and not contains_wake:
-            interaction_phase = 'context_followup'
-            self.last_active_at = time.monotonic()
-        elif not self.awakened:
-            if not contains_wake:
-                self.set_state('WAIT_WAKE')
-                return
-            self.awakened = True
-            self.last_active_at = time.monotonic()
-            if not command:
-                self.set_state('AWAKENED_IDLE')
-                self.say('voice_session', '我在，请说。', priority=6)
-                self.publish_status(force=True)
-                return
-        else:
-            self.last_active_at = time.monotonic()
-
         if not command:
-            self.set_state('AWAKENED_IDLE')
+            self.set_state('LISTENING')
             return
-        self.publish_agent_request(command, raw_text, contains_wake, interaction_phase)
-        self.set_state('AWAKENED_IDLE')
+        self.last_active_at = time.monotonic()
+        self.publish_agent_request(
+            command, raw_text, contains_wake,
+            'context_followup' if self.in_context_followup else 'wake_command')
 
     def publish_agent_request(
         self,
@@ -589,18 +639,94 @@ class VoiceSessionNode(Node):
         }
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
-        self.agent_request_pub.publish(msg)
-        self.last_published_text = text
-        self.get_logger().info(f'发布语音 Agent 请求：{msg.data}')
         now = time.monotonic()
         self.last_request_published_at = now
-        self.pause_listen_until = now + self.post_event_listen_pause_sec
+        self.awaiting_turn_id = utterance_id
+        self.awaiting_response_deadline = now + self.agent_response_timeout_sec
+        self.awaiting_answer_received = False
+        self.answer_received_at = 0.0
+        self.response_tts_started = False
+        self.resume_after_tts_at = 0.0
+        self.set_state('WAITING_RESPONSE')
         self.asr_fail_count = 0
+        try:
+            self.agent_request_pub.publish(msg)
+        except Exception:
+            self.clear_waiting_turn()
+            self.set_state('LISTENING')
+            raise
+        self.last_published_text = text
+        self.get_logger().info(f'发布语音 Agent 请求：{msg.data}')
+
+    def agent_chat_callback(self, msg: String) -> None:
+        if not self.session_enabled or not self.awaiting_turn_id:
+            return
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if (
+            str(payload.get('turn_id') or '') != self.awaiting_turn_id
+            or str(payload.get('role') or '') not in ('assistant', 'system')
+            or str(payload.get('status') or '') in ('sent', 'accepted', 'running')
+        ):
+            return
+        self.awaiting_answer_received = True
+        self.answer_received_at = time.monotonic()
+        if self.is_tts_playing:
+            self.response_tts_started = True
+        self.set_state('WAITING_RESPONSE')
+
+    def update_waiting_response(self) -> None:
+        if not self.awaiting_turn_id:
+            return
+        now = time.monotonic()
+        if not self.awaiting_answer_received and now >= self.awaiting_response_deadline:
+            self.last_error = f'Agent 回答超时（{self.agent_response_timeout_sec:g} 秒）。'
+            self.return_to_wait_wake()
+            return
+        if self.resume_after_tts_at and now >= self.resume_after_tts_at:
+            self.enter_followup_window(now)
+            return
+        # TTS may be disabled; do not leave the microphone permanently locked.
+        if self.awaiting_answer_received and not self.response_tts_started:
+            if now >= self.answer_received_at + 2.0:
+                self.enter_followup_window(now)
+
+    def enter_followup_window(self, now: float | None = None) -> None:
+        timestamp = time.monotonic() if now is None else now
+        self.clear_waiting_turn()
+        self.awakened = True
+        self.in_context_followup = True
+        self.context_followup_until = timestamp + self.context_followup_timeout_sec
+        self.last_active_at = timestamp
+        if self.session_enabled:
+            self.set_state('LISTENING')
+
+    def return_to_wait_wake(self) -> None:
+        self.awakened = False
+        self.clear_waiting_turn()
+        if self.session_enabled:
+            self.set_state('WAIT_WAKE')
+
+    def clear_waiting_turn(self) -> None:
+        self.awaiting_turn_id = ''
+        self.awaiting_response_deadline = 0.0
+        self.awaiting_answer_received = False
+        self.answer_received_at = 0.0
+        self.response_tts_started = False
+        self.resume_after_tts_at = 0.0
 
     def stop_session(self, text: str, say: bool) -> None:
         with self.lock:
             self.session_enabled = False
             self.awakened = False
+            self.local_kws.stop()
+            proc = self.current_recording_proc
+            self.current_recording_proc = None
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+            self.clear_waiting_turn()
             self.set_state('OFF')
             self.is_recording = False
             self.pause_listen_until = 0.0
@@ -659,8 +785,7 @@ class VoiceSessionNode(Node):
 
     def update_followup_window(self) -> None:
         if self.in_context_followup and time.monotonic() >= self.context_followup_until:
-            self.in_context_followup = False
-            self.context_followup_until = 0.0
+            self.return_to_wait_wake()
 
     def say(
         self,
@@ -700,8 +825,8 @@ class VoiceSessionNode(Node):
             'session_id': self.session_id,
             'active_module': '',
             'waiting_for': (
-                'context_followup'
-                if self.in_context_followup
+                'agent_response'
+                if self.awaiting_turn_id
                 else 'wake_phrase'
                 if self.session_enabled and not self.awakened
                 else ''
@@ -716,6 +841,11 @@ class VoiceSessionNode(Node):
             'last_target': '',
             'last_confidence': 0.0,
             'last_error': self.last_error,
+            'awaiting_turn_id': self.awaiting_turn_id,
+            'followup_remaining_sec': max(
+                0.0,
+                self.context_followup_until - time.monotonic(),
+            ) if self.in_context_followup else 0.0,
         }
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         if not force and payload_json == self.last_status_payload_json:
@@ -744,6 +874,10 @@ class VoiceSessionNode(Node):
 
     def destroy_node(self) -> bool:
         self.stop_event.set()
+        self.local_kws.stop()
+        proc = self.current_recording_proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
         return super().destroy_node()
 
 

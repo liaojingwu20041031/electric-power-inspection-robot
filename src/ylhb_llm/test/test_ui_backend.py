@@ -116,6 +116,22 @@ def test_route_preview_refresh_runs_in_background_thread():
     assert 'target_001' in backend.patrolTasks
 
 
+def test_patrol_route_path_is_passed_to_preview_loader():
+    calls = []
+
+    def preview_loader(force=False, preview_mode='route_focus', route_file_path=None):
+        calls.append(route_file_path)
+        return {'ok': True, 'targets': [], 'route_file': str(route_file_path or '')}
+
+    backend = make_backend(lambda: 0.0, route_preview_loader=preview_loader)
+    backend.startup_timer.stop()
+
+    backend.update_patrol_status({'state': 'running', 'route_path': '/tmp/actual_route.json'})
+
+    assert process_events_until(lambda: bool(calls))
+    assert calls[-1] == Path('/tmp/actual_route.json')
+
+
 def test_route_preview_result_is_applied_on_qt_main_thread():
     QCoreApplication.instance() or QCoreApplication([])
     main_thread = QThread.currentThread()

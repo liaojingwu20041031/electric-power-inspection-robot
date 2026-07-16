@@ -36,6 +36,7 @@ def test_local_provider_without_key_omits_authorization(monkeypatch):
     assert response['message']['content'] == 'ok'
     assert 'Authorization' not in seen['headers']
     assert seen['body']['parallel_tool_calls'] is False
+    assert seen['body']['tool_choice'] == 'auto'
 
 
 def test_configured_extra_body_is_sent_with_tool_call(monkeypatch):

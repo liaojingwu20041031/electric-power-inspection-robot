@@ -1,5 +1,6 @@
 import json
 import queue
+import threading
 from types import SimpleNamespace
 
 from ylhb_llm.agent_state import AgentState
@@ -22,6 +23,8 @@ class FakeRuntime:
             },
             'result': {'ok': True, 'status': 'ok', 'message': '收到。'},
             'assistant_text': '收到。',
+            'display_text': '屏幕显示完整回答。',
+            'speech_text': '收到。',
             'role': 'assistant',
         }
 
@@ -29,6 +32,34 @@ class FakeRuntime:
 class RaisingRuntime:
     def run_turn(self, _request):
         raise RuntimeError('DashScope HTTP 400: bad payload')
+
+
+class WaitingRuntime(FakeRuntime):
+    def __init__(self, operation_id):
+        super().__init__()
+        self.operation_id = operation_id
+        self.resume_calls = []
+
+    def run_turn(self, request):
+        self.calls.append(request)
+        return {
+            'state': 'waiting_feedback',
+            'pending_operation_id': self.operation_id,
+            'decision': {'intent': 'rotate_relative', 'tool_call': {'name': 'rotate_relative'}, 'speak': {}},
+            'result': {'ok': True, 'status': 'sent', 'message': '已发送'},
+            'assistant_text': '等待真实反馈。',
+            'role': 'tool',
+        }
+
+    def resume_turn(self, operation):
+        self.resume_calls.append(operation)
+        return {
+            'state': 'finished',
+            'decision': {'intent': 'assistant_chat', 'tool_call': {'name': 'generate_local_status_reply'}, 'speak': {}},
+            'result': {'ok': True, 'status': 'ok', 'message': '已完成'},
+            'assistant_text': '已根据真实反馈完成。',
+            'role': 'assistant',
+        }
 
 
 class FakeTools:
@@ -61,6 +92,8 @@ def make_node(runtime=None, now=100.0):
     node.seen_request_ids = set()
     node.seen_request_order = __import__('collections').deque(maxlen=256)
     node.request_queue = queue.Queue()
+    node.pending_turn_context = None
+    node.pending_turn_lock = threading.Lock()
     node.operation_manager = AgentOperationManager(clock=lambda: now)
     node.status_aggregator = RobotStatusAggregator(clock=lambda: now)
     node.last_error_tts = {}
@@ -95,6 +128,7 @@ def test_request_callback_dedupes_client_msg_id_and_publishes_chat():
     assert len(runtime.calls) == 1
     roles = [item['role'] for item in node.chat_pub.messages]
     assert roles == ['user', 'assistant']
+    assert node.chat_pub.messages[-1]['text'] == '屏幕显示完整回答。'
     assert node.status_pub.messages[-1]['agent_spec_summary']['name'] == 'inspection_agent'
 
 
@@ -143,3 +177,45 @@ def test_planner_exception_publishes_real_error_to_chat_status_and_log():
     assert node.status_pub.messages[-1]['last_error'] == 'RuntimeError: DashScope HTTP 400: bad payload'
     assert ('error', 'agent planner error: RuntimeError: DashScope HTTP 400: bad payload') in node.logger_messages
     assert node.tools.says[0][0]['speak']['text'] == '语言模型暂不可用，未执行动作。'
+
+
+def test_stopped_voice_turn_is_displayed_but_not_spoken():
+    node = make_node()
+    node.state.voice_status = {'enabled': False, 'state': 'OFF'}
+
+    InspectionAgentNode.process_request(
+        node, {'source': 'voice', 'text': '查询状态'}, 'utt_1', '')
+
+    assert node.chat_pub.messages[-1]['text'] == '屏幕显示完整回答。'
+    assert node.tools.says == []
+
+
+def test_terminal_operation_feedback_requeues_and_resumes_same_turn():
+    node = make_node()
+    operation = node.operation_manager.create('run_1', 'call_1', 'rotate_relative', {}, 12.0)
+    node.operation_manager.mark_sent(operation.operation_id)
+    runtime = WaitingRuntime(operation.operation_id)
+    node.agent_runtime = runtime
+
+    InspectionAgentNode.process_request(node, {'text': '左转十度'}, 'turn_1', 'client_1')
+    InspectionAgentNode.update_operation_from_feedback(node, {
+        'operation_id': operation.operation_id,
+        'state': 'succeeded',
+        'message': '底盘已完成转向',
+    })
+    InspectionAgentNode.process_next_request(node)
+
+    assert len(runtime.resume_calls) == 1
+    assert runtime.resume_calls[0]['state'] == 'succeeded'
+    assert node.chat_pub.messages[-1]['text'] == '已根据真实反馈完成。'
+
+
+def test_emergency_request_uses_entry_fast_path_without_queueing():
+    runtime = FakeRuntime()
+    node = make_node(runtime)
+
+    InspectionAgentNode.request_callback(
+        node, SimpleNamespace(data='{"text":"急停","client_msg_id":"urgent_1"}'))
+
+    assert len(runtime.calls) == 1
+    assert node.request_queue.empty()

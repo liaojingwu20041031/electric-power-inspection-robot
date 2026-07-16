@@ -348,6 +348,7 @@ class SystemSupervisorNode(Node):
         self.last_success = True
         self.last_message = 'system supervisor ready'
         self.command_result: Dict[str, Any] = {}
+        self.agent_operation_context: Dict[str, str] = {}
         self.jetson_ip = discover_jetson_ip()
         self.mobile_bridge_url = f'http://{self.jetson_ip}:8000'
         self.mobile_bridge_http = 'stopped'
@@ -642,6 +643,13 @@ class SystemSupervisorNode(Node):
             self.latest_mapping3d_result = payload
 
     def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
+        correlation = {
+            key: str(payload.get(key) or '')
+            for key in ('run_id', 'operation_id', 'tool_call_id')
+        }
+        if command in {'start_patrol_mode', 'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop'}:
+            self.agent_operation_context = correlation if correlation['operation_id'] else {}
+            self.last_agent_operation_feedback = {}
         if command in {'start_mobile_bridge', 'stop_mobile_bridge', 'restart_mobile_bridge'} and getattr(self, 'mobile_bridge_managed_externally', False):
             self.set_result(command, True, 'Mobile Bridge 由 systemd 常驻管理')
             return
@@ -1510,6 +1518,7 @@ class SystemSupervisorNode(Node):
             'source': 'system_supervisor',
             'timestamp': time.time(),
             'request_id': request_id,
+            **getattr(self, 'agent_operation_context', {}),
         }
         if route_id:
             payload['route_id'] = route_id
@@ -2727,6 +2736,11 @@ class SystemSupervisorNode(Node):
         for _ in range(5):
             self.cmd_vel_pub.publish(twist)
             time.sleep(0.05)
+        correlation = dict(getattr(self, 'agent_operation_context', {}))
+        self.last_agent_operation_feedback = (
+            {**correlation, 'state': 'succeeded', 'status': 'succeeded'}
+            if correlation.get('operation_id') else {}
+        )
         self.set_result('emergency_stop', True, '软件急停已发送')
 
     def publish_mode(self, mode: str) -> None:
@@ -2821,6 +2835,7 @@ class SystemSupervisorNode(Node):
             'last_command': self.last_command,
             'success': self.last_success,
             'message': self.last_message,
+            **getattr(self, 'last_agent_operation_feedback', {}),
         }
         for name, proc in self.processes.items():
             if name == 'llm' and self.embedded_task_layer:

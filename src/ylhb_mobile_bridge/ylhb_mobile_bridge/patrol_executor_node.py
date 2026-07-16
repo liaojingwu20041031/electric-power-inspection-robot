@@ -534,6 +534,12 @@ class PatrolExecutorNode(Node):
             "start_command_id": str(self.get_parameter("platform_command_id").value),
             "active_control_request_id": "",
             "active_control_command_id": "",
+            "run_id": "",
+            "operation_id": "",
+            "tool_call_id": "",
+            "active_control_run_id": "",
+            "active_control_operation_id": "",
+            "active_control_tool_call_id": "",
         }
         self.platform_boot_id = str(uuid.uuid4())
 
@@ -690,12 +696,16 @@ class PatrolExecutorNode(Node):
                 "execution_id": "", "deployment_id": "",
                 "start_request_id": "", "start_command_id": "",
                 "active_control_request_id": "", "active_control_command_id": "",
+                "run_id": "", "operation_id": "", "tool_call_id": "",
+                "active_control_run_id": "", "active_control_operation_id": "",
+                "active_control_tool_call_id": "",
             }
             self.platform_context = context
         return context
 
     def _platform_fields(self) -> Dict[str, Any]:
         context = self._platform_context()
+        control_active = bool(context.get("active_control_operation_id"))
         return {
             "schema_version": "1.0",
             "robot_id": os.environ.get("YLHB_ROBOT_ID", ""),
@@ -705,6 +715,9 @@ class PatrolExecutorNode(Node):
             "request_id": context["start_request_id"],
             "command_id": context["start_command_id"],
             "route_path": self.resolved_route_file_path or "",
+            "run_id": context.get("active_control_run_id", "") if control_active else context.get("run_id", ""),
+            "operation_id": context.get("active_control_operation_id", "") if control_active else context.get("operation_id", ""),
+            "tool_call_id": context.get("active_control_tool_call_id", "") if control_active else context.get("tool_call_id", ""),
             "occurred_at": time.time(),
         }
 
@@ -791,9 +804,16 @@ class PatrolExecutorNode(Node):
             payload = self._parse_command(message.data)
             command = str(payload.get("command", "")).strip().lower()
             route_id = payload.get("route_id")
+            context = self._platform_context()
+            if command in {"start", "go_to_target"}:
+                for key in ("run_id", "operation_id", "tool_call_id"):
+                    if payload.get(key):
+                        context[key] = str(payload[key])
+            elif command in {"pause", "resume", "cancel", "takeover"}:
+                for key in ("run_id", "operation_id", "tool_call_id"):
+                    context[f"active_control_{key}"] = str(payload.get(key) or "")
             if command == "start":
                 request_id = str(payload.get("request_id") or "")
-                context = self._platform_context()
                 context["start_request_id"] = request_id
                 context["start_command_id"] = str(payload.get("command_id") or context["start_command_id"])
                 duplicate = bool(request_id and request_id in self._seen_start_request_ids)
@@ -813,7 +833,6 @@ class PatrolExecutorNode(Node):
             elif command == "go_to_target":
                 self._go_to_target(str(payload.get("target_id") or ""))
             elif command in {"pause", "resume", "cancel", "takeover"}:
-                context = self._platform_context()
                 context["active_control_request_id"] = str(payload.get("request_id") or "")
                 context["active_control_command_id"] = str(payload.get("command_id") or "")
                 applied = getattr(self.logic, command)()
@@ -853,6 +872,9 @@ class PatrolExecutorNode(Node):
         })
         context["active_control_request_id"] = ""
         context["active_control_command_id"] = ""
+        context["active_control_run_id"] = ""
+        context["active_control_operation_id"] = ""
+        context["active_control_tool_call_id"] = ""
 
     def _start_route_from_file(self, route_id: Optional[str]) -> bool:
         if self.logic.state in ACTIVE_STATES:

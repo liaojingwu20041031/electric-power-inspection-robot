@@ -21,6 +21,7 @@ from .agent_schema import SchemaError, tool_result
 from .agent_state import AgentState
 from .agent_tools import AgentTools
 from .agent_operation_manager import AgentOperationManager
+from .agent_protocol import TERMINAL_OPERATION_STATES
 from .inspection_agent_runtime import InspectionAgentRuntime, decide_local
 from .inspection_agent_spec import InspectionAgentSpecBuilder
 from .openai_tool_client import OpenAIToolClient, OpenAIToolClientError
@@ -116,6 +117,8 @@ class InspectionAgentNode(Node):
         self.seen_request_ids: set[str] = set()
         self.seen_request_order: deque[str] = deque(maxlen=256)
         self.request_queue: queue.Queue = queue.Queue()
+        self.pending_turn_context: Dict[str, Any] | None = None
+        self.pending_turn_lock = threading.Lock()
         self._worker_stop = threading.Event()
         self.last_error_tts: Dict[str, float] = {}
 
@@ -165,6 +168,10 @@ class InspectionAgentNode(Node):
 
         self._worker = threading.Thread(target=self.agent_worker, name='inspection-agent-worker', daemon=True)
         self._worker.start()
+        self.create_timer(
+            max(0.05, float(self.get_parameter('operation_poll_sec').value)),
+            self.poll_pending_operation,
+        )
 
         self.create_subscription(String, self.get_parameter('agent_request_topic').value, self.request_callback, 10)
         self.create_subscription(String, self.get_parameter('system_status_topic').value, self.system_status_callback, latched_qos())
@@ -200,6 +207,9 @@ class InspectionAgentNode(Node):
         client_msg_id = str(request.get('client_msg_id') or '')
         text = str(request.get('text') or request.get('command') or '')
         self.publish_chat(make_agent_chat('user', text, turn_id, client_msg_id, source=str(request.get('source') or 'user'), raw=request))
+        if decide_local(request, self.state.policy_context()) is not None:
+            self.process_request(request, turn_id, client_msg_id)
+            return
         self.request_queue.put((request, turn_id, client_msg_id))
 
     def agent_worker(self) -> None:
@@ -217,18 +227,43 @@ class InspectionAgentNode(Node):
         self.process_request(*item)
         return True
 
-    def process_request(self, request: Dict[str, Any], turn_id: str, client_msg_id: str) -> None:
+    def process_request(
+        self,
+        request: Dict[str, Any],
+        turn_id: str,
+        client_msg_id: str,
+        operation: Dict[str, Any] | None = None,
+    ) -> None:
         try:
-            turn = self.agent_runtime.run_turn(request)
+            turn = (
+                self.agent_runtime.resume_turn(operation)
+                if operation is not None
+                else self.agent_runtime.run_turn(request)
+            )
             decision = turn.get('decision') or {}
             result = turn.get('result') or {}
+            if turn.get('state') == 'waiting_feedback':
+                operation_id = str(turn.get('pending_operation_id') or '')
+                with self.pending_turn_lock:
+                    if not self.pending_turn_context or self.pending_turn_context.get('operation_id') != operation_id:
+                        self.pending_turn_context = {
+                            'operation_id': operation_id,
+                            'request': request,
+                            'turn_id': turn_id,
+                            'client_msg_id': client_msg_id,
+                        }
+            elif operation is not None:
+                with self.pending_turn_lock:
+                    self.pending_turn_context = None
             role = str(turn.get('role') or 'assistant')
+            display_text = str(
+                turn.get('display_text') or turn.get('assistant_text') or result.get('message') or '')
             if role == 'system':
-                self.publish_chat(make_agent_chat('system', str(turn.get('assistant_text') or ''), turn_id, client_msg_id, status=str(result.get('status') or ''), raw=result))
+                self.publish_chat(make_agent_chat('system', display_text, turn_id, client_msg_id, status=str(result.get('status') or ''), raw=result))
             else:
-                self.publish_chat(make_agent_chat('assistant', str(turn.get('assistant_text') or result.get('message') or ''), turn_id, client_msg_id, intent=str(decision.get('intent') or ''), tool_name=str((decision.get('tool_call') or {}).get('name') or ''), status=str(result.get('status') or ''), raw=result))
+                self.publish_chat(make_agent_chat('assistant', display_text, turn_id, client_msg_id, intent=str(decision.get('intent') or ''), tool_name=str((decision.get('tool_call') or {}).get('name') or ''), status=str(result.get('status') or ''), raw=result))
             speak = (decision.get('speak') or {}).get('text')
-            if speak:
+            if speak and not self.voice_request_stopped(request):
                 self.tools.say(decision)
         except (SchemaError, OpenAIToolClientError, ValueError, RuntimeError) as exc:
             error_text = self.format_exception(exc)
@@ -242,7 +277,8 @@ class InspectionAgentNode(Node):
                 logger.error(f'agent planner error: {error_text}')
             else:
                 logger.info(f'agent planner error: {error_text}')
-            self.say_error_throttled(error_text)
+            if not self.voice_request_stopped(request):
+                self.say_error_throttled(error_text)
         finally:
             decision = self.state.latest_decision or {}
             result = self.state.latest_result or {}
@@ -256,6 +292,12 @@ class InspectionAgentNode(Node):
                 )
             )
         self.publish_status()
+
+    def voice_request_stopped(self, request: Dict[str, Any]) -> bool:
+        return (
+            str(request.get('source') or '') == 'voice'
+            and (self.state.voice_status or {}).get('enabled') is False
+        )
 
     def shutdown_worker(self) -> None:
         self._worker_stop.set()
@@ -378,14 +420,88 @@ class InspectionAgentNode(Node):
 
     def update_operation_from_feedback(self, payload: Dict[str, Any]) -> None:
         operation_id = str(payload.get('operation_id') or '')
-        state = str(payload.get('state') or payload.get('status') or '')
-        state = {'done': 'succeeded', 'cancelled': 'canceled', 'rejected': 'failed'}.get(state, state)
-        if not operation_id or not state:
+        raw_state = str(payload.get('state') or payload.get('status') or '')
+        if not operation_id or not raw_state:
             return
         try:
-            self.operation_manager.update(operation_id, state, payload)
+            current = self.operation_manager.get(operation_id)
+        except KeyError:
+            return
+        tool_name = str(current.get('tool_name') or '')
+        state = {
+            'done': 'succeeded',
+            'completed': 'succeeded',
+            'cancelled': 'canceled',
+            'rejected': 'failed',
+            'paused': 'succeeded' if tool_name == 'pause_patrol' else 'running',
+            'running': 'succeeded' if tool_name == 'resume_patrol' else 'running',
+            'canceled': 'succeeded' if tool_name == 'cancel_patrol' else 'canceled',
+        }.get(raw_state, raw_state)
+        try:
+            operation = self.operation_manager.update(operation_id, state, payload)
         except (KeyError, ValueError):
             return
+        if operation.state in TERMINAL_OPERATION_STATES:
+            self.enqueue_operation_feedback(self.operation_manager.get(operation_id))
+            target_id = str(operation.arguments.get('target_operation_id') or '')
+            if target_id and operation.tool_name in {'emergency_stop', 'stop_motion', 'cancel_patrol'}:
+                try:
+                    target = self.operation_manager.update(
+                        target_id,
+                        'canceled',
+                        {
+                            'ok': False,
+                            'status': 'canceled',
+                            'message': f'操作被 {operation.tool_name} 中断',
+                            'operation_id': target_id,
+                        },
+                    )
+                except (KeyError, ValueError):
+                    return
+                self.enqueue_operation_feedback(self.operation_manager.get(target.operation_id))
+
+    def poll_pending_operation(self) -> None:
+        with self.pending_turn_lock:
+            pending = dict(self.pending_turn_context or {})
+        if not pending:
+            return
+        try:
+            operation = self.operation_manager.get(str(pending['operation_id']))
+        except KeyError:
+            return
+        if operation['state'] in TERMINAL_OPERATION_STATES:
+            if operation['state'] == 'timeout':
+                self.cancel_timed_out_operation(operation)
+            self.enqueue_operation_feedback(operation)
+
+    def cancel_timed_out_operation(self, operation: Dict[str, Any]) -> None:
+        correlation = {
+            'schema_version': '1.0',
+            'source': 'inspection_agent_timeout_guard',
+            'request_id': str(operation.get('operation_id') or ''),
+            'target_operation_id': str(operation.get('operation_id') or ''),
+        }
+        tool_name = str(operation.get('tool_name') or '')
+        if tool_name in {'rotate_relative', 'move_relative'}:
+            AgentTools.publish_json(
+                self.base_skill_pub, {**correlation, 'command': 'stop_motion', 'arguments': {}})
+        elif tool_name == 'go_to_checkpoint':
+            AgentTools.publish_json(self.patrol_pub, {**correlation, 'command': 'cancel'})
+        elif tool_name in {'start_route', 'start_patrol_mode'}:
+            AgentTools.publish_json(self.system_pub, {**correlation, 'command': 'cancel_patrol'})
+
+    def enqueue_operation_feedback(self, operation: Dict[str, Any]) -> None:
+        with self.pending_turn_lock:
+            pending = self.pending_turn_context
+            if (
+                not pending
+                or str(operation.get('operation_id') or '') != str(pending.get('operation_id') or '')
+            ):
+                return
+            self.pending_turn_context = None
+        self.request_queue.put((
+            pending['request'], pending['turn_id'], pending['client_msg_id'], operation,
+        ))
 
     def publish_status(self) -> None:
         msg = String()

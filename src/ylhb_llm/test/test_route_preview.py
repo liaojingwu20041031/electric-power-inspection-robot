@@ -114,6 +114,7 @@ def test_generate_route_preview_creates_png_without_gui_application(tmp_path):
         encoding="utf-8",
     )
     write_route(tmp_path / "route_patrol_001.json", 1)
+    write_route(tmp_path / "route_patrol_003.json", 3)
 
     preview = generate_route_preview(map_yaml, force=True)
 
@@ -126,7 +127,7 @@ def test_generate_route_preview_creates_png_without_gui_application(tmp_path):
     assert preview["image_bytes"] > 0
     assert preview["image_mtime_ns"] > 0
     assert preview["target_count"] == 1
-    assert preview["route_file"] == str(tmp_path / "route_patrol_001.json")
+    assert preview["route_file"] == str(tmp_path / "route_patrol_003.json")
     assert preview["image_valid"] is True
     assert preview["image_error"] == ""
     assert preview["image_format"] == "png"
@@ -356,15 +357,15 @@ def test_generate_route_preview_reports_missing_pil(tmp_path, monkeypatch):
     assert preview["message"] == "路线预览失败: 缺少 python3-pil/Pillow 依赖"
 
 
-def test_workspace_patrol_route_preview_has_four_targets_and_png_exists():
+def test_workspace_patrol_route_preview_uses_latest_route_and_png_exists():
     preview = generate_route_preview(Path("maps/my_map.yaml"), force=True)
+    latest = select_latest_route_file(Path("maps")).path
 
     assert preview["ok"] is True
     assert preview["preview_type"] == "route_overlay"
     assert preview["overlay_ok"] is True
-    assert preview["active_route_id"] == "route_patrol_001"
-    assert preview["target_count"] == 4
+    assert Path(preview["route_file"]) == latest.resolve()
+    assert preview["target_count"] == len(preview["targets"])
     assert preview["map_identity"]["image"] == "my_map.pgm"
-    assert preview["keepout_count"] == 1
     assert isinstance(preview["safety_warnings"], list)
     assert Path(preview["image_url"].removeprefix("file://")).exists()

@@ -125,12 +125,18 @@ class BaseMotionSkillNode(Node):
             return
         command = str(payload.get("command") or "")
         arguments = payload.get("arguments") or {}
+        correlation = {
+            key: str(payload.get(key) or "")
+            for key in ("request_id", "run_id", "operation_id", "tool_call_id")
+        }
         if command == "stop_motion":
-            self.stop("stopped")
+            if self.active:
+                self.stop("canceled")
+            self.publish_status("done", "stopped", correlation)
             return
         reason = self.logic.validate(command, arguments, self.system_mode, self.chassis_online())
         if reason:
-            self.reject(reason)
+            self.reject(reason, correlation)
             return
         now = time.time()
         self.active = {
@@ -139,8 +145,9 @@ class BaseMotionSkillNode(Node):
             "started_at": now,
             "deadline": now + min(float(payload.get("timeout_sec") or self.get_parameter("timeout_sec").value), float(self.get_parameter("timeout_sec").value)),
             "start_pose": self.current_pose(),
+            "correlation": correlation,
         }
-        self.publish_status("running", command)
+        self.publish_status("running", command, correlation)
 
     def tick(self) -> None:
         if not self.active:
@@ -202,16 +209,17 @@ class BaseMotionSkillNode(Node):
     def _angle_diff(a: float, b: float) -> float:
         return math.atan2(math.sin(a - b), math.cos(a - b))
 
-    def reject(self, reason: str) -> None:
+    def reject(self, reason: str, correlation=None) -> None:
         self.cmd_vel_pub.publish(Twist())
-        self.publish_status("rejected", reason)
+        self.publish_status("rejected", reason, correlation)
 
     def stop(self, status: str) -> None:
+        correlation = dict((self.active or {}).get("correlation") or {})
         self.active = None
         self.cmd_vel_pub.publish(Twist())
-        self.publish_status(status, status)
+        self.publish_status(status, status, correlation)
 
-    def publish_status(self, status: str, message: str) -> None:
+    def publish_status(self, status: str, message: str, correlation=None) -> None:
         msg = String()
         msg.data = json.dumps(
             {
@@ -219,6 +227,7 @@ class BaseMotionSkillNode(Node):
                 "status": status,
                 "message": message,
                 "timestamp": time.time(),
+                **(correlation or {}),
             },
             ensure_ascii=False,
         )

@@ -1,7 +1,14 @@
+import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from ylhb_mobile_bridge.platform_cloud_client import PlatformCloudClient
+from ylhb_mobile_bridge.platform_store import DeploymentStore, canonical_json
+from ylhb_mobile_bridge.patrol_route_store import (
+    validate_route_file,
+    validate_route_map_binding,
+)
 
 
 class FakeStore:
@@ -135,3 +142,90 @@ def test_successful_cloud_request_records_egress_without_changing_request(monkey
         'cloud.example',
         'cloud.example',
     ]
+
+
+def test_deployment_hashes_raw_route_and_publishes_next_local_route(tmp_path):
+    maps_dir = tmp_path / 'maps'
+    maps_dir.mkdir()
+    pgm = b'P5\n2 1\n255\n\x00\xff'
+    pgm_hash = hashlib.sha256(pgm).hexdigest()
+    (maps_dir / 'my_map.pgm').write_bytes(pgm)
+    (maps_dir / 'my_map.yaml').write_text(
+        'image: my_map.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n',
+        encoding='utf-8',
+    )
+    (maps_dir / 'route_patrol_001.json').write_text('{}', encoding='utf-8')
+    route = {
+        'version': 3,
+        'frame_id': 'map',
+        'map': {
+            'yaml': 'cloud_map.yaml',
+            'image': 'cloud_map.pgm',
+            'resolution': 0.05,
+            'origin': [0, 0, 0],
+            'width': 2,
+            'height': 1,
+            'image_sha256': pgm_hash,
+        },
+        'active_route_id': 'cloud_route',
+        'start_pose': {
+            'frame_id': 'map',
+            'pose': {'x': 0, 'y': 0, 'yaw': 0},
+            'location': {
+                'type': 'map_pose', 'frame_id': 'map',
+                'x': 0, 'y': 0, 'yaw': 0,
+            },
+        },
+        'targets': [{
+            'id': 'target_001',
+            'pose': {'x': 5, 'y': 0, 'yaw': 0},
+            'location': {
+                'type': 'map_pose', 'frame_id': 'map',
+                'x': 5, 'y': 0, 'yaw': 0,
+            },
+            'task_duration_sec': 5,
+        }],
+        'routes': [{
+            'id': 'cloud_route',
+            'target_ids': ['target_001'],
+            'goal_timeout_sec': 120,
+        }],
+        'keepout_zones': [],
+    }
+    route_bytes = json.dumps(route, indent=2).encode('utf-8')
+    route_hash = hashlib.sha256(canonical_json(route)).hexdigest()
+    assert hashlib.sha256(canonical_json(validate_route_file(route))).hexdigest() != route_hash
+    manifest = {
+        'schemaVersion': '1.0',
+        'robotId': 'robot-1',
+        'routeRevisionId': 'revision-1',
+        'routeRevisionContentSha256': route_hash,
+        'routePayloadSha256': route_hash,
+        'mapAssetId': 'map-1',
+        'mapImageSha256': pgm_hash,
+        'yamlName': 'cloud_map.yaml',
+        'pgmName': 'cloud_map.pgm',
+    }
+    store = DeploymentStore(tmp_path / 'platform', maps_dir / 'my_map')
+
+    result = store.install(
+        'deployment-1', manifest, route_bytes,
+        b'image: cloud_map.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n',
+        pgm,
+    )
+
+    deployment_route = Path(result['routePath'])
+    assert hashlib.sha256(deployment_route.read_bytes()).hexdigest() == route_hash
+    assert hashlib.sha256(Path(result['mapPgmPath']).read_bytes()).hexdigest() == pgm_hash
+    local_route_path = maps_dir / 'route_patrol_002.json'
+    local_route = json.loads(local_route_path.read_text(encoding='utf-8'))
+    assert local_route['map']['yaml'] == 'my_map.yaml'
+    assert local_route['map']['image'] == 'my_map.pgm'
+    validate_route_map_binding(local_route, maps_dir / 'my_map.yaml')
+
+    assert store.install(
+        'deployment-1', manifest, route_bytes,
+        b'image: cloud_map.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n',
+        pgm,
+    )['idempotent'] is True
+    assert not (maps_dir / 'route_patrol_003.json').exists()

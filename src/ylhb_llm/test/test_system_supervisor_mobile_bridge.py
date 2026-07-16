@@ -1324,3 +1324,21 @@ def test_patrol_event_marks_initial_pose_published_before_nav2_action_wait():
 
     assert node.last_initial_pose_event['event'] == 'initial_pose_published'
     assert node.wait_for_initial_pose_published(timeout_sec=0.01) is True
+
+
+def test_agent_operation_ids_are_forwarded_to_patrol_executor():
+    published = []
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.agent_operation_context = {
+        'run_id': 'run_1', 'tool_call_id': 'call_1', 'operation_id': 'op_1',
+    }
+    node.platform_context = {}
+    node.patrol_command_pub = type(
+        'Publisher', (), {'publish': lambda _self, msg: published.append(json.loads(msg.data))}
+    )()
+
+    node.publish_patrol_command('start', request_id='request_1', route_id='route_1')
+
+    assert published[0]['run_id'] == 'run_1'
+    assert published[0]['tool_call_id'] == 'call_1'
+    assert published[0]['operation_id'] == 'op_1'

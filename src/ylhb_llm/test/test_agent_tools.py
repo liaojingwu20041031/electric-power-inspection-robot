@@ -5,6 +5,7 @@ from ylhb_llm.agent_policy import authorize
 from ylhb_llm.agent_operation_manager import AgentOperationManager
 from ylhb_llm.agent_tools import AgentTools
 from ylhb_llm.route_toolpack import RouteCatalog, RouteToolPack
+from ylhb_llm.robot_status_aggregator import RobotStatusAggregator
 
 
 class FakePub:
@@ -164,3 +165,21 @@ def test_side_effect_tool_creates_operation_and_forwards_correlation_ids():
     assert manager.get(operation_id, now=10.0)['state'] == 'sent'
     assert base_skill_pub.messages[0]['operation_id'] == operation_id
     assert base_skill_pub.messages[0]['tool_call_id'] == 'call_1'
+
+
+def test_get_robot_summary_reuses_status_aggregator():
+    aggregator = RobotStatusAggregator(clock=lambda: 10.0)
+    aggregator.update('system_status', {'mode': 'ready'}, now=10.0)
+    tools = AgentTools(
+        SimpleNamespace(),
+        SimpleNamespace(system_status={}, patrol_status={}, voice_status={}),
+        FakePub(), FakePub(), FakePub(), FakePub(),
+        status_aggregator=aggregator,
+        tool_schemas={'get_robot_summary': {'risk_level': 'read_only'}},
+    )
+    decision = {'tool_call': {'name': 'get_robot_summary', 'arguments': {}}}
+
+    result = tools.execute(decision, authorize(decision, {'patrol_state': 'idle'}))
+
+    assert result['ok'] is True
+    assert result['data']['robot_mode'] == 'ready'

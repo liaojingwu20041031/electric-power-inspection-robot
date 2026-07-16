@@ -643,16 +643,22 @@ def test_patrol_page_loads_responsively_and_confirms_start_and_stop():
     assert result.returncode == 0, result.stderr
 
 
-def test_voice_ai_page_sends_text_to_language_agent():
+def test_voice_ai_page_is_lightweight_task_view():
     qml = Path("src/ylhb_llm/qml/pages/VoiceAiPage.qml").read_text(encoding="utf-8")
 
-    assert "发送给语言智能体" in qml
-    assert "model: backend.agentMessages" in qml
-    assert "backend.sendAgentText(commandText.text)" in qml
-    assert "backend.clearAgentMessages()" in qml
-    assert "checked: backend.agentDebugVisible" in qml
-    assert "visible: backend.agentDebugVisible" in qml
-    assert "backend.sendTextCommand(commandText.text)" not in qml
+    assert "电力巡检机器人 AI Agent" in qml
+    assert "当前目标" in qml
+    assert "当前步骤" in qml
+    assert "最近执行过程" in qml
+    assert "最终结果" in qml
+    assert "slice(-8)" in qml
+    assert "Text.MarkdownText" in qml
+    assert "查看详情" in qml
+    assert "backend.callVoiceService" in qml
+    assert "sendAgentText" not in qml
+    assert "clearAgentMessages" not in qml
+    assert "agentDebugVisible" not in qml
+    assert "单次采集" not in qml
+    assert "model: backend.agentMessages" not in qml
     assert "backend.voiceActivityText" in qml
     assert "backend.voiceActivityTone" in qml
-    assert "backend.voiceTtsStatus" in qml

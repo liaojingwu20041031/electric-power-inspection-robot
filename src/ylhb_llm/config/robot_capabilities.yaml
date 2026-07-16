@@ -62,7 +62,7 @@ capabilities:
     side_effect: robot_navigation
     requires_confirmation: true
     preconditions: [robot_ready, chassis_online, no_active_patrol]
-    timeout_sec: 45.0
+    timeout_sec: 14400.0
     result_schema: {status: [accepted, running, failed, timeout]}
     argument_schema: {properties: {}, required: [route_id]}
   go_to_checkpoint:
@@ -74,7 +74,7 @@ capabilities:
     side_effect: robot_navigation
     requires_confirmation: true
     preconditions: [robot_ready, chassis_online, sensor_fresh, no_active_patrol]
-    timeout_sec: 45.0
+    timeout_sec: 120.0
     result_schema: {status: [accepted, running, succeeded, failed, canceled, timeout]}
     argument_schema: {properties: {}, required: [target_id]}
   pause_patrol:
@@ -155,6 +155,16 @@ capabilities:
     argument_schema: {properties: {}, required: [route_id]}
   get_system_status:
     description: 读取 Supervisor 系统状态
+    risk_level: read_only
+    executor: local
+    side_effect: none
+    requires_confirmation: false
+    preconditions: []
+    timeout_sec: 1.0
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: []}
+  get_robot_summary:
+    description: 读取聚合后的机器人模式、定位、导航、巡逻、传感器和底盘状态
     risk_level: read_only
     executor: local
     side_effect: none

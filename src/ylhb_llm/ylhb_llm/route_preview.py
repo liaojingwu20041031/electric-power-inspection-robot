@@ -428,7 +428,13 @@ def generate_route_preview(
         "safety_warnings": [],
         "preview_mode": preview_mode,
     }
-    route_path = (Path(route_file_path).expanduser() if route_file_path else map_yaml.parent / "route_patrol_001.json").resolve()
+    if route_file_path:
+        route_path = Path(route_file_path).expanduser().resolve()
+    else:
+        selection = select_latest_route_file(map_yaml.parent)
+        if selection.path is None:
+            return {**base_failure, "message": f"路线预览失败: {selection.error}"}
+        route_path = selection.path.resolve()
     if preview_mode not in {"route_focus", "full_map"}:
         return {**base_failure, "message": f"路线预览失败: unsupported preview mode: {preview_mode}"}
     try:

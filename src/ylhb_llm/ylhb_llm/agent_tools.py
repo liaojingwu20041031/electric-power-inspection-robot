@@ -70,7 +70,7 @@ class AgentTools:
         for name in BASE_SKILL_TOOLS:
             self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_base_skill))
         self.registry.register(ToolDefinition('go_to_checkpoint', tool_schemas.get('go_to_checkpoint', {}), self._execute_patrol))
-        for name in {'get_system_status', 'get_patrol_status', 'get_voice_status', 'generate_local_status_reply', 'list_routes', 'describe_route', 'list_checkpoints', 'inspect_checkpoint'}:
+        for name in {'get_robot_summary', 'get_system_status', 'get_patrol_status', 'get_voice_status', 'generate_local_status_reply', 'list_routes', 'describe_route', 'list_checkpoints', 'inspect_checkpoint'}:
             self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_local))
 
     def execute(self, decision: Dict[str, Any], policy) -> Dict[str, Any]:
@@ -125,7 +125,7 @@ class AgentTools:
         return result
 
     def _create_operation(self, decision: Dict[str, Any], arguments: Dict[str, Any]):
-        if self.operation_manager is None:
+        if self.operation_manager is None or decision.get('operation_id'):
             return None
         name = str((decision.get('tool_call') or {}).get('name') or '')
         schema = self.tool_schemas.get(name) or {}
@@ -135,7 +135,11 @@ class AgentTools:
             str(decision.get('run_id') or decision.get('decision_id') or ''),
             str(decision.get('tool_call_id') or ''),
             name,
-            arguments,
+            {
+                **arguments,
+                **({'target_operation_id': str(decision['target_operation_id'])}
+                   if decision.get('target_operation_id') else {}),
+            },
             float(schema.get('timeout_sec') or 15.0),
         )
 
@@ -146,6 +150,7 @@ class AgentTools:
             'run_id': str(decision.get('run_id') or ''),
             'operation_id': str(decision.get('operation_id') or ''),
             'tool_call_id': str(decision.get('tool_call_id') or ''),
+            'target_operation_id': str(decision.get('target_operation_id') or ''),
         }
 
     def _execute_system(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
@@ -195,6 +200,10 @@ class AgentTools:
             return tool_result(name, True, 'ok', 'patrol status', self.state.patrol_status)
         if name == 'get_voice_status':
             return tool_result(name, True, 'ok', 'voice status', self.state.voice_status)
+        if name == 'get_robot_summary':
+            if self.status_aggregator is None:
+                return tool_result(name, False, 'failed', 'robot status aggregator unavailable')
+            return tool_result(name, True, 'ok', 'robot summary', self.status_aggregator.summary())
         if self.route_toolpack and name == 'list_routes':
             return tool_result(name, True, 'ok', 'routes', {'routes': self.route_toolpack.list_routes()})
         if self.route_toolpack and name == 'describe_route':

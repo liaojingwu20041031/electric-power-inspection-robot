@@ -855,13 +855,19 @@ def test_duplicate_start_request_only_republishes_acknowledgement():
     node._start_route_from_file = lambda _route_id: True
     events = []
     node._publish_event = events.append
-    message = type("Message", (), {"data": '{"command":"start","request_id":"r1"}'})()
+    message = type("Message", (), {"data": (
+        '{"command":"start","request_id":"r1","run_id":"run_1",'
+        '"tool_call_id":"call_1","operation_id":"op_1"}'
+    )})()
 
     node._on_command(message)
     node._on_command(message)
 
     assert [event["event"] for event in events] == ["command_accepted", "command_accepted"]
     assert events[1]["duplicate"] is True
+    assert node.platform_context['run_id'] == 'run_1'
+    assert node.platform_context['tool_call_id'] == 'call_1'
+    assert node.platform_context['operation_id'] == 'op_1'
 
 
 def test_auto_start_waits_for_initial_pose_sequence_completion():

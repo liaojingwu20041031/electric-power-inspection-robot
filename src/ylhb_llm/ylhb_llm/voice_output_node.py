@@ -115,11 +115,14 @@ class VoiceOutputNode(Node):
                 self.queue.task_done()
 
     def speak(self, text: str, task_id: str) -> None:
-        if not self.qwen.available():
-            self.get_logger().warn('DASHSCOPE_API_KEY 未设置，跳过 TTS 播放。')
-            return
-        cache_key = (self.tts_model, self.tts_voice, self.tts_language_type, text)
+        self.current_task_id = task_id
+        self.publish_status_once()
+        audio_path = ''
         try:
+            if not self.qwen.available():
+                self.get_logger().warn('DASHSCOPE_API_KEY 未设置，跳过 TTS 播放。')
+                return
+            cache_key = (self.tts_model, self.tts_voice, self.tts_language_type, text)
             audio = self.tts_cache.get(cache_key) if self.enable_tts_cache else None
             if audio is None:
                 self.get_logger().info(
@@ -142,18 +145,12 @@ class VoiceOutputNode(Node):
                 self.get_logger().info(
                     f'TTS 命中缓存：task_id={task_id}, text_len={len(text)}, audio_bytes={len(audio)}'
                 )
-        except QwenClientError as exc:
-            self.get_logger().warn(f'TTS 合成失败：task_id={task_id}, error={exc}')
-            return
-        if not audio:
-            self.get_logger().warn(f'TTS 未返回音频：task_id={task_id}')
-            return
-        with tempfile.NamedTemporaryFile(prefix='ylhb_tts_', suffix='.wav', delete=False) as f:
-            f.write(audio)
-            audio_path = f.name
-        try:
-            self.current_task_id = task_id
-            self.publish_status_once()
+            if not audio:
+                self.get_logger().warn(f'TTS 未返回音频：task_id={task_id}')
+                return
+            with tempfile.NamedTemporaryFile(prefix='ylhb_tts_', suffix='.wav', delete=False) as f:
+                f.write(audio)
+                audio_path = f.name
             time.sleep(0.25)
 
             cmd = ['aplay', '-q']
@@ -177,23 +174,28 @@ class VoiceOutputNode(Node):
                 )
             elif returncode == 0:
                 self.get_logger().info(f'音频播放完成：task_id={task_id}')
+        except QwenClientError as exc:
+            self.get_logger().warn(f'TTS 合成失败：task_id={task_id}, error={exc}')
         except subprocess.TimeoutExpired:
             self.terminate_current_playback()
             self.get_logger().warn(f'音频播放超时：task_id={task_id}, path={audio_path}')
         except Exception as exc:
-            self.get_logger().warn(f'音频播放异常：task_id={task_id}, error={exc}')
+            self.get_logger().warn(f'TTS 或音频播放异常：task_id={task_id}, error={exc}')
         finally:
             with self.playback_lock:
                 if self.current_playback is not None and self.current_playback.poll() is not None:
                     self.current_playback = None
             self.current_task_id = ''
             self.publish_status_once()
-            try:
-                os.unlink(audio_path)
-            except OSError:
-                pass
+            if audio_path:
+                try:
+                    os.unlink(audio_path)
+                except OSError:
+                    pass
 
     def should_split_tts(self, task_id: str, text: str) -> bool:
+        if task_id.startswith('assistant_chat_'):
+            return False
         if not self.split_long_tts:
             return False
         if self.preserve_long_task_tts_single_request and task_id.startswith(('text_', 'inspection_', 'inspect_')):

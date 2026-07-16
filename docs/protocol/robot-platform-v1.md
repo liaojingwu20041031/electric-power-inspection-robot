@@ -282,7 +282,7 @@ HTTP：`200`、`401 AUTH_FAILED`、`404 DEPLOYMENT_NOT_FOUND`。GET 可按指数
 }
 ```
 
-HTTP：`200`、`401`、`404`。下载后必须解析 JSON、规范化并校验 `routePayloadSha256` 与 `routeRevisionContentSha256`；失败不得安装。
+HTTP：`200`、`401`、`404`。下载后必须解析 JSON，对原始解析结果执行 UTF-8、键排序、无空格 canonical JSON 序列化，并在字段补全、数值转换、结构规范化或本地 ROS 路线转换之前校验 `routePayloadSha256` 与 `routeRevisionContentSha256`；失败不得安装。
 
 ### 6.6 `GET /robot-api/v1/deployments/{deploymentId}/yaml`
 
@@ -516,12 +516,12 @@ Spring 平台状态包括 `CREATED/STARTING/RUNNING/PAUSING/PAUSED/RESUMING/CANC
 
 ## 11. Deployment 合同
 
-- `routeRevisionContentSha256`：平台不可变 revision 的 canonical `executorJson` SHA-256。
-- `routePayloadSha256`：实际下载并规范化后的 `route.json` SHA-256；当前应与 revision hash 相等。
+- `routeRevisionContentSha256`：平台不可变 revision 原始解析 JSON 的 canonical `executorJson` SHA-256。
+- `routePayloadSha256`：实际下载 `route.json` 原始解析结果的 canonical JSON SHA-256；当前应与 revision hash 相等。哈希发生在字段补全、数值转换、结构规范化和本地 ROS 路线转换之前。
 - `mapImageSha256`：原始 PGM 完整字节 SHA-256。
 - `yamlName`、`pgmName` 保留原始文件名，只允许 basename 与 `.yaml/.yml/.pgm` 安全后缀。
 - deployment 不可变：同一 deploymentId 相同身份与完整内容可幂等返回；不同内容或不完整缓存返回 `409 DEPLOYMENT_CONFLICT`。
-- Jetson 校验顺序：manifest 身份 → 下载 route/YAML/PGM → 大小限制 → 路线 JSON 与 schema → route 两类哈希 → PGM 哈希 → YAML image 文件名 → route-map 绑定 → staging 原子安装。
+- Jetson 校验顺序：manifest 身份 → 下载 route/YAML/PGM → 大小限制 → 路线 JSON 解码与解析 → 原始解析 JSON canonical route 两类哈希 → 路线 schema/结构规范化 → 原始 PGM 字节哈希 → YAML image 文件名 → 下载 route-map 绑定 → 本地默认地图绑定 → staging 与本地高编号路线原子安装。
 
 ## 12. 错误码
 

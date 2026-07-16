@@ -3,7 +3,10 @@ from typing import Any, Dict
 
 
 ACTIVE_PATROL_STATES = {'running', 'returning_home', 'waiting_loop'}
-CANCELABLE_PATROL_STATES = ACTIVE_PATROL_STATES | {'paused', 'canceling'}
+CANCELABLE_PATROL_STATES = ACTIVE_PATROL_STATES | {
+    'unknown', 'starting', 'command_sent', 'waiting_nav2', 'waiting_localization',
+    'paused', 'canceling',
+}
 SAFE_MOTIONS = {'前进', '后退', '左转', '右转', '停止'}
 DANGEROUS_TOOLS = {'/cmd_vel', 'cmd_vel', 'nav2_goal', 'delete_map', 'edit_route'}
 
@@ -60,6 +63,7 @@ def authorize(
         return PolicyResult(command in SAFE_MOTIONS, '不支持的运动指令')
     if tool in {
         'get_system_status',
+        'get_robot_summary',
         'get_patrol_status',
         'get_voice_status',
         'generate_local_status_reply',

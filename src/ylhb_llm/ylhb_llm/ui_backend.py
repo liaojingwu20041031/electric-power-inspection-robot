@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from PyQt5.QtCore import QObject, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
@@ -120,6 +121,7 @@ class UiBackend(QObject):
         self.patrol_task_builder = patrol_task_builder
         self._route_preview_thread: Optional[threading.Thread] = None
         self._route_preview_mode = 'route_focus'
+        self._active_route_preview_path = ''
         self._control_unlocked = False
         self._last_control_activity = 0.0
         self._last_system_command_at: Dict[str, float] = {}
@@ -1124,10 +1126,19 @@ class UiBackend(QObject):
         try:
             try:
                 preview = self.route_preview_loader(
-                    force=force, preview_mode=self._route_preview_mode
+                    force=force,
+                    preview_mode=self._route_preview_mode,
+                    route_file_path=(
+                        Path(self._active_route_preview_path)
+                        if self._active_route_preview_path else None
+                    ),
                 )
             except TypeError:
-                preview = self.route_preview_loader(force=force)
+                try:
+                    preview = self.route_preview_loader(
+                        force=force, preview_mode=self._route_preview_mode)
+                except TypeError:
+                    preview = self.route_preview_loader(force=force)
         except Exception as exc:
             preview = {
                 'ok': False,
@@ -1347,9 +1358,21 @@ class UiBackend(QObject):
             }
         else:
             self._has_patrol_status = True
+        route_path = str(payload.get('route_path') or '')
+        route_changed = bool(
+            route_path
+            and route_path != self._active_route_preview_path
+        )
+        refresh_route = route_changed and not (
+            self._route_preview_thread and self._route_preview_thread.is_alive()
+        )
+        if refresh_route:
+            self._active_route_preview_path = route_path
         self.state.patrol_status = payload
         self.patrolStatusChanged.emit()
         self.systemStatusChanged.emit()
+        if refresh_route:
+            self._start_route_preview_refresh(force=True)
 
     def update_patrol_event(self, payload: Dict[str, Any]) -> None:
         payload = dict(payload)

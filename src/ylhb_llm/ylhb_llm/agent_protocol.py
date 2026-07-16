@@ -9,7 +9,7 @@ LEGACY_OPERATION_STATES = {'done': 'succeeded', 'cancelled': 'canceled'}
 
 OPERATION_TRANSITIONS = {
     'created': {'sent', 'failed'},
-    'sent': {'accepted', 'running', 'failed', 'canceled', 'timeout'},
+    'sent': {'accepted', 'running', 'succeeded', 'failed', 'canceled', 'timeout'},
     'accepted': {'running', 'succeeded', 'failed', 'canceled', 'timeout'},
     'running': {'succeeded', 'failed', 'canceled', 'timeout'},
 }

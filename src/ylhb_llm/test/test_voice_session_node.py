@@ -14,6 +14,22 @@ class FakeQwen:
         return self._available
 
 
+class FakeKws:
+    def __init__(self, ready=True, detected=True, error=''):
+        self.ready = ready
+        self.detected = detected
+        self.error = error
+        self.listen_calls = 0
+        self.stop_calls = 0
+
+    def listen(self, _should_stop):
+        self.listen_calls += 1
+        return self.detected
+
+    def stop(self):
+        self.stop_calls += 1
+
+
 class FakePublisher:
     def __init__(self):
         self.messages = []
@@ -30,6 +46,10 @@ def make_node(api_key=True):
     node = VoiceSessionNode.__new__(VoiceSessionNode)
     node.enabled = True
     node.qwen = FakeQwen(api_key)
+    node.local_kws_enabled = True
+    node.local_kws = FakeKws()
+    node.local_kws_error = ''
+    node.silent_start = True
     node.lock = threading.Lock()
     node.session_enabled = False
     node.awakened = False
@@ -40,9 +60,17 @@ def make_node(api_key=True):
     node.last_active_at = 0.0
     node.pause_listen_until = 0.0
     node.last_request_published_at = 0.0
+    node.awaiting_turn_id = ''
+    node.awaiting_response_deadline = 0.0
+    node.awaiting_answer_received = False
+    node.answer_received_at = 0.0
+    node.response_tts_started = False
+    node.resume_after_tts_at = 0.0
+    node.agent_response_timeout_sec = 30.0
     node.post_event_listen_pause_sec = 3.0
     node.context_followup_until = 0.0
     node.in_context_followup = False
+    node.context_followup_timeout_sec = 12.0
     node.wake_phrase = '小零小零'
     node.wake_aliases = []
     node.wake_match_threshold = 0.55
@@ -58,13 +86,16 @@ def make_node(api_key=True):
     node.last_tts_speaking = False
     node.last_start_prompt_at = 0.0
     node.debug_state_transitions = False
+    node.voice_close_words = ('关闭语音模式',)
+    node.conversation_end_words = ('不用了', '结束对话')
+    node.current_recording_proc = None
     node.say_messages = []
     node.say = lambda task_id, text, priority=5, interrupt=False: node.say_messages.append((task_id, text, priority, interrupt))
     node.publish_count = 0
     node.publish_status = lambda force=False: setattr(node, 'publish_count', node.publish_count + 1)
     node.set_state = lambda state: setattr(node, 'state', state)
     node.agent_request_pub = FakePublisher()
-    node.get_logger = lambda: SimpleNamespace(info=lambda _msg: None)
+    node.get_logger = lambda: SimpleNamespace(info=lambda _msg: None, warn=lambda _msg: None)
     return node
 
 
@@ -102,7 +133,7 @@ def test_start_when_already_enabled_keeps_session_and_does_not_speak_by_default(
     assert node.say_messages == []
 
 
-def test_repeat_start_feedback_obeys_cooldown():
+def test_silent_start_does_not_repeat_feedback():
     node = make_node()
     node.session_enabled = True
     node.repeat_start_feedback = True
@@ -110,7 +141,7 @@ def test_repeat_start_feedback_obeys_cooldown():
 
     VoiceSessionNode.start_callback(node, None, response())
 
-    assert node.say_messages[-1][1] == '语音模式已经开启。'
+    assert node.say_messages == []
 
 
 def test_stop_then_start_creates_new_session():
@@ -133,6 +164,17 @@ def test_missing_api_key_rejects_start():
 
     assert res.success is False
     assert 'DASHSCOPE_API_KEY' in res.message
+
+
+def test_local_kws_failure_rejects_start_without_cloud_fallback():
+    node = make_node()
+    node.local_kws = FakeKws(ready=False, error='tokens.txt 不存在')
+
+    res = VoiceSessionNode.start_callback(node, None, response())
+
+    assert res.success is False
+    assert '本地唤醒不可用' in res.message
+    assert 'tokens.txt 不存在' in res.message
 
 
 def test_command_listening_uses_longer_vad_window():
@@ -228,81 +270,126 @@ def test_default_state_logs_skip_high_frequency_states():
     assert logger.infos == ['连续语音状态切换：RECORDING']
 
 
-def test_wake_then_first_command_publishes_agent_request_and_keeps_listening():
+def test_wait_wake_uses_local_kws_without_cloud_asr():
     node = make_node()
     node.session_enabled = True
-    node.session_id = 'voice_1'
-    node.voice_close_words = ('关闭语音',)
     node.state = 'WAIT_WAKE'
+    node.transcribe_pcm = lambda _audio: (_ for _ in ()).throw(
+        AssertionError('WAIT_WAKE must not use ASR'))
 
-    VoiceSessionNode.handle_asr_text(node, '小零小零后退')
+    detected = VoiceSessionNode.wait_for_local_wake(node)
+
+    assert detected is True
+    assert node.local_kws.listen_calls == 1
+    assert node.awakened is True
+    assert node.state == 'LISTENING'
+    assert node.pause_listen_until >= time.monotonic() + 0.2
+    assert node.say_messages == []
+
+
+def test_command_after_local_wake_publishes_once_and_waits_for_agent():
+    node = make_node()
+    node.session_enabled = True
+    node.awakened = True
+    node.session_id = 'voice_1'
+
+    VoiceSessionNode.handle_asr_text(node, '查询机器人状态')
 
     payload = json.loads(node.agent_request_pub.messages[0])
-    assert payload['text'] == '后退'
+    assert payload['text'] == '查询机器人状态'
     assert payload['source'] == 'voice'
     assert payload['request_id'] == 'utt_0001'
-    assert node.awakened is True
-    assert node.state == 'AWAKENED_IDLE'
+    assert node.awaiting_turn_id == 'utt_0001'
+    assert node.state == 'WAITING_RESPONSE'
 
 
-def test_homophone_wake_words_publish_command():
-    cases = ['小玲小玲后退', '小林小林后退']
-    for text in cases:
-        node = make_node()
-        node.session_enabled = True
-        node.session_id = 'voice_1'
-        node.voice_close_words = ('关闭语音',)
-        node.state = 'WAIT_WAKE'
-
-        VoiceSessionNode.handle_asr_text(node, text)
-
-        assert json.loads(node.agent_request_pub.messages[0])['text'] == '后退'
-
-
-def test_short_wake_word_publishes_command():
+def test_waiting_for_agent_rejects_second_command():
     node = make_node()
     node.session_enabled = True
-    node.session_id = 'voice_1'
-    node.voice_close_words = ('关闭语音',)
-    node.state = 'WAIT_WAKE'
+    node.awakened = True
+    node.awaiting_turn_id = 'utt_0001'
+    node.state = 'WAITING_RESPONSE'
 
-    VoiceSessionNode.handle_asr_text(node, '小零后退')
-
-    assert json.loads(node.agent_request_pub.messages[0])['text'] == '后退'
-
-
-def test_plain_text_before_wake_does_not_publish_agent_request():
-    node = make_node()
-    node.session_enabled = True
-    node.session_id = 'voice_1'
-    node.voice_close_words = ('关闭语音',)
-    node.state = 'WAIT_WAKE'
-
-    VoiceSessionNode.handle_asr_text(node, '你能够做什么')
+    VoiceSessionNode.handle_asr_text(node, '第二个问题')
 
     assert node.agent_request_pub.messages == []
+
+
+def test_matching_agent_answer_waits_until_tts_and_tail_finish():
+    node = make_node()
+    node.session_enabled = True
+    node.awakened = True
+    node.awaiting_turn_id = 'utt_0001'
+    node.state = 'WAITING_RESPONSE'
+
+    VoiceSessionNode.agent_chat_callback(node, SimpleNamespace(data=json.dumps({
+        'turn_id': 'utt_0001', 'role': 'assistant', 'text': '完整回答',
+    })))
+    VoiceSessionNode.voice_status_callback(node, SimpleNamespace(speaking=True))
+    VoiceSessionNode.voice_status_callback(node, SimpleNamespace(speaking=False))
+
+    assert node.awaiting_answer_received is True
+    assert node.response_tts_started is True
+    assert node.state == 'WAITING_RESPONSE'
+    node.resume_after_tts_at = time.monotonic() - 0.1
+    VoiceSessionNode.update_waiting_response(node)
+    assert node.awaiting_turn_id == ''
+    assert node.awakened is True
+    assert node.in_context_followup is True
+    assert node.context_followup_until >= time.monotonic() + 11.0
+    assert node.state == 'LISTENING'
+
+
+def test_pure_wake_alias_after_kws_is_ignored_and_keeps_listening():
+    node = make_node()
+    node.session_enabled = True
+    node.awakened = True
+    node.wake_aliases = ['小林小林', '小玲小玲']
+
+    VoiceSessionNode.handle_asr_text(node, '小玲小玲')
+
+    assert node.agent_request_pub.messages == []
+    assert node.awakened is True
+    assert node.state == 'LISTENING'
+
+
+def test_end_conversation_returns_to_wait_wake_but_explicit_close_turns_off():
+    node = make_node()
+    node.session_enabled = True
+    node.awakened = True
+
+    VoiceSessionNode.handle_asr_text(node, '不用了')
+
+    assert node.session_enabled is True
     assert node.awakened is False
+    assert node.state == 'WAIT_WAKE'
 
-
-def test_second_command_after_wake_does_not_need_wake_phrase():
-    node = make_node()
-    node.session_enabled = True
     node.awakened = True
-    node.session_id = 'voice_1'
-    node.voice_close_words = ('关闭语音',)
-
-    VoiceSessionNode.handle_asr_text(node, '你能够做什么')
-
-    assert json.loads(node.agent_request_pub.messages[0])['text'] == '你能够做什么'
-
-
-def test_close_voice_is_handled_locally_without_agent_request():
-    node = make_node()
-    node.session_enabled = True
-    node.awakened = True
-    node.voice_close_words = ('关闭语音',)
-
-    VoiceSessionNode.handle_asr_text(node, '关闭语音')
+    VoiceSessionNode.handle_asr_text(node, '关闭语音模式')
 
     assert node.agent_request_pub.messages == []
     assert node.session_enabled is False
+
+
+def test_stop_immediately_releases_kws_and_vad_process():
+    node = make_node()
+    node.session_enabled = True
+
+    class Proc:
+        def __init__(self):
+            self.terminated = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated += 1
+
+    proc = Proc()
+    node.current_recording_proc = proc
+
+    VoiceSessionNode.stop_session(node, 'off', say=False)
+
+    assert node.local_kws.stop_calls == 1
+    assert proc.terminated == 1
+    assert node.state == 'OFF'

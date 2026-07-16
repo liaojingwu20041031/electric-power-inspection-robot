@@ -23,7 +23,7 @@ def _error(code: str, message: str, request_id: str = "", details: Any = None, s
 
 def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
     root = Path(os.environ.get("YLHB_PLATFORM_STORAGE_DIR") or bridge.get_parameter("platform_storage_dir").value or "~/.local/share/ylhb/platform").expanduser()
-    store = DeploymentStore(root)
+    store = DeploymentStore(root, bridge.get_parameter("default_map_path").value)
     robot_id = os.environ.get("YLHB_ROBOT_ID") or str(bridge.get_parameter("robot_id").value)
     token = os.environ.get("YLHB_PLATFORM_API_TOKEN") or str(bridge.get_parameter("platform_api_token").value)
     boot_id = str(uuid.uuid4())

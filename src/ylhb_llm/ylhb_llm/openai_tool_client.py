@@ -55,6 +55,7 @@ class OpenAIToolClient:
         tools: List[Dict[str, Any]],
         timeout_sec: float,
         temperature: float = 0.0,
+        tool_choice: str = 'auto',
         extra_body: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         if not self.available():
@@ -66,6 +67,7 @@ class OpenAIToolClient:
             'temperature': temperature,
             'tools': tools,
             'parallel_tool_calls': False,
+            'tool_choice': tool_choice,
             **self.extra_body,
         }
         if extra_body:

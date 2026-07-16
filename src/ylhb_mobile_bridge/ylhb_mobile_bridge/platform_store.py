@@ -11,7 +11,11 @@ from typing import Any, Dict, List
 
 import yaml
 
-from .patrol_route_store import validate_route_file, validate_route_map_binding
+from .patrol_route_store import (
+    ROUTE_NUMBER_PATTERN,
+    validate_route_file,
+    validate_route_map_binding,
+)
 
 
 DELIVERY_FIELDS = {
@@ -60,8 +64,9 @@ def _safe_name(name: str, suffix: str) -> str:
 
 
 class DeploymentStore:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, default_map_path: Path | str | None = None):
         self.root = Path(root).expanduser()
+        self.default_map_path = Path(default_map_path).expanduser() if default_map_path else None
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "staging").mkdir(exist_ok=True)
         (self.root / "deployments").mkdir(exist_ok=True)
@@ -93,6 +98,22 @@ class DeploymentStore:
                   setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
             """)
+
+    def _default_map_yaml_path(self) -> Path | None:
+        if self.default_map_path is None:
+            return None
+        if self.default_map_path.suffix.lower() in {".yaml", ".yml"}:
+            return self.default_map_path
+        return self.default_map_path.with_suffix(".yaml")
+
+    @staticmethod
+    def _next_route_path(directory: Path) -> Path:
+        numbers = [
+            int(match.group(1))
+            for path in directory.glob("route_patrol_*.json")
+            if (match := ROUTE_NUMBER_PATTERN.fullmatch(path.name))
+        ]
+        return directory / f"route_patrol_{max(numbers, default=0) + 1:03d}.json"
 
     def _connection(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.db_path, timeout=5)
@@ -127,16 +148,19 @@ class DeploymentStore:
         pgm_name = _safe_name(str(manifest["pgmName"]), ".pgm")
         try:
             route_data = json.loads(route.decode("utf-8"))
-            normalized_route = validate_route_file(route_data)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise PlatformStoreError("INVALID_ROUTE", str(exc)) from exc
-        route_hash = sha256(canonical_json(normalized_route))
+        route_hash = sha256(canonical_json(route_data))
         if route_hash != manifest["routePayloadSha256"]:
             raise PlatformStoreError("ROUTE_HASH_MISMATCH", "routePayloadSha256 mismatch")
         if route_hash != manifest["routeRevisionContentSha256"]:
             raise PlatformStoreError("ROUTE_HASH_MISMATCH", "routeRevisionContentSha256 mismatch")
         if manifest.get("routeContentSha256") and manifest["routeContentSha256"] != manifest["routeRevisionContentSha256"]:
             raise PlatformStoreError("ROUTE_HASH_MISMATCH", "route revision hash mismatch")
+        try:
+            normalized_route = validate_route_file(route_data)
+        except ValueError as exc:
+            raise PlatformStoreError("INVALID_ROUTE", str(exc)) from exc
         if sha256(pgm) != manifest["mapImageSha256"]:
             raise PlatformStoreError("MAP_HASH_MISMATCH", "mapImageSha256 mismatch")
         try:
@@ -153,28 +177,64 @@ class DeploymentStore:
         staging = Path(tempfile.mkdtemp(prefix=f"{deployment_id}-", dir=self.root / "staging"))
         target = self.root / "deployments" / deployment_id
         installed = False
+        local_route_path = None
+        local_route_temp = None
+        local_route_published = False
         try:
             (staging / "manifest.json").write_bytes(canonical_json(manifest))
-            (staging / "route.json").write_bytes(canonical_json(normalized_route))
+            (staging / "route.json").write_bytes(canonical_json(route_data))
             # Validate against original names first; executor routes bind those names.
             (staging / yaml_name).write_bytes(yaml_bytes)
             (staging / pgm_name).write_bytes(pgm)
             validate_route_map_binding(normalized_route, staging / yaml_name)
+            local_map_yaml = self._default_map_yaml_path()
+            if local_map_yaml is not None:
+                local_map_data = yaml.safe_load(local_map_yaml.read_text(encoding="utf-8"))
+                if not isinstance(local_map_data, dict):
+                    raise ValueError("local map yaml must be an object")
+                local_image_name = Path(str(local_map_data.get("image", ""))).name
+                local_route = {
+                    **normalized_route,
+                    "map": {
+                        **normalized_route["map"],
+                        "yaml": local_map_yaml.name,
+                        "image": local_image_name,
+                    },
+                }
+                validate_route_map_binding(local_route, local_map_yaml)
+                local_route_path = self._next_route_path(local_map_yaml.parent)
+                with tempfile.NamedTemporaryFile(
+                    prefix=f".{local_route_path.name}.",
+                    suffix=".tmp",
+                    dir=local_map_yaml.parent,
+                    delete=False,
+                ) as route_file:
+                    route_file.write(canonical_json(local_route))
+                    local_route_temp = Path(route_file.name)
             os.replace(staging, target)
             installed = True
+            if local_route_path is not None and local_route_temp is not None:
+                os.replace(local_route_temp, local_route_path)
+                local_route_published = True
             with self._connection() as db:
                 db.execute("INSERT INTO deployments VALUES (?, ?, ?, ?, ?)", (deployment_id, json.dumps(manifest), route_hash, manifest["mapImageSha256"], _now()))
             return {"deploymentId": deployment_id, "state": "DEPLOYED", "idempotent": False, "routePayloadSha256": route_hash, "mapImageSha256": manifest["mapImageSha256"], "routePath": str(target / "route.json"), "mapYamlPath": str(target / yaml_name), "mapPgmPath": str(target / pgm_name)}
         except PlatformStoreError:
             if installed:
                 shutil.rmtree(target, ignore_errors=True)
+            if local_route_published and local_route_path is not None:
+                local_route_path.unlink(missing_ok=True)
             raise
         except Exception as exc:
             if installed:
                 shutil.rmtree(target, ignore_errors=True)
+            if local_route_published and local_route_path is not None:
+                local_route_path.unlink(missing_ok=True)
             raise PlatformStoreError("INVALID_MAP", str(exc)) from exc
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+            if local_route_temp is not None:
+                local_route_temp.unlink(missing_ok=True)
 
     def execution(self, execution_id: str) -> Dict[str, Any] | None:
         with self._connection() as db:

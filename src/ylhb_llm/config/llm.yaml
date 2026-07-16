@@ -156,6 +156,7 @@ voice_input_node:
 voice_session_node:
   ros__parameters:
     agent_request_topic: /inspection_ai/agent_request
+    agent_chat_topic: /inspection_ai/agent_chat
     voice_session_status_topic: /inspection_ai/voice_session_status
     say_text_topic: /inspection_ai/say_text
     voice_status_topic: /inspection_ai/voice_status
@@ -165,6 +166,17 @@ voice_session_node:
     audio_device: default
     audio_input_device: default
     enabled: false
+    auto_start_standby: true
+    silent_start: true
+    local_kws_enabled: true
+    kws_encoder: ~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx
+    kws_decoder: ~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/decoder-epoch-13-avg-2-chunk-8-left-64.onnx
+    kws_joiner: ~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx
+    kws_tokens: ~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/tokens.txt
+    kws_keywords: ~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/keywords.txt
+    kws_keywords_score: 1.0
+    kws_keywords_threshold: 0.25
+    agent_response_timeout_sec: 30.0
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     asr_model: qwen3-asr-flash
     request_timeout_sec: 15.0
@@ -185,7 +197,7 @@ voice_session_node:
     asr_fail_standby_threshold: 3
     post_event_listen_pause_sec: 3.0
     ignore_empty_asr_after_event_sec: 6.0
-    context_followup_timeout_sec: 8.0
+    context_followup_timeout_sec: 12.0
     start_prompt_cooldown_sec: 8.0
     repeat_start_feedback: false
     pre_roll_sec: 0.4
@@ -197,7 +209,8 @@ voice_session_node:
     debug_audio_dir: /tmp/ylhb_voice_debug
     debug_audio_keep: 20
     debug_state_transitions: false
-    voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
+    voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式]
+    conversation_end_words: [不用了, 结束对话]
 
 voice_output_node:
   ros__parameters:
@@ -215,5 +228,5 @@ voice_output_node:
     enable_tts_cache: true
     split_long_tts: true
     tts_segment_max_chars: 70
-    preserve_long_task_tts_single_request: false
+    preserve_long_task_tts_single_request: true
     interrupt_current_playback: true
