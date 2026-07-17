@@ -169,6 +169,7 @@ def make_app(
         or '/home/nvidia/ros2_DL/maps/my_map'
     )
     map_manager = MapManager(configured_map_path)
+    map_mutation_lock = threading.Lock()
 
     def map_is_in_use() -> bool:
         is_running = getattr(process_manager, 'is_running', None)
@@ -356,7 +357,7 @@ def make_app(
 
     @app.post('/api/debug/maps/{map_name}/confirm_default')
     def map_confirm_default(map_name: str):
-        if map_is_in_use():
+        if map_name != map_manager.default_name and map_is_in_use():
             return map_error_response(
                 MapManagerError(
                     'map_in_use',
@@ -366,10 +367,33 @@ def make_app(
                 )
             )
         try:
-            return ok(
-                'default map confirmed',
-                map_manager.confirm_default(map_name),
-            )
+            with map_mutation_lock:
+                result = map_manager.confirm_default(map_name)
+                worker = getattr(bridge, 'map_upload_worker', None)
+                try:
+                    if worker is None:
+                        raise RuntimeError('map upload worker is not initialized')
+                    upload = worker.enqueue(
+                        map_manager.maps_dir / f'{map_manager.default_name}.yaml',
+                        map_manager.maps_dir / f'{map_manager.default_name}.pgm',
+                    )
+                except Exception as exc:
+                    bridge.get_logger().error(
+                        'default map applied but upload task creation failed: %s',
+                        exc,
+                    )
+                    upload = {
+                        'task_created': False,
+                        'task_id': '',
+                        'status': 'FAILED_TO_CREATE',
+                        'map_asset_id': '',
+                        'error': str(exc)[:300],
+                        'content_identity_sha256': '',
+                    }
+                return ok(
+                    'default map applied',
+                    {**result, 'default_applied': True, 'upload': upload},
+                )
         except MapManagerError as exc:
             return map_error_response(exc)
 
@@ -385,10 +409,11 @@ def make_app(
                 )
             )
         try:
-            return ok(
-                'map renamed',
-                map_manager.rename_map(map_name, request.new_name),
-            )
+            with map_mutation_lock:
+                return ok(
+                    'map renamed',
+                    map_manager.rename_map(map_name, request.new_name),
+                )
         except MapManagerError as exc:
             return map_error_response(exc)
 
@@ -404,7 +429,8 @@ def make_app(
                 )
             )
         try:
-            return ok('map deleted', map_manager.delete_map(map_name))
+            with map_mutation_lock:
+                return ok('map deleted', map_manager.delete_map(map_name))
         except MapManagerError as exc:
             return map_error_response(exc)
 
@@ -712,10 +738,12 @@ def main() -> None:
     )
     executor_thread.start()
     bridge.cloud_client.start()
+    bridge.map_upload_worker.start()
 
     try:
         uvicorn.run(app, host=host, port=port, access_log=False)
     finally:
+        bridge.map_upload_worker.stop()
         bridge.cloud_client.stop()
         bridge.stop_motion()
         bridge.destroy_node()

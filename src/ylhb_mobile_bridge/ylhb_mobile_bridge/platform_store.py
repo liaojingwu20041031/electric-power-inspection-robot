@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -96,6 +97,25 @@ class DeploymentStore:
                 );
                 CREATE TABLE IF NOT EXISTS bridge_settings (
                   setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS map_uploads (
+                  task_id TEXT PRIMARY KEY,
+                  idempotency_key TEXT NOT NULL UNIQUE,
+                  content_identity_sha256 TEXT NOT NULL UNIQUE,
+                  identity_json TEXT NOT NULL,
+                  yaml_sha256 TEXT NOT NULL,
+                  pgm_sha256 TEXT NOT NULL,
+                  yaml_path TEXT NOT NULL,
+                  pgm_path TEXT NOT NULL,
+                  status TEXT NOT NULL CHECK (
+                    status IN ('PENDING','FAILED_RETRYABLE','FAILED_FINAL','SUCCEEDED')
+                  ),
+                  retry_count INTEGER NOT NULL DEFAULT 0,
+                  next_retry_at REAL NOT NULL DEFAULT 0,
+                  map_asset_id TEXT NOT NULL DEFAULT '',
+                  last_error TEXT NOT NULL DEFAULT '',
+                  created_at REAL NOT NULL,
+                  updated_at REAL NOT NULL
                 );
             """)
 
@@ -355,3 +375,113 @@ class DeploymentStore:
                 (key,),
             ).fetchone()
         return str(row["setting_value"]) if row else default
+
+    @staticmethod
+    def _map_upload_dict(row: sqlite3.Row | None) -> Dict[str, Any] | None:
+        if row is None:
+            return None
+        data = dict(row)
+        data["identity"] = json.loads(data.pop("identity_json"))
+        return data
+
+    def map_upload_by_identity(self, identity: str) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM map_uploads WHERE content_identity_sha256=?",
+                (identity,),
+            ).fetchone()
+        return self._map_upload_dict(row)
+
+    def map_upload(self, task_id: str) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM map_uploads WHERE task_id=?", (task_id,)
+            ).fetchone()
+        return self._map_upload_dict(row)
+
+    def create_map_upload(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        stamp = time.time()
+        with self._connection() as db:
+            db.execute(
+                "INSERT INTO map_uploads ("
+                "task_id,idempotency_key,content_identity_sha256,identity_json,"
+                "yaml_sha256,pgm_sha256,yaml_path,pgm_path,status,retry_count,"
+                "next_retry_at,map_asset_id,last_error,created_at,updated_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record["task_id"], record["idempotency_key"],
+                    record["content_identity_sha256"],
+                    json.dumps(record["identity"], sort_keys=True),
+                    record["yaml_sha256"], record["pgm_sha256"],
+                    record["yaml_path"], record["pgm_path"], "PENDING", 0,
+                    0.0, "", "", stamp, stamp,
+                ),
+            )
+        return self.map_upload(record["task_id"]) or {}
+
+    def requeue_map_upload(self, task_id: str) -> Dict[str, Any]:
+        with self._connection() as db:
+            db.execute(
+                "UPDATE map_uploads SET status='PENDING',next_retry_at=0,"
+                "last_error='',updated_at=? WHERE task_id=?",
+                (time.time(), task_id),
+            )
+        return self.map_upload(task_id) or {}
+
+    def restore_map_upload_snapshot(
+        self, task_id: str, yaml_path: str, pgm_path: str
+    ) -> None:
+        with self._connection() as db:
+            db.execute(
+                "UPDATE map_uploads SET yaml_path=?,pgm_path=?,updated_at=? "
+                "WHERE task_id=?",
+                (yaml_path, pgm_path, time.time(), task_id),
+            )
+
+    def next_due_map_upload(self) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM map_uploads WHERE status='PENDING' OR "
+                "(status='FAILED_RETRYABLE' AND next_retry_at<=?) "
+                "ORDER BY created_at LIMIT 1",
+                (time.time(),),
+            ).fetchone()
+        return self._map_upload_dict(row)
+
+    def finish_map_upload(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        map_asset_id: str = "",
+        error: str = "",
+        next_retry_at: float = 0.0,
+    ) -> Dict[str, Any]:
+        if status not in {"FAILED_RETRYABLE", "FAILED_FINAL", "SUCCEEDED"}:
+            raise ValueError("invalid map upload status")
+        with self._connection() as db:
+            db.execute(
+                "UPDATE map_uploads SET status=?,retry_count=retry_count+1,"
+                "next_retry_at=?,map_asset_id=?,last_error=?,updated_at=? "
+                "WHERE task_id=?",
+                (
+                    status, next_retry_at, map_asset_id, error[:300],
+                    time.time(), task_id,
+                ),
+            )
+        return self.map_upload(task_id) or {}
+
+    def map_uploads_for_cleanup(self) -> List[Dict[str, Any]]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT * FROM map_uploads ORDER BY created_at DESC"
+            ).fetchall()
+        return [self._map_upload_dict(row) or {} for row in rows]
+
+    def clear_map_upload_snapshot(self, task_id: str) -> None:
+        with self._connection() as db:
+            db.execute(
+                "UPDATE map_uploads SET yaml_path='',pgm_path='',updated_at=? "
+                "WHERE task_id=?",
+                (time.time(), task_id),
+            )

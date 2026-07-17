@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .platform_store import DeploymentStore, PlatformStoreError
+from .map_upload import MapUploadWorker
 
 
 STATE_MAP = {"idle": "idle", "starting": "starting", "running": "running", "paused": "paused", "manual_takeover": "manual_takeover", "returning_home": "returning_home", "waiting_loop": "waiting_loop", "succeeded": "succeeded", "failed": "failed", "canceled": "canceled", "cancelled": "canceled"}
@@ -129,4 +130,5 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
     bridge.initialize_local_app_settings(store)
     from .platform_cloud_client import PlatformCloudClient
     bridge.cloud_client = PlatformCloudClient(store, bridge, robot_id, boot_id)
+    bridge.map_upload_worker = MapUploadWorker(store, robot_id)
     return store

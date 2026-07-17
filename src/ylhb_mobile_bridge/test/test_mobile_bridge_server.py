@@ -410,6 +410,61 @@ def test_map_management_api_confirms_default_and_archives_routes(tmp_path):
     )
 
 
+def test_default_map_stays_applied_when_upload_task_creation_fails(tmp_path):
+    write_map_pair(tmp_path, "my_map")
+    write_map_pair(tmp_path, "factory")
+    bridge = FakeBridge()
+    bridge.map_upload_worker = type(
+        'FailingUploadWorker',
+        (),
+        {'enqueue': lambda *_args: (_ for _ in ()).throw(RuntimeError('cloud unavailable'))},
+    )()
+
+    response = make_client(
+        bridge=bridge,
+        default_map_path=str(tmp_path / "my_map"),
+    ).post("/api/debug/maps/factory/confirm_default")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["default_applied"] is True
+    assert data["default"]["name"] == "my_map"
+    assert data["upload"]["status"] == "FAILED_TO_CREATE"
+    assert (tmp_path / "my_map.yaml").read_text(encoding="utf-8").startswith(
+        "image: my_map.pgm"
+    )
+
+
+def test_current_default_can_be_uploaded_while_map_server_is_running(tmp_path):
+    write_map_pair(tmp_path, "my_map")
+    bridge = FakeBridge()
+    bridge.debug_status = lambda: {
+        "online": True,
+        "nodes": {"map_server": True},
+    }
+    bridge.map_upload_worker = type(
+        'RecordingUploadWorker',
+        (),
+        {'enqueue': lambda _self, yaml_path, pgm_path: {
+            'task_created': True,
+            'task_id': 'upload-1',
+            'status': 'PENDING',
+            'map_asset_id': '',
+            'error': '',
+            'content_identity_sha256': 'a' * 64,
+        }},
+    )()
+
+    response = make_client(
+        bridge=bridge,
+        default_map_path=str(tmp_path / "my_map"),
+    ).post("/api/debug/maps/my_map/confirm_default")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["changed"] is False
+    assert response.json()["data"]["upload"]["status"] == "PENDING"
+
+
 @pytest.mark.parametrize(
     ("method", "path", "json", "status_code", "error"),
     [

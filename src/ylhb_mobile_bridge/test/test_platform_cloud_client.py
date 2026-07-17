@@ -1,10 +1,18 @@
 import hashlib
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from ylhb_mobile_bridge.platform_cloud_client import PlatformCloudClient
 from ylhb_mobile_bridge.platform_store import DeploymentStore, canonical_json
+from ylhb_mobile_bridge.map_upload import (
+    MapUploadWorker,
+    content_identity_sha256,
+    normalized_map_identity,
+)
 from ylhb_mobile_bridge.patrol_route_store import (
     validate_route_file,
     validate_route_map_binding,
@@ -142,6 +150,65 @@ def test_successful_cloud_request_records_egress_without_changing_request(monkey
         'cloud.example',
         'cloud.example',
     ]
+
+
+def test_map_upload_identity_snapshot_and_persistent_states(tmp_path, monkeypatch):
+    monkeypatch.setenv('YLHB_MAP_UPLOAD_ENABLED', 'false')
+    maps = tmp_path / 'maps'
+    maps.mkdir()
+    yaml_path = maps / 'my_map.yaml'
+    pgm_path = maps / 'my_map.pgm'
+    pgm = b'P5\n2 1\n255\n\x00\xff'
+    pgm_hash = hashlib.sha256(pgm).hexdigest()
+    yaml_path.write_text(
+        'image: my_map.pgm\nresolution: 0.0500\norigin: [-0, 0.00, 0]\n',
+        encoding='utf-8',
+    )
+    pgm_path.write_bytes(pgm)
+    first_identity = normalized_map_identity(yaml_path.read_bytes(), pgm_hash)
+    second_identity = normalized_map_identity(
+        b'mode: trinary\nfree_thresh: 0.250\nimage: my_map.pgm\n'
+        b'origin: [0.0, -0, 0.000]\noccupied_thresh: 0.650\n'
+        b'negate: 0\nresolution: 0.05\n',
+        pgm_hash,
+    )
+    assert first_identity == second_identity
+    assert content_identity_sha256(first_identity) == content_identity_sha256(second_identity)
+
+    store = DeploymentStore(tmp_path / 'platform')
+    worker = MapUploadWorker(store, 'robot-1')
+    created = worker.enqueue(yaml_path, pgm_path)
+    duplicate = worker.enqueue(yaml_path, pgm_path)
+    assert created['task_created'] is True
+    assert duplicate['task_created'] is False
+    assert duplicate['task_id'] == created['task_id']
+    record = store.map_upload(created['task_id'])
+    assert record and record['status'] == 'PENDING'
+    snapshot = Path(record['pgm_path'])
+    pgm_path.write_bytes(b'P5\n2 1\n255\n\x01\xfe')
+    assert snapshot.read_bytes() == pgm
+
+    retryable = store.finish_map_upload(
+        record['task_id'], 'FAILED_RETRYABLE', error='network',
+        next_retry_at=time.time() - 1,
+    )
+    assert retryable['status'] == 'FAILED_RETRYABLE'
+    assert store.next_due_map_upload()['task_id'] == record['task_id']
+    final = store.finish_map_upload(record['task_id'], 'FAILED_FINAL', error='format')
+    assert final['status'] == 'FAILED_FINAL'
+    requeued = store.requeue_map_upload(record['task_id'])
+    assert requeued['status'] == 'PENDING'
+    succeeded = store.finish_map_upload(
+        record['task_id'], 'SUCCEEDED', map_asset_id='map-1'
+    )
+    assert succeeded['status'] == 'SUCCEEDED'
+    assert worker.enqueue(yaml_path, snapshot)['task_id'] == record['task_id']
+    assert store.map_upload(record['task_id'])['map_asset_id'] == 'map-1'
+
+    monkeypatch.setenv('YLHB_MAP_UPLOAD_SNAPSHOT_MAX_BYTES', '1')
+    limited = MapUploadWorker(DeploymentStore(tmp_path / 'limited'), 'robot-1')
+    with pytest.raises(ValueError, match='disk limit'):
+        limited.enqueue(yaml_path, snapshot)
 
 
 def test_deployment_hashes_raw_route_and_publishes_next_local_route(tmp_path):
