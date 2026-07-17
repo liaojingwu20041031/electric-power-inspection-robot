@@ -181,6 +181,50 @@ def test_start_process_reports_immediate_navigation_exit(monkeypatch):
     assert '导航已启动' not in node.set_result_locked.call_args.args[2]
 
 
+def test_component_operation_feedback_keeps_operation_id_and_business_status():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    captured = []
+    node.last_agent_operation_feedback = {}
+    node.publish_status = lambda: captured.append(dict(node.last_agent_operation_feedback))
+
+    node.publish_component_operation_feedback(
+        {'run_id': 'run_1', 'operation_id': 'op_1', 'tool_call_id': 'call_1'},
+        True,
+        'started',
+    )
+
+    assert captured == [{
+        'run_id': 'run_1',
+        'operation_id': 'op_1',
+        'tool_call_id': 'call_1',
+        'state': 'succeeded',
+        'status': 'succeeded',
+        'result_status': 'started',
+    }]
+    assert node.last_agent_operation_feedback == {}
+
+
+def test_start_bringup_component_waits_for_real_readiness_before_success_feedback():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'bringup': FakeProcess(running=False)}
+    sequence = []
+    node.start_process = Mock(side_effect=lambda name: sequence.append(('start', name)) or True)
+    node.wait_for_core_sensors = Mock(side_effect=lambda timeout: sequence.append(('ready', timeout)) or True)
+    node.patrol_timeout = lambda _name, default: default
+    node.publish_component_operation_feedback = Mock(
+        side_effect=lambda *_args: sequence.append(('feedback', 'succeeded')))
+
+    node.handle_command('start_bringup', {
+        'operation_id': 'op_1', 'run_id': 'run_1', 'tool_call_id': 'call_1',
+    })
+
+    assert sequence == [
+        ('start', 'bringup'),
+        ('ready', 25.0),
+        ('feedback', 'succeeded'),
+    ]
+
+
 def test_navigation_exit_stops_lifecycle_readiness_wait_immediately():
     class ExitedProcess:
         def poll(self):
@@ -1326,6 +1370,27 @@ def test_patrol_event_marks_initial_pose_published_before_nav2_action_wait():
     assert node.wait_for_initial_pose_published(timeout_sec=0.01) is True
 
 
+def test_patrol_control_event_publishes_correlated_operation_terminal():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.last_patrol_event = {}
+    node.last_initial_pose_event = {}
+    node.last_patrol_command_ack = {}
+    snapshots = []
+    node.publish_status = lambda: snapshots.append(
+        dict(node.last_agent_operation_feedback))
+
+    node.patrol_event_callback(type('Msg', (), {'data': json.dumps({
+        'event': 'route_canceled',
+        'operation_id': 'op_cancel',
+        'run_id': 'run_1',
+        'tool_call_id': 'call_1',
+    })})())
+
+    assert snapshots[-1]['operation_id'] == 'op_cancel'
+    assert snapshots[-1]['state'] == 'succeeded'
+    assert snapshots[-1]['result_status'] == 'canceled'
+
+
 def test_agent_operation_ids_are_forwarded_to_patrol_executor():
     published = []
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
@@ -1342,3 +1407,111 @@ def test_agent_operation_ids_are_forwarded_to_patrol_executor():
     assert published[0]['run_id'] == 'run_1'
     assert published[0]['tool_call_id'] == 'call_1'
     assert published[0]['operation_id'] == 'op_1'
+
+
+def test_go_to_checkpoint_uses_existing_patrol_start_transaction():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.start_patrol_mode = Mock()
+
+    node.handle_command('go_to_checkpoint', {
+        'target_id': 'target_003',
+        'operation_id': 'op_target',
+        'run_id': 'run_1',
+        'tool_call_id': 'call_1',
+    })
+
+    node.start_patrol_mode.assert_called_once_with(
+        'navigation', target_id='target_003')
+    assert node.agent_operation_context['operation_id'] == 'op_target'
+
+
+def test_checkpoint_terminal_cleans_only_transaction_owned_components():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'running'
+    node.patrol_error = ''
+    node.patrol_transaction_kind = 'checkpoint'
+    node.patrol_transaction_owned_components = ['patrol_executor', 'navigation']
+    node.processes = {
+        'bringup': FakeProcess(running=True),
+        'navigation': FakeProcess(running=True),
+        'patrol_executor': FakeProcess(running=True),
+    }
+    node.stop_process = Mock()
+
+    node.patrol_status_callback(type('Msg', (), {
+        'data': json.dumps({'state': 'succeeded', 'operation_id': 'op_target'}),
+    })())
+
+    assert [call.args[0] for call in node.stop_process.call_args_list] == [
+        'patrol_executor', 'navigation',
+    ]
+    assert all(call.kwargs == {'report': False} for call in node.stop_process.call_args_list)
+    assert 'bringup' not in [call.args[0] for call in node.stop_process.call_args_list]
+
+
+def test_checkpoint_transaction_reuses_full_patrol_preparation_then_sends_one_target():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.lock = threading.Lock()
+    node.platform_context = {}
+    node.processes = {}
+    node.start_process = Mock(return_value=True)
+    node.start_navigation_process = Mock(return_value=True)
+    node.prepare_patrol_navigation_assets = Mock(return_value=True)
+    node.wait_for_core_sensors = Mock(return_value=True)
+    node.wait_for_lifecycle_manager_services = Mock(return_value=True)
+    node.wait_for_nav2_components_loaded = Mock(return_value=True)
+    node.manage_lifecycle_nodes = Mock(return_value=True)
+    node.wait_for_lifecycle_nodes_active = Mock(return_value=True)
+    node.wait_for_navigation_ready = Mock(return_value=True)
+    node.initialize_amcl_with_confirmation = Mock(return_value=True)
+    node.wait_for_stable_map_to_odom = Mock(return_value=True)
+    node.wait_for_patrol_status_heartbeat = Mock(return_value=True)
+    node.wait_for_patrol_command_subscriber = Mock(return_value=True)
+    node.wait_for_patrol_executor_ready = Mock(return_value=True)
+    node.wait_for_patrol_command_ack = Mock(return_value=True)
+    node.publish_patrol_command = Mock()
+    node.set_result = Mock()
+    node.log_info = Mock()
+    node.log_patrol_start_readiness = Mock()
+    node.patrol_timeout = lambda _name, default: default
+    node.navigation_launch_file = lambda: 'navigation.launch.py'
+    node.navigation_params_file_name = lambda: 'nav2.yaml'
+    node.keepout_required = lambda: False
+    node.patrol_navigation_profile = 'normal'
+    node.active_patrol_navigation_mode = 'normal'
+    node.active_hard_keepout_count = 0
+
+    node.start_patrol_mode(target_id='target_003')
+
+    assert [call.args[0] for call in node.start_process.call_args_list] == [
+        'bringup', 'patrol_executor',
+    ]
+    node.start_navigation_process.assert_called_once_with()
+    node.publish_patrol_command.assert_called_once()
+    assert node.publish_patrol_command.call_args.args[0] == 'go_to_target'
+    assert node.publish_patrol_command.call_args.kwargs['target_id'] == 'target_003'
+    node.set_result.assert_called_with(
+        'go_to_checkpoint', True, '检查点导航命令已发送')
+
+
+def test_patrol_start_failure_keeps_agent_operation_correlation():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_transaction_kind = 'checkpoint'
+    node.patrol_transaction_owned_components = []
+    node.patrol_transaction_preexisting_components = []
+    node.processes = {}
+    node.agent_operation_context = {
+        'operation_id': 'op_1', 'run_id': 'run_1', 'tool_call_id': 'call_1',
+    }
+    node.platform_context = {}
+    node.startup_generation = 1
+    node.cancel_patrol_start = Mock()
+    snapshots = []
+    node.set_result = lambda *args: snapshots.append((args, dict(node.last_agent_operation_feedback)))
+
+    node.fail_patrol_start('navigation failed', generation=1)
+
+    assert snapshots[0][0] == (
+        'go_to_checkpoint', False, '巡逻启动失败: navigation failed')
+    assert snapshots[0][1]['operation_id'] == 'op_1'
+    assert snapshots[0][1]['state'] == 'failed'

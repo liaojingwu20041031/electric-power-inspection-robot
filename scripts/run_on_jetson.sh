@@ -15,6 +15,7 @@ source_ros_setup() {
 load_agent_env() {
   AGENT_ENV_FILE="${AGENT_ENV_FILE:-${HOME}/.config/ylhb/agent.env}"
   if [ -f "${AGENT_ENV_FILE}" ]; then
+    AGENT_ENV_FILE="${AGENT_ENV_FILE}" "${WS_DIR}/scripts/configure_agent_env.sh" --check >/dev/null
     set -a
     source "${AGENT_ENV_FILE}"
     set +a
@@ -33,6 +34,16 @@ load_robot_env() {
 resolve_audio_input_device() {
   if [ -n "${YLHB_AUDIO_INPUT_DEVICE:-}" ]; then
     printf '%s\n' "${YLHB_AUDIO_INPUT_DEVICE}"
+  elif command -v arecord >/dev/null 2>&1 && arecord -l 2>/dev/null | grep -qi 'luna'; then
+    printf '%s\n' 'plughw:CARD=Luna,DEV=0'
+  else
+    printf '%s\n' 'default'
+  fi
+}
+
+resolve_audio_output_device() {
+  if [ -n "${YLHB_AUDIO_OUTPUT_DEVICE:-}" ]; then
+    printf '%s\n' "${YLHB_AUDIO_OUTPUT_DEVICE}"
   elif command -v arecord >/dev/null 2>&1 && arecord -l 2>/dev/null | grep -qi 'luna'; then
     printf '%s\n' 'plughw:CARD=Luna,DEV=0'
   else
@@ -160,7 +171,41 @@ require_ylhb_llm_executable() {
   exit 2
 }
 
+inspection_preflight() {
+  local executable
+  AGENT_ENV_FILE="${AGENT_ENV_FILE:-${HOME}/.config/ylhb/agent.env}"
+  if ! AGENT_ENV_FILE="${AGENT_ENV_FILE}" "${WS_DIR}/scripts/configure_agent_env.sh" --check >/dev/null; then
+    echo "ERROR: 自启动必须使用安全的 agent.env；请运行 ${WS_DIR}/scripts/configure_agent_env.sh" >&2
+    return 2
+  fi
+  unset DASHSCOPE_API_KEY
+  load_agent_env
+  if [ -z "${DASHSCOPE_API_KEY:-}" ]; then
+    echo "ERROR: DASHSCOPE_API_KEY 未配置；请先运行 ${WS_DIR}/scripts/configure_agent_env.sh" >&2
+    return 2
+  fi
+  if [ ! -f "${WS_DIR}/install/setup.bash" ]; then
+    echo "ERROR: 缺少 ${WS_DIR}/install/setup.bash；请先构建工作区" >&2
+    return 2
+  fi
+  for executable in \
+    inspection_agent_node basic_motion_command_node base_motion_skill_node \
+    voice_input_node voice_session_node voice_output_node \
+    system_supervisor_node inspection_display_ui_node; do
+    require_ylhb_llm_executable "${executable}"
+  done
+  python3 "${WS_DIR}/scripts/check_local_kws.py"
+  preflight_args=(--skip-ros --network-optional)
+  if [ "${YLHB_AGENT_PREFLIGHT_SKIP_ENDPOINT:-false}" = true ]; then
+    preflight_args+=(--skip-endpoint)
+  fi
+  python3 "${WS_DIR}/scripts/check_agent_setup.py" "${preflight_args[@]}"
+}
+
 case "${MODE}" in
+  inspection_preflight)
+    inspection_preflight
+    ;;
   bringup)
     shift || true
     uses_stm32=false
@@ -252,11 +297,12 @@ case "${MODE}" in
     require_ylhb_llm_executable inspection_agent_node
     require_ylhb_llm_executable base_motion_skill_node
     audio_input_device="$(resolve_audio_input_device)"
-    audio_output_device="${YLHB_AUDIO_OUTPUT_DEVICE:-default}"
+    audio_output_device="$(resolve_audio_output_device)"
     tts_voice="${YLHB_TTS_VOICE:-Serena}"
     export YLHB_AUDIO_INPUT_DEVICE="${audio_input_device}"
     export YLHB_AUDIO_OUTPUT_DEVICE="${audio_output_device}"
     export YLHB_TTS_VOICE="${tts_voice}"
+    echo "Audio devices: input=${audio_input_device} output=${audio_output_device}" >&2
     exec ros2 launch ylhb_llm llm.launch.py \
       enable_task_layer:=true \
       enable_display_ui:=true \

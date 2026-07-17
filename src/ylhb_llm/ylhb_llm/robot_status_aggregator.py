@@ -47,6 +47,8 @@ class RobotStatusAggregator:
         patrol = self.get('patrol_status', now)
         pose = self.get('amcl_pose', now)
         base = self.get('base_skill_status', now)
+        chassis = self.get('chassis_status', now)
+        chassis['state'] = str(chassis.get('state') or '').split(maxsplit=1)[0] or 'unknown'
         return {
             'robot_mode': system.get('mode') or system.get('system_mode') or 'unknown',
             'health': 'warning' if any(not item.get('fresh') for item in (system, patrol, pose, base)) else 'ok',
@@ -55,4 +57,9 @@ class RobotStatusAggregator:
             'patrol': {'state': patrol.get('state', 'unknown'), 'target': patrol.get('target_id', ''), 'progress': patrol.get('progress', '')},
             'sensors': {'lidar': self.get('scan', now).get('state'), 'odom': self.get('odom', now).get('state')},
             'base': base,
+            'chassis': chassis,
+            'components': {
+                name: system.get(name, 'unknown') if system.get('fresh') else 'unknown'
+                for name in ('bringup', 'navigation', 'perception', 'patrol_executor')
+            },
         }

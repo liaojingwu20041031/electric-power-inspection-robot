@@ -11,6 +11,7 @@ import wave
 from typing import List, Tuple
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -44,11 +45,16 @@ class VoiceSessionNode(Node):
         self.declare_parameter('voice_session_status_topic', '/inspection_ai/voice_session_status')
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
         self.declare_parameter('voice_status_topic', '/inspection_ai/voice_status')
-        self.declare_parameter('task_context_status_topic', '/inspection_ai/task_context_status')
+        self.declare_parameter('voice_session_command_topic', '/inspection_ai/voice_session_command')
         self.declare_parameter('start_voice_session_service_name', '/inspection_ai/start_voice_session')
         self.declare_parameter('stop_voice_session_service_name', '/inspection_ai/stop_voice_session')
         self.declare_parameter('audio_device', 'default')
         self.declare_parameter('audio_input_device', 'default')
+        self.declare_parameter('audio_output_device', 'default')
+        audio_dir = os.path.join(get_package_share_directory('ylhb_llm'), 'assets', 'audio')
+        self.declare_parameter('voice_cue_enabled', True)
+        self.declare_parameter('wake_cue_path', os.path.join(audio_dir, 'wake.wav'))
+        self.declare_parameter('standby_cue_path', os.path.join(audio_dir, 'standby.wav'))
         self.declare_parameter('enabled', False)
         self.declare_parameter('auto_start_standby', True)
         self.declare_parameter('silent_start', True)
@@ -98,8 +104,6 @@ class VoiceSessionNode(Node):
         self.declare_parameter('debug_audio_keep', 20)
         self.declare_parameter('debug_state_transitions', False)
         declare_string_array_parameter(self, 'wake_aliases')
-        declare_string_array_parameter(self, 'voice_close_words')
-        declare_string_array_parameter(self, 'conversation_end_words')
 
         self.enabled = bool(self.get_parameter('enabled').value)
         self.auto_start_standby = bool(self.get_parameter('auto_start_standby').value)
@@ -108,6 +112,10 @@ class VoiceSessionNode(Node):
         input_device = str(self.get_parameter('audio_input_device').value)
         legacy_device = str(self.get_parameter('audio_device').value)
         self.audio_device = input_device if input_device and input_device != 'default' else legacy_device
+        self.audio_output_device = str(self.get_parameter('audio_output_device').value)
+        self.voice_cue_enabled = bool(self.get_parameter('voice_cue_enabled').value)
+        self.wake_cue_path = str(self.get_parameter('wake_cue_path').value)
+        self.standby_cue_path = str(self.get_parameter('standby_cue_path').value)
         self.asr_model = str(self.get_parameter('asr_model').value)
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.wake_phrase = str(self.get_parameter('wake_phrase').value)
@@ -147,16 +155,6 @@ class VoiceSessionNode(Node):
         self.debug_audio_dir = str(self.get_parameter('debug_audio_dir').value)
         self.debug_audio_keep = int(self.get_parameter('debug_audio_keep').value)
         self.debug_state_transitions = bool(self.get_parameter('debug_state_transitions').value)
-        self.voice_close_words = tuple(
-            str(value)
-            for value in self.get_parameter('voice_close_words').value
-            if str(value)
-        )
-        self.conversation_end_words = tuple(
-            str(value)
-            for value in self.get_parameter('conversation_end_words').value
-            if str(value)
-        )
 
         self.qwen = QwenClient(str(self.get_parameter('dashscope_base_url').value))
         self.local_kws = LocalWakeWord(
@@ -191,9 +189,9 @@ class VoiceSessionNode(Node):
         )
         self.create_subscription(
             String,
-            self.get_parameter('task_context_status_topic').value,
-            self.task_context_status_callback,
-            transient_qos(),
+            self.get_parameter('voice_session_command_topic').value,
+            self.voice_session_command_callback,
+            10,
         )
         self.create_service(
             Trigger,
@@ -233,11 +231,13 @@ class VoiceSessionNode(Node):
         self.last_status_payload_json = ''
         self.awaiting_turn_id = ''
         self.awaiting_response_deadline = 0.0
+        self.awaiting_agent_response_received = False
         self.awaiting_answer_received = False
         self.answer_received_at = 0.0
         self.response_tts_started = False
         self.resume_after_tts_at = 0.0
         self.current_recording_proc = None
+        self.voice_operation_feedback = {}
 
         if self.enabled and self.auto_start_standby:
             if self.local_kws_enabled and self.local_kws.ready and self.qwen.available():
@@ -310,7 +310,8 @@ class VoiceSessionNode(Node):
         self.set_state('WAIT_WAKE')
 
     def stop_callback(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
-        self.stop_session('语音模式已关闭。', say=True)
+        self.play_local_cue(self.standby_cue_path)
+        self.stop_session('语音模式已关闭。', say=False)
         response.success = True
         response.message = '语音模式已关闭。'
         return response
@@ -331,9 +332,6 @@ class VoiceSessionNode(Node):
                 self.resume_after_tts_at = now + self.tts_tail_pause_sec
         self.is_tts_playing = speaking
         self.last_tts_speaking = speaking
-
-    def task_context_status_callback(self, msg: String) -> None:
-        _ = msg
 
     def set_state(self, state: str) -> None:
         if self.state == state:
@@ -390,10 +388,11 @@ class VoiceSessionNode(Node):
             lambda: self.stop_event.is_set() or not self.session_enabled or self.state != 'WAIT_WAKE')
         if detected and self.session_enabled:
             now = time.monotonic()
+            self.play_local_cue(self.wake_cue_path)
             self.awakened = True
             self.last_error = ''
             self.last_active_at = now
-            self.pause_listen_until = max(self.pause_listen_until, now + 0.3)
+            self.pause_listen_until = max(self.pause_listen_until, time.monotonic() + 0.1)
             self.set_state('LISTENING')
             return True
         if self.local_kws.error:
@@ -595,12 +594,6 @@ class VoiceSessionNode(Node):
         normalized = normalize_voice_text(raw_text)
         if self.awaiting_turn_id:
             return
-        if any(word in normalized for word in self.voice_close_words):
-            self.stop_session('语音模式已关闭。', say=False)
-            return
-        if any(word in normalized for word in self.conversation_end_words):
-            self.return_to_wait_wake()
-            return
         if not self.awakened or not normalized:
             self.return_to_wait_wake()
             return
@@ -643,6 +636,7 @@ class VoiceSessionNode(Node):
         self.last_request_published_at = now
         self.awaiting_turn_id = utterance_id
         self.awaiting_response_deadline = now + self.agent_response_timeout_sec
+        self.awaiting_agent_response_received = False
         self.awaiting_answer_received = False
         self.answer_received_at = 0.0
         self.response_tts_started = False
@@ -668,8 +662,13 @@ class VoiceSessionNode(Node):
         if (
             str(payload.get('turn_id') or '') != self.awaiting_turn_id
             or str(payload.get('role') or '') not in ('assistant', 'system')
-            or str(payload.get('status') or '') in ('sent', 'accepted', 'running')
         ):
+            return
+        status = str(payload.get('status') or '')
+        self.awaiting_agent_response_received = True
+        self.awaiting_response_deadline = 0.0
+        if status in ('waiting_feedback', 'sent', 'accepted', 'running'):
+            self.set_state('WAITING_RESPONSE')
             return
         self.awaiting_answer_received = True
         self.answer_received_at = time.monotonic()
@@ -681,7 +680,11 @@ class VoiceSessionNode(Node):
         if not self.awaiting_turn_id:
             return
         now = time.monotonic()
-        if not self.awaiting_answer_received and now >= self.awaiting_response_deadline:
+        if (
+            not self.awaiting_agent_response_received
+            and self.awaiting_response_deadline
+            and now >= self.awaiting_response_deadline
+        ):
             self.last_error = f'Agent 回答超时（{self.agent_response_timeout_sec:g} 秒）。'
             self.return_to_wait_wake()
             return
@@ -712,6 +715,7 @@ class VoiceSessionNode(Node):
     def clear_waiting_turn(self) -> None:
         self.awaiting_turn_id = ''
         self.awaiting_response_deadline = 0.0
+        self.awaiting_agent_response_received = False
         self.awaiting_answer_received = False
         self.answer_received_at = 0.0
         self.response_tts_started = False
@@ -741,11 +745,12 @@ class VoiceSessionNode(Node):
         return self.find_wake_phrase(text) is not None
 
     def strip_wake_phrase(self, text: str) -> str:
-        match = self.find_wake_phrase(text)
-        if match is None:
-            return text.strip()
-        start, end = match
-        return (text[:start] + text[end:]).strip()
+        stripped = text.strip()
+        while True:
+            match = self.find_wake_phrase(stripped)
+            if match is None or match[0] != 0:
+                return stripped
+            stripped = stripped[match[1]:].strip()
 
     def normalize_wake_text(self, text: str) -> str:
         return text.translate(str.maketrans({
@@ -785,7 +790,55 @@ class VoiceSessionNode(Node):
 
     def update_followup_window(self) -> None:
         if self.in_context_followup and time.monotonic() >= self.context_followup_until:
+            self.play_local_cue(self.standby_cue_path)
             self.return_to_wait_wake()
+
+    def voice_session_command_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        command = str(payload.get('command') or '')
+        if command not in {'end_voice_conversation', 'close_voice_mode'}:
+            return
+        self.play_local_cue(self.standby_cue_path)
+        if command == 'end_voice_conversation':
+            self.return_to_wait_wake()
+        else:
+            self.stop_session('语音模式已关闭。', say=False)
+        self.voice_operation_feedback = {
+            'operation_id': str(payload.get('operation_id') or ''),
+            'tool_call_id': str(payload.get('tool_call_id') or ''),
+            'state': 'succeeded',
+            'status': 'succeeded',
+            'result_status': 'succeeded',
+            'ok': True,
+            'message': '已结束当前对话' if command == 'end_voice_conversation' else '已关闭语音模式',
+        }
+        self.publish_status(force=True)
+
+    def play_local_cue(self, path: str) -> None:
+        if not self.voice_cue_enabled or not path or not os.path.isfile(path):
+            return
+        command = ['aplay', '-q']
+        if self.audio_output_device and self.audio_output_device != 'default':
+            command.extend(['-D', self.audio_output_device])
+        command.append(path)
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=1.0,
+                check=False,
+                text=True,
+            )
+            if completed.returncode:
+                self.get_logger().warn(
+                    f'本地语音提示音播放失败: exit={completed.returncode}, {completed.stderr.strip()}'
+                )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.get_logger().warn(f'本地语音提示音播放失败: {exc}')
 
     def say(
         self,
@@ -847,6 +900,9 @@ class VoiceSessionNode(Node):
                 self.context_followup_until - time.monotonic(),
             ) if self.in_context_followup else 0.0,
         }
+        feedback = getattr(self, 'voice_operation_feedback', {})
+        if feedback:
+            payload['agent_operation_feedback'] = dict(feedback)
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         if not force and payload_json == self.last_status_payload_json:
             return

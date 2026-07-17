@@ -65,3 +65,119 @@ def test_rotate_relative_range_is_enforced_by_policy_schema():
 
     assert result.allowed is False
     assert result.reason
+
+
+def test_schema_preconditions_return_structured_recoverable_failure():
+    schemas = {
+        'rotate_relative': {
+            'properties': {'angle_deg': {'type': 'number'}},
+            'required': ['angle_deg'],
+            'preconditions': ['bringup_running', 'chassis_online', 'sensor_fresh'],
+        }
+    }
+
+    result = authorize(
+        decision('rotate_relative', angle_deg=10),
+        {
+            'system_status': {'bringup': 'stopped'},
+            'robot_summary': {
+                'chassis': {'fresh': False},
+                'sensors': {'lidar': 'stale', 'odom': 'stale'},
+            },
+        },
+        schemas,
+    )
+
+    assert result.allowed is False
+    assert result.error_code == 'precondition_failed'
+    assert result.missing_preconditions == [
+        'bringup_running', 'chassis_online', 'sensor_fresh',
+    ]
+    assert result.recoverable is True
+    assert result.recovery_components == ['bringup']
+    assert result.state_summary['components']['bringup'] == 'stopped'
+
+    result = authorize(
+        decision('rotate_relative', angle_deg=10),
+        {
+            'system_status': {'bringup': 'running'},
+            'robot_summary': {
+                'components': {'bringup': 'running'},
+                'chassis': {'fresh': False},
+                'sensors': {'lidar': 'stale', 'odom': 'stale'},
+            },
+        },
+        schemas,
+    )
+
+    assert result.recoverable is False
+    assert result.recovery_components == []
+
+
+def test_start_component_schema_only_accepts_bringup():
+    schema = {
+        'properties': {'component': {'type': 'string', 'enum': ['bringup']}},
+        'required': ['component'],
+    }
+
+    navigation = authorize(
+        decision('start_component', component='navigation'),
+        {},
+        {'start_component': schema},
+    )
+    bringup = authorize(
+        decision('start_component', component='bringup'),
+        {},
+        {'start_component': schema},
+    )
+    patrol = authorize(
+        decision('start_component', component='patrol_executor'),
+        {},
+        {'start_component': schema},
+    )
+
+    assert navigation.allowed is False
+    assert patrol.allowed is False
+    assert bringup.allowed is True
+
+
+def test_voice_session_tools_are_allowed_by_policy():
+    assert authorize(decision('end_voice_conversation'), {}, {
+        'end_voice_conversation': {'properties': {}, 'required': []},
+    }).allowed is True
+
+
+def test_robot_ready_precondition_recovers_only_with_bringup():
+    result = authorize(
+        decision('rotate_relative', angle_deg=10),
+        {'system_status': {'bringup': 'stopped'}},
+        {'rotate_relative': {
+            'properties': {'angle_deg': {'type': 'number'}},
+            'required': ['angle_deg'],
+            'preconditions': ['robot_ready', 'chassis_online', 'sensor_fresh'],
+        }},
+    )
+
+    assert result.recovery_components == ['bringup']
+
+
+def test_fresh_offline_chassis_is_not_treated_as_online():
+    result = authorize(
+        decision('rotate_relative', angle_deg=10),
+        {'robot_summary': {
+            'components': {'bringup': 'running'},
+            'chassis': {'state': 'offline', 'fresh': True},
+            'sensors': {'lidar': 'ok', 'odom': 'ok'},
+        }},
+        {'rotate_relative': {
+            'properties': {'angle_deg': {'type': 'number'}},
+            'required': ['angle_deg'],
+            'preconditions': ['robot_ready', 'chassis_online', 'sensor_fresh'],
+        }},
+    )
+
+    assert result.missing_preconditions == ['chassis_online']
+    assert result.recovery_components == []
+    assert authorize(decision('close_voice_mode'), {}, {
+        'close_voice_mode': {'properties': {}, 'required': []},
+    }).allowed is True

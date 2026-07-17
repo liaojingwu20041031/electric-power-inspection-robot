@@ -20,6 +20,7 @@ inspection_agent_node:
     agent_status_topic: /inspection_ai/agent_status
     agent_event_topic: /inspection_ai/agent_event
     agent_chat_topic: /inspection_ai/agent_chat
+    voice_session_command_topic: /inspection_ai/voice_session_command
     motion_command_topic: /inspection_ai/motion_command
     base_skill_command_topic: /inspection_ai/base_skill_command
     system_command_topic: /inspection_ai/system_command
@@ -44,7 +45,7 @@ inspection_agent_node:
     patrol_route_path: auto
     route_file_path: auto  # deprecated alias; patrol_route_path takes precedence
     robot_capabilities_file: robot_capabilities.yaml
-    max_agent_steps: 8
+    max_agent_steps: 12
     max_side_effect_tools_per_turn: 4
     max_identical_tool_calls: 2
 
@@ -76,7 +77,7 @@ base_motion_skill_node:
     publish_rate_hz: 20.0
     max_angle_deg: 180.0
     max_distance_m: 0.5
-    timeout_sec: 12.0
+    timeout_sec: 20.0
     require_chassis_online: true
     chassis_status_max_age_sec: 2.5
 
@@ -157,14 +158,16 @@ voice_session_node:
   ros__parameters:
     agent_request_topic: /inspection_ai/agent_request
     agent_chat_topic: /inspection_ai/agent_chat
+    voice_session_command_topic: /inspection_ai/voice_session_command
     voice_session_status_topic: /inspection_ai/voice_session_status
     say_text_topic: /inspection_ai/say_text
     voice_status_topic: /inspection_ai/voice_status
-    task_context_status_topic: /inspection_ai/task_context_status
     start_voice_session_service_name: /inspection_ai/start_voice_session
     stop_voice_session_service_name: /inspection_ai/stop_voice_session
     audio_device: default
     audio_input_device: default
+    audio_output_device: default
+    voice_cue_enabled: true
     enabled: false
     auto_start_standby: true
     silent_start: true
@@ -209,8 +212,6 @@ voice_session_node:
     debug_audio_dir: /tmp/ylhb_voice_debug
     debug_audio_keep: 20
     debug_state_transitions: false
-    voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式]
-    conversation_end_words: [不用了, 结束对话]
 
 voice_output_node:
   ros__parameters:

@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
@@ -772,6 +773,25 @@ def test_go_to_target_builds_single_target_route_from_route_file():
     assert route["target_ids"] == [target["id"]]
     assert targets == [target]
     assert start_pose == data["start_pose"]["pose"]
+
+
+def test_go_to_target_command_publishes_correlated_acknowledgement():
+    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
+    node._go_to_target = lambda target_id: target_id == 'target_002'
+    events = []
+    node._publish_event = events.append
+
+    node._on_command(type('Message', (), {'data': json.dumps({
+        'command': 'go_to_target',
+        'target_id': 'target_002',
+        'request_id': 'request_1',
+        'operation_id': 'op_1',
+    })})())
+
+    assert events[-1]['event'] == 'command_accepted'
+    assert events[-1]['command'] == 'go_to_target'
+    assert events[-1]['request_id'] == 'request_1'
+    assert node.platform_context['operation_id'] == 'op_1'
 
 
 def test_restarting_initial_pose_sequence_destroys_previous_timer():

@@ -47,6 +47,7 @@ class InspectionAgentNode(Node):
         self.declare_parameter('agent_status_topic', '/inspection_ai/agent_status')
         self.declare_parameter('agent_event_topic', '/inspection_ai/agent_event')
         self.declare_parameter('agent_chat_topic', '/inspection_ai/agent_chat')
+        self.declare_parameter('voice_session_command_topic', '/inspection_ai/voice_session_command')
         self.declare_parameter('motion_command_topic', '/inspection_ai/motion_command')
         self.declare_parameter('base_skill_command_topic', '/inspection_ai/base_skill_command')
         self.declare_parameter('system_command_topic', '/inspection_ai/system_command')
@@ -82,7 +83,7 @@ class InspectionAgentNode(Node):
         self.declare_parameter('patrol_route_path', 'auto')
         self.declare_parameter('route_file_path', 'auto')  # deprecated alias
         self.declare_parameter('robot_capabilities_file', '')
-        self.declare_parameter('max_agent_steps', 8)
+        self.declare_parameter('max_agent_steps', 12)
         self.declare_parameter('max_side_effect_tools_per_turn', 4)
         self.declare_parameter('max_identical_tool_calls', 2)
 
@@ -126,6 +127,8 @@ class InspectionAgentNode(Node):
         self.event_pub = self.create_publisher(String, self.get_parameter('agent_event_topic').value, 10)
         self.chat_pub = self.create_publisher(String, self.get_parameter('agent_chat_topic').value, 10)
         self.system_pub = self.create_publisher(String, self.get_parameter('system_command_topic').value, 10)
+        self.voice_session_pub = self.create_publisher(
+            String, self.get_parameter('voice_session_command_topic').value, 10)
         self.motion_pub = self.create_publisher(String, self.get_parameter('motion_command_topic').value, 10)
         self.base_skill_pub = self.create_publisher(String, self.get_parameter('base_skill_command_topic').value, 10)
         self.patrol_pub = self.create_publisher(String, self.get_parameter('patrol_command_topic').value, 10)
@@ -145,6 +148,7 @@ class InspectionAgentNode(Node):
             tool_schemas=self.tool_schemas,
             operation_manager=self.operation_manager,
             status_aggregator=self.status_aggregator,
+            voice_session_pub=self.voice_session_pub,
         )
         self.agent_spec = InspectionAgentSpecBuilder(
             self.route_toolpack,
@@ -283,12 +287,14 @@ class InspectionAgentNode(Node):
             decision = self.state.latest_decision or {}
             result = self.state.latest_result or {}
             self.get_logger().info(
-                'agent turn: text="%s", response_type=%s, tool=%s, result=%s'
+                'agent turn: text="%s", response_type=%s, tool=%s, arguments=%s, result=%s, error=%s'
                 % (
                     str(request.get('text') or ''),
                     str(decision.get('response_type') or ''),
                     str((decision.get('tool_call') or {}).get('name') or ''),
+                    json.dumps((decision.get('tool_call') or {}).get('arguments') or {}, ensure_ascii=False),
                     str(result.get('status') or ''),
+                    str(result.get('error_code') or ''),
                 )
             )
         self.publish_status()
@@ -391,6 +397,9 @@ class InspectionAgentNode(Node):
     def voice_status_callback(self, msg: String) -> None:
         self.state.voice_status = self.parse_payload(msg.data)
         self.status_aggregator.update('voice_status', self.state.voice_status)
+        feedback = self.state.voice_status.get('agent_operation_feedback') or {}
+        if isinstance(feedback, dict):
+            self.update_operation_from_feedback(feedback)
         self.publish_status()
 
     def base_skill_status_callback(self, msg: String) -> None:
@@ -399,7 +408,10 @@ class InspectionAgentNode(Node):
         self.update_operation_from_feedback(payload)
 
     def chassis_status_callback(self, msg: String) -> None:
-        self.status_aggregator.update('chassis_status', self.parse_payload(msg.data))
+        payload = self.parse_payload(msg.data)
+        if 'state' not in payload:
+            payload['state'] = str(payload.get('text') or '').split(maxsplit=1)[0] or 'unknown'
+        self.status_aggregator.update('chassis_status', payload)
 
     def odom_callback(self, msg: Odometry) -> None:
         pose = msg.pose.pose
@@ -434,7 +446,7 @@ class InspectionAgentNode(Node):
             'cancelled': 'canceled',
             'rejected': 'failed',
             'paused': 'succeeded' if tool_name == 'pause_patrol' else 'running',
-            'running': 'succeeded' if tool_name == 'resume_patrol' else 'running',
+            'running': 'succeeded' if tool_name in {'resume_patrol', 'start_route'} else 'running',
             'canceled': 'succeeded' if tool_name == 'cancel_patrol' else 'canceled',
         }.get(raw_state, raw_state)
         try:
@@ -485,9 +497,7 @@ class InspectionAgentNode(Node):
         if tool_name in {'rotate_relative', 'move_relative'}:
             AgentTools.publish_json(
                 self.base_skill_pub, {**correlation, 'command': 'stop_motion', 'arguments': {}})
-        elif tool_name == 'go_to_checkpoint':
-            AgentTools.publish_json(self.patrol_pub, {**correlation, 'command': 'cancel'})
-        elif tool_name in {'start_route', 'start_patrol_mode'}:
+        elif tool_name in {'go_to_checkpoint', 'start_route', 'start_patrol_mode'}:
             AgentTools.publish_json(self.system_pub, {**correlation, 'command': 'cancel_patrol'})
 
     def enqueue_operation_feedback(self, operation: Dict[str, Any]) -> None:

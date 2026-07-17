@@ -34,5 +34,16 @@ def test_system_prompt_requires_evidence_and_feedback_after_actions():
     spec = InspectionAgentSpecBuilder().build()
     prompt = spec.system_prompt()
 
-    for requirement in ('动作前先查询必要状态', '不要把 sent 当成 completed', '工具失败时先查询状态', '没有证据时说“未知”'):
+    for requirement in (
+        '优先调用用户要求的业务目标工具',
+        '检查目标工具 preconditions',
+        'recovery_components=[bringup]',
+        '重试同一目标',
+        'sent/accepted/running 不等于完成',
+        '同一目标取得终态后不得再次执行',
+        '组件准备不能作为动作成功证据',
+        'Supervisor 内部准备',
+        '最终答案只能来自真实 ToolResult',
+        '自然简体中文',
+    ):
         assert requirement in prompt

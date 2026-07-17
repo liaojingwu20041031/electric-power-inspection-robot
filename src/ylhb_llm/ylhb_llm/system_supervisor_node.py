@@ -56,11 +56,13 @@ PATROL_NAVIGATION_TO_EXECUTOR_DELAY_SEC = 20.0
 PATROL_EXECUTOR_TO_START_DELAY_SEC = 6.0
 LONG_RUNNING_COMMANDS = {
     'start_patrol_mode',
+    'go_to_checkpoint',
     'stop_robot_stack',
     'stop_navigation',
     'stop_bringup',
     'stop_patrol_mode',
 }
+AGENT_COMPONENTS = {'bringup', 'navigation', 'perception', 'patrol_executor'}
 
 STARTUP_STEP_LABELS = {
     'starting_bringup': '等待底盘传感器',
@@ -601,6 +603,12 @@ class SystemSupervisorNode(Node):
                 self.patrol_mode_state = 'succeeded'
             elif state == 'idle' and self.patrol_mode_state in ('starting', 'command_sent'):
                 self.startup_step = 'waiting_executor_response'
+            if (
+                getattr(self, 'patrol_transaction_kind', '') == 'checkpoint'
+                and state in {'failed', 'succeeded', 'canceled', 'cancelled'}
+            ):
+                self.cleanup_checkpoint_transaction()
+                self.patrol_transaction_kind = ''
 
     def patrol_event_callback(self, msg: String) -> None:
         try:
@@ -613,6 +621,27 @@ class SystemSupervisorNode(Node):
                 self.last_initial_pose_event = payload
             if payload.get('event') == 'command_accepted':
                 self.last_patrol_command_ack = payload
+            event = str(payload.get('event') or '')
+            operation_id = str(payload.get('operation_id') or '')
+            if operation_id and event in {
+                'route_paused', 'route_resumed', 'route_canceled', 'command_rejected',
+            }:
+                success = event != 'command_rejected'
+                self.last_agent_operation_feedback = {
+                    'run_id': str(payload.get('run_id') or ''),
+                    'operation_id': operation_id,
+                    'tool_call_id': str(payload.get('tool_call_id') or ''),
+                    'state': 'succeeded' if success else 'failed',
+                    'status': 'succeeded' if success else 'failed',
+                    'result_status': {
+                        'route_paused': 'succeeded',
+                        'route_resumed': 'running',
+                        'route_canceled': 'canceled',
+                    }.get(event, 'failed'),
+                    'message': str(payload.get('error_message') or event),
+                }
+                self.publish_status()
+                self.last_agent_operation_feedback = {}
 
     def odom_callback(self, _msg: Odometry) -> None:
         self.last_odom_received_at = time.time()
@@ -647,7 +676,7 @@ class SystemSupervisorNode(Node):
             key: str(payload.get(key) or '')
             for key in ('run_id', 'operation_id', 'tool_call_id')
         }
-        if command in {'start_patrol_mode', 'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop'}:
+        if command in {'start_patrol_mode', 'go_to_checkpoint', 'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop'}:
             self.agent_operation_context = correlation if correlation['operation_id'] else {}
             self.last_agent_operation_feedback = {}
         if command in {'start_mobile_bridge', 'stop_mobile_bridge', 'restart_mobile_bridge'} and getattr(self, 'mobile_bridge_managed_externally', False):
@@ -694,6 +723,13 @@ class SystemSupervisorNode(Node):
             self.start_patrol_mode(
                 str(payload.get('profile') or 'navigation'),
                 str(payload.get('route_id') or ''),
+            )
+            return
+        if command == 'go_to_checkpoint':
+            self.platform_context = {}
+            self.start_patrol_mode(
+                str(payload.get('profile') or 'navigation'),
+                target_id=str(payload.get('target_id') or ''),
             )
             return
         patrol_commands = {
@@ -749,16 +785,36 @@ class SystemSupervisorNode(Node):
         if command.startswith('start_'):
             name = command[len('start_'):]
             if name in self.processes:
-                self.start_process(name)
+                was_running = self.processes[name].is_running()
+                success = self.start_process(name)
+                if name == 'bringup' and success:
+                    success = self.wait_for_core_sensors(
+                        self.patrol_timeout('patrol_bringup_timeout_sec', 25.0))
+                    if not success and not was_running:
+                        self.stop_process(name, report=False)
                 if name == 'mapping':
                     self.publish_mode('mapping')
+                if name in AGENT_COMPONENTS and correlation['operation_id']:
+                    self.publish_component_operation_feedback(
+                        correlation,
+                        bool(success),
+                        'already_running' if was_running and success else 'started' if success else 'failed',
+                    )
                 return
         if command.startswith('stop_'):
             name = command[len('stop_'):]
             if name in self.processes:
+                was_running = self.processes[name].is_running()
                 self.stop_process(name)
+                success = not self.processes[name].is_running()
                 if name == 'mapping':
                     self.publish_mode('ready')
+                if name in AGENT_COMPONENTS and correlation['operation_id']:
+                    self.publish_component_operation_feedback(
+                        correlation,
+                        success,
+                        'already_stopped' if not was_running and success else 'stopped' if success else 'failed',
+                    )
                 return
         if command == 'restart_navigation':
             self.stop_process('navigation')
@@ -1140,10 +1196,16 @@ class SystemSupervisorNode(Node):
         self.publish_patrol_command('reload')
         self.set_result('reload_patrol_route', True, '巡逻路线已刷新')
 
-    def start_patrol_mode(self, profile: str = 'navigation', route_id: str = '') -> None:
-        if not self.platform_context:
-            self.patrol_route_request = self.local_patrol_route_request
-            self.default_navigation_map = self.local_default_navigation_map
+    def start_patrol_mode(
+        self,
+        profile: str = 'navigation',
+        route_id: str = '',
+        target_id: str = '',
+    ) -> None:
+        if not getattr(self, 'platform_context', {}):
+            self.patrol_route_request = getattr(self, 'local_patrol_route_request', '')
+            self.default_navigation_map = getattr(
+                self, 'local_default_navigation_map', getattr(self, 'default_navigation_map', ''))
         profile = profile if profile in ('navigation', 'inspection') else 'navigation'
         with getattr(self, 'lock', threading.Lock()):
             if getattr(self, 'patrol_start_active', False):
@@ -1167,8 +1229,15 @@ class SystemSupervisorNode(Node):
             self.localization_lifecycle_started = False
             self.navigation_lifecycle_started = False
             self.keepout_lifecycle_started = False
+            self.patrol_transaction_kind = 'checkpoint' if target_id else 'route'
+            self.patrol_transaction_owned_components = []
+            self.patrol_transaction_preexisting_components = [
+                name for name in PATROL_SHUTDOWN_ORDER
+                if name in getattr(self, 'processes', {})
+                and self.processes[name].is_running()
+            ]
         try:
-            self._start_patrol_transaction(profile, route_id, generation)
+            self._start_patrol_transaction(profile, route_id, generation, target_id)
         finally:
             if self.is_current_patrol_start(generation):
                 self.patrol_start_active = False
@@ -1186,7 +1255,13 @@ class SystemSupervisorNode(Node):
         self.startup_generation = getattr(self, 'startup_generation', 0) + 1
         self.patrol_start_active = False
 
-    def _start_patrol_transaction(self, profile: str, route_id: str, generation: int) -> None:
+    def _start_patrol_transaction(
+        self,
+        profile: str,
+        route_id: str,
+        generation: int,
+        target_id: str = '',
+    ) -> None:
         self.patrol_mode_state = 'starting'
         self.patrol_error = ''
         self.patrol_warning = ''
@@ -1380,21 +1455,39 @@ class SystemSupervisorNode(Node):
         # 17. send patrol start
         self.startup_step = 'executor_ready'
         request_id = f"{self.startup_id}_command"
-        if route_id:
-            self.publish_patrol_command('start', request_id=request_id, route_id=route_id)
+        command = 'go_to_target' if target_id else 'start'
+        if target_id:
+            self.publish_patrol_command(command, request_id=request_id, target_id=target_id)
+        elif route_id:
+            self.publish_patrol_command(command, request_id=request_id, route_id=route_id)
         else:
-            self.publish_patrol_command('start', request_id=request_id)
+            self.publish_patrol_command(command, request_id=request_id)
         self.startup_step = 'patrol_command_sent'
         if not self.wait_for_patrol_command_ack(request_id, self.patrol_timeout('patrol_command_timeout_sec', 8.0), generation):
             if self.is_current_patrol_start(generation):
-                self.publish_patrol_command('start', request_id=request_id, route_id=route_id)
+                self.publish_patrol_command(
+                    command,
+                    request_id=request_id,
+                    route_id=route_id,
+                    target_id=target_id,
+                )
             if not self.wait_for_patrol_command_ack(request_id, self.patrol_timeout('patrol_command_timeout_sec', 8.0), generation):
                 self.fail_patrol_start(self.patrol_error or '巡逻执行器未确认启动命令', generation=generation)
                 return
         if self.patrol_mode_state == 'starting':
             self.patrol_mode_state = 'command_sent'
             self.startup_step = 'patrol_command_sent'
-        self.set_result('start_patrol_mode', True, '巡逻启动命令已发送')
+        self.patrol_transaction_owned_components = [
+            name for name in PATROL_SHUTDOWN_ORDER
+            if name not in getattr(self, 'patrol_transaction_preexisting_components', [])
+            and name in getattr(self, 'processes', {})
+            and self.processes[name].is_running()
+        ]
+        self.set_result(
+            'go_to_checkpoint' if target_id else 'start_patrol_mode',
+            True,
+            '检查点导航命令已发送' if target_id else '巡逻启动命令已发送',
+        )
 
     def load_patrol_initial_pose(self) -> PoseWithCovarianceStamped:
         route = load_route_file(self.patrol_route_path)
@@ -1485,7 +1578,10 @@ class SystemSupervisorNode(Node):
         self.startup_step = 'patrol_failed'
         self.patrol_error = error
         self.cancel_patrol_start()
-        self.cleanup_patrol_stack()
+        if getattr(self, 'patrol_transaction_kind', '') == 'checkpoint':
+            self.cleanup_checkpoint_transaction()
+        else:
+            self.cleanup_patrol_stack()
         self.patrol_mode_state = 'failed'
         self.startup_step = 'patrol_failed'
         self.patrol_error = error
@@ -1500,9 +1596,33 @@ class SystemSupervisorNode(Node):
                 'error_code': 'PATROL_START_FAILED',
                 'error_message': error,
             }
-        self.set_result('start_patrol_mode', False, '巡逻启动失败: ' + error)
+        correlation = dict(getattr(self, 'agent_operation_context', {}))
+        self.last_agent_operation_feedback = (
+            {
+                **correlation,
+                'state': 'failed',
+                'status': 'failed',
+                'message': error,
+            }
+            if correlation.get('operation_id') else {}
+        )
+        self.set_result(
+            'go_to_checkpoint'
+            if getattr(self, 'patrol_transaction_kind', '') == 'checkpoint'
+            else 'start_patrol_mode',
+            False,
+            '巡逻启动失败: ' + error,
+        )
+        self.last_agent_operation_feedback = {}
 
-    def publish_patrol_command(self, command: str, request_id: str = '', route_id: str = '', command_id: str = '') -> None:
+    def publish_patrol_command(
+        self,
+        command: str,
+        request_id: str = '',
+        route_id: str = '',
+        command_id: str = '',
+        target_id: str = '',
+    ) -> None:
         if not request_id:
             request_id = (
                 f"patrol_start_{int(time.time() * 1000)}"
@@ -1522,12 +1642,29 @@ class SystemSupervisorNode(Node):
         }
         if route_id:
             payload['route_id'] = route_id
+        if target_id:
+            payload['target_id'] = target_id
         if command == 'start' and not command_id:
             command_id = str(getattr(self, 'platform_context', {}).get('active_command_id') or '')
         if command_id:
             payload['command_id'] = command_id
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.patrol_command_pub.publish(msg)
+
+    def cleanup_checkpoint_transaction(self) -> None:
+        owned = list(getattr(self, 'patrol_transaction_owned_components', []))
+        if not owned:
+            preexisting = set(getattr(self, 'patrol_transaction_preexisting_components', []))
+            owned = [
+                name for name in PATROL_SHUTDOWN_ORDER
+                if name not in preexisting
+                and name in getattr(self, 'processes', {})
+                and self.processes[name].is_running()
+            ]
+        for name in owned:
+            if name in getattr(self, 'processes', {}):
+                self.stop_process(name, report=False)
+        self.patrol_transaction_owned_components = []
 
     def active_hard_keepout_zones(self, route: Dict[str, Any]) -> List[Dict[str, Any]]:
         return [
@@ -2791,6 +2928,21 @@ class SystemSupervisorNode(Node):
         self.last_message = message
         self.log_info(f'{command}: {message}')
         self.publish_status_locked()
+
+    def publish_component_operation_feedback(
+        self,
+        correlation: Dict[str, str],
+        success: bool,
+        result_status: str,
+    ) -> None:
+        self.last_agent_operation_feedback = {
+            **correlation,
+            'state': 'succeeded' if success else 'failed',
+            'status': 'succeeded' if success else 'failed',
+            'result_status': result_status,
+        }
+        self.publish_status()
+        self.last_agent_operation_feedback = {}
 
     def log_info(self, message: str) -> None:
         try:

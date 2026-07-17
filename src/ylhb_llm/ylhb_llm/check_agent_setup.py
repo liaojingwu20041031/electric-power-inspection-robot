@@ -47,22 +47,22 @@ def capability_path(configured: str) -> Path:
 
 def endpoint_status(
     base_url: str, models_path: str, api_key: str, timeout_sec: float,
-) -> tuple[bool, bool | None, str]:
+) -> tuple[bool, bool | None, str, bool]:
     if not base_url:
-        return False, None, 'planner endpoint is empty'
+        return False, None, 'planner endpoint is empty', True
     headers = {'Authorization': f'Bearer {api_key}'} if api_key else {}
     request = urllib.request.Request(base_url.rstrip('/') + '/' + models_path.lstrip('/'), headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout_sec):
-            return True, True, ''
+            return True, True, '', False
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            return True, False, f'planner authentication failed: HTTP {exc.code}'
+            return True, False, f'planner authentication failed: HTTP {exc.code}', True
         if exc.code == 404:
-            return False, None, 'planner models path is invalid: HTTP 404'
-        return False, None, f'planner endpoint failed: HTTP {exc.code}'
+            return False, None, 'planner models path is invalid: HTTP 404', True
+        return False, None, f'planner endpoint failed: HTTP {exc.code}', False
     except (OSError, urllib.error.URLError) as exc:
-        return False, None, f'planner endpoint is unreachable: {exc}'
+        return False, None, f'planner endpoint is unreachable: {exc}', False
 
 
 def ros_graph_status(required_topics: list[str], system_status_topic: str) -> tuple[list[str], list[str]]:
@@ -100,6 +100,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--endpoint-timeout-sec', type=float, default=3.0)
     parser.add_argument('--skip-endpoint', action='store_true')
     parser.add_argument('--skip-ros', action='store_true')
+    parser.add_argument(
+        '--network-optional', action='store_true',
+        help='endpoint 暂时不可达时仅警告；认证失败仍返回错误',
+    )
     args = parser.parse_args(argv)
 
     warnings: list[str] = []
@@ -147,9 +151,9 @@ def main(argv: list[str] | None = None) -> int:
 
     endpoint = args.endpoint or str(params.get('planner_base_url') or '')
     if args.skip_endpoint:
-        endpoint_reachable, authentication_ok = True, None
+        endpoint_reachable, authentication_ok, endpoint_permanent_error = True, None, False
     else:
-        endpoint_reachable, authentication_ok, endpoint_warning = endpoint_status(
+        endpoint_reachable, authentication_ok, endpoint_warning, endpoint_permanent_error = endpoint_status(
             endpoint, str(params.get('planner_models_path') or '/models'), api_key, args.endpoint_timeout_sec,
         )
         if endpoint_warning:
@@ -170,9 +174,16 @@ def main(argv: list[str] | None = None) -> int:
     if missing_topics:
         warnings.append('missing ROS topics: ' + ', '.join(missing_topics))
 
-    ready = all((planner_available, route_catalog_available, capability_catalog_available, endpoint_reachable, not missing_topics))
+    ready = all((
+        planner_available,
+        route_catalog_available,
+        capability_catalog_available,
+        endpoint_reachable or (args.network_optional and not endpoint_permanent_error),
+        authentication_ok is not False,
+        not missing_topics,
+    ))
     print(json.dumps({
-        'status': 'ok' if ready else 'warning',
+        'status': 'ok' if ready and not warnings else 'warning',
         'provider': provider,
         'model': model,
         'route_file': str(route_path) if route_path else '',
@@ -180,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         'planner_available': planner_available,
         'endpoint_reachable': endpoint_reachable,
         'authentication_ok': authentication_ok,
+        'endpoint_permanent_error': endpoint_permanent_error,
         'route_catalog_available': route_catalog_available,
         'capability_catalog_available': capability_catalog_available,
         'missing_topics': missing_topics,

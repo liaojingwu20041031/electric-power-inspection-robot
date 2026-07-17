@@ -12,8 +12,12 @@ chmod 700 "${RUNTIME_DIR}" 2>/dev/null || true
 STOPPED=false
 CHILD_PID=""
 trap 'STOPPED=true; [ -n "${CHILD_PID}" ] && kill -TERM "${CHILD_PID}" 2>/dev/null || true' INT TERM
-running_stack() { pgrep -f 'inspection_agent_node|voice_session_node|voice_output_node|system_supervisor_node|inspection_display_ui_node' >/dev/null; }
+running_stack() { pgrep -f 'inspection_agent_node|basic_motion_command_node|base_motion_skill_node|voice_input_node|voice_session_node|voice_output_node|system_supervisor_node|inspection_display_ui_node' >/dev/null; }
 wait_for_old_stack() { while running_stack; do sleep 1; done; }
+if ! "${WS_DIR}/scripts/run_on_jetson.sh" inspection_preflight >>"${LOG_FILE}" 2>&1; then
+  echo "自启动静态预检失败；不会进入崩溃重启。缺少密钥时运行 ${WS_DIR}/scripts/configure_agent_env.sh。详情：${LOG_FILE}" >&2
+  exit 2
+fi
 restart_times=()
 while [ "${STOPPED}" = false ]; do
   if running_stack; then

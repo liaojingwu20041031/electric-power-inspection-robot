@@ -1,6 +1,7 @@
 import threading
 import time
 import json
+import subprocess
 from types import SimpleNamespace
 
 from ylhb_llm.voice_session_node import VoiceSessionNode
@@ -62,6 +63,7 @@ def make_node(api_key=True):
     node.last_request_published_at = 0.0
     node.awaiting_turn_id = ''
     node.awaiting_response_deadline = 0.0
+    node.awaiting_agent_response_received = False
     node.awaiting_answer_received = False
     node.answer_received_at = 0.0
     node.response_tts_started = False
@@ -86,8 +88,12 @@ def make_node(api_key=True):
     node.last_tts_speaking = False
     node.last_start_prompt_at = 0.0
     node.debug_state_transitions = False
-    node.voice_close_words = ('关闭语音模式',)
-    node.conversation_end_words = ('不用了', '结束对话')
+    node.voice_cue_enabled = True
+    node.audio_output_device = 'plughw:0,0'
+    node.wake_cue_path = '/tmp/wake.wav'
+    node.standby_cue_path = '/tmp/standby.wav'
+    node.cue_calls = []
+    node.play_local_cue = lambda path: node.cue_calls.append(path)
     node.current_recording_proc = None
     node.say_messages = []
     node.say = lambda task_id, text, priority=5, interrupt=False: node.say_messages.append((task_id, text, priority, interrupt))
@@ -283,7 +289,8 @@ def test_wait_wake_uses_local_kws_without_cloud_asr():
     assert node.local_kws.listen_calls == 1
     assert node.awakened is True
     assert node.state == 'LISTENING'
-    assert node.pause_listen_until >= time.monotonic() + 0.2
+    assert node.pause_listen_until >= time.monotonic() + 0.08
+    assert node.cue_calls == ['/tmp/wake.wav']
     assert node.say_messages == []
 
 
@@ -340,6 +347,30 @@ def test_matching_agent_answer_waits_until_tts_and_tail_finish():
     assert node.state == 'LISTENING'
 
 
+def test_progress_response_clears_first_response_timeout_but_keeps_waiting_for_terminal_result():
+    node = make_node()
+    node.session_enabled = True
+    node.awakened = True
+    node.awaiting_turn_id = 'utt_0001'
+    node.awaiting_response_deadline = time.monotonic() - 1.0
+    node.state = 'WAITING_RESPONSE'
+
+    for status in ('waiting_feedback', 'sent', 'accepted', 'running'):
+        VoiceSessionNode.agent_chat_callback(node, SimpleNamespace(data=json.dumps({
+            'turn_id': 'utt_0001',
+            'role': 'assistant',
+            'status': status,
+            'text': '正在等待真实反馈',
+        })))
+
+    VoiceSessionNode.update_waiting_response(node)
+
+    assert node.awaiting_agent_response_received is True
+    assert node.awaiting_answer_received is False
+    assert node.awaiting_turn_id == 'utt_0001'
+    assert '超时' not in node.last_error
+
+
 def test_pure_wake_alias_after_kws_is_ignored_and_keeps_listening():
     node = make_node()
     node.session_enabled = True
@@ -353,22 +384,97 @@ def test_pure_wake_alias_after_kws_is_ignored_and_keeps_listening():
     assert node.state == 'LISTENING'
 
 
-def test_end_conversation_returns_to_wait_wake_but_explicit_close_turns_off():
+def test_repeated_wake_prefix_is_stripped_but_real_followup_is_kept():
     node = make_node()
     node.session_enabled = True
     node.awakened = True
+    node.in_context_followup = True
+    node.session_id = 'voice_1'
 
-    VoiceSessionNode.handle_asr_text(node, '不用了')
+    VoiceSessionNode.handle_asr_text(node, '小零小零小零小零旋转回刚刚的位置')
+
+    payload = json.loads(node.agent_request_pub.messages[-1])
+    assert payload['text'] == '旋转回刚刚的位置'
+    assert payload['contains_wake_phrase'] is True
+    assert payload['interaction_phase'] == 'context_followup'
+
+
+def test_end_phrases_are_forwarded_to_agent_instead_of_hard_coded():
+    for phrase in ('关闭这个聊天', '关闭这个语音对话', '那不聊了', '关闭语音模式'):
+        node = make_node()
+        node.session_enabled = True
+        node.awakened = True
+        node.session_id = 'voice_1'
+
+        VoiceSessionNode.handle_asr_text(node, phrase)
+
+        assert json.loads(node.agent_request_pub.messages[-1])['text'] == phrase
+        assert node.state == 'WAITING_RESPONSE'
+        assert node.cue_calls == []
+
+
+def test_voice_session_tool_commands_apply_confirmed_end_and_close():
+    node = make_node()
+    node.session_enabled = True
+    node.awakened = True
+    feedback = []
+    node.publish_status = lambda force=False: feedback.append(dict(getattr(node, 'voice_operation_feedback', {})))
+
+    VoiceSessionNode.voice_session_command_callback(node, SimpleNamespace(data=json.dumps({
+        'command': 'end_voice_conversation', 'operation_id': 'op_end',
+    })))
 
     assert node.session_enabled is True
-    assert node.awakened is False
     assert node.state == 'WAIT_WAKE'
+    assert node.cue_calls == ['/tmp/standby.wav']
+    assert feedback[-1]['operation_id'] == 'op_end'
+    assert feedback[-1]['state'] == 'succeeded'
+    assert node.voice_operation_feedback['operation_id'] == 'op_end'
 
     node.awakened = True
-    VoiceSessionNode.handle_asr_text(node, '关闭语音模式')
+    VoiceSessionNode.voice_session_command_callback(node, SimpleNamespace(data=json.dumps({
+        'command': 'close_voice_mode', 'operation_id': 'op_close',
+    })))
 
-    assert node.agent_request_pub.messages == []
     assert node.session_enabled is False
+    assert node.state == 'OFF'
+    assert node.cue_calls == ['/tmp/standby.wav', '/tmp/standby.wav']
+    assert feedback[-1]['operation_id'] == 'op_close'
+    assert node.voice_operation_feedback['operation_id'] == 'op_close'
+
+
+def test_followup_timeout_plays_standby_once():
+    node = make_node()
+    node.session_enabled = True
+    node.awakened = True
+    node.in_context_followup = True
+    node.context_followup_until = time.monotonic() - 0.1
+
+    VoiceSessionNode.update_followup_window(node)
+
+    assert node.state == 'WAIT_WAKE'
+    assert node.cue_calls == ['/tmp/standby.wav']
+
+
+def test_local_cue_uses_output_device_and_bounded_sync_playback(tmp_path, monkeypatch):
+    node = make_node()
+    cue = tmp_path / 'cue.wav'
+    cue.write_bytes(b'RIFF')
+    calls = []
+    node.play_local_cue = VoiceSessionNode.play_local_cue.__get__(node)
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0))
+
+    node.play_local_cue(str(cue))
+
+    assert calls == [([
+        'aplay', '-q', '-D', 'plughw:0,0', str(cue),
+    ], {
+        'stdout': subprocess.DEVNULL,
+        'stderr': subprocess.PIPE,
+        'timeout': 1.0,
+        'check': False,
+        'text': True,
+    })]
 
 
 def test_stop_immediately_releases_kws_and_vad_process():

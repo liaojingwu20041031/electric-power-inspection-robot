@@ -161,6 +161,7 @@ def test_intentional_shutdown_marker_stops_restart_but_crashes_still_recover(tmp
     runner = scripts / "run_on_jetson.sh"
     runner.write_text(textwrap.dedent("""\
         #!/usr/bin/env bash
+        if [ "${1:-}" = inspection_preflight ]; then exit 0; fi
         count_file="${WS_DIR}/launch_count"
         count=0
         [ ! -f "${count_file}" ] || count="$(cat "${count_file}")"
@@ -199,6 +200,63 @@ def test_intentional_shutdown_marker_stops_restart_but_crashes_still_recover(tmp
     assert crashed.returncode == 0
     assert (workspace / "launch_count").read_text(encoding="utf-8").strip() == "4"
     assert "systemctl" not in script.read_text(encoding="utf-8")
+
+
+def test_autostart_permanent_preflight_error_does_not_enter_restart_loop(tmp_path):
+    workspace = tmp_path / 'workspace'
+    scripts = workspace / 'scripts'
+    fake_bin = tmp_path / 'bin'
+    scripts.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2('scripts/start_inspection_ui_autostart.sh', scripts)
+    runner = scripts / 'run_on_jetson.sh'
+    runner.write_text(textwrap.dedent("""\
+        #!/usr/bin/env bash
+        if [ "${1:-}" = inspection_preflight ]; then
+          echo 'ERROR: agent.env missing; run configure_agent_env.sh' >&2
+          exit 2
+        fi
+        touch "${WS_DIR}/inspection_started"
+    """), encoding='utf-8')
+    runner.chmod(0o755)
+    for name, body in {
+        'pgrep': '#!/usr/bin/env bash\nexit 1\n',
+        'sleep': '#!/usr/bin/env bash\nexit 0\n',
+    }.items():
+        path = fake_bin / name
+        path.write_text(body, encoding='utf-8')
+        path.chmod(0o755)
+
+    result = subprocess.run(
+        [str(scripts / 'start_inspection_ui_autostart.sh')],
+        env={
+            **os.environ,
+            'PATH': os.pathsep.join((str(fake_bin), os.environ['PATH'])),
+            'YLHB_UI_INHIBIT_IDLE': 'false',
+        },
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not (workspace / 'inspection_started').exists()
+    assert 'configure_agent_env.sh' in result.stderr
+
+
+def test_autostart_running_stack_covers_every_inspection_child():
+    child_nodes = (
+        'inspection_agent_node', 'basic_motion_command_node', 'base_motion_skill_node',
+        'voice_input_node', 'voice_session_node', 'voice_output_node',
+        'system_supervisor_node', 'inspection_display_ui_node',
+    )
+    script = Path('scripts/start_inspection_ui_autostart.sh').read_text(encoding='utf-8')
+    running_stack = script.split('running_stack()', 1)[1].split('wait_for_old_stack()', 1)[0]
+
+    for child in child_nodes:
+        assert child in running_stack
 
 
 def test_ui_shutdown_request_is_idempotent_safe_and_marks_its_session(tmp_path):

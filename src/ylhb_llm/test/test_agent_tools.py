@@ -89,7 +89,8 @@ def test_start_route_publishes_system_command_with_route_id():
     assert system_pub.messages[0]['route_id'] == 'route_patrol_001'
 
 
-def test_go_to_checkpoint_resolves_target_and_publishes_patrol_command():
+def test_go_to_checkpoint_resolves_target_and_publishes_supervisor_command():
+    system_pub = FakePub()
     patrol_pub = FakePub()
     data = {
         'routes': [{'id': 'route_patrol_001', 'name': '路线', 'target_ids': ['target_003']}],
@@ -98,7 +99,7 @@ def test_go_to_checkpoint_resolves_target_and_publishes_patrol_command():
     tools = AgentTools(
         SimpleNamespace(),
         SimpleNamespace(system_status={}, patrol_status={}, voice_status={}),
-        FakePub(),
+        system_pub,
         FakePub(),
         FakePub(),
         FakePub(),
@@ -112,8 +113,23 @@ def test_go_to_checkpoint_resolves_target_and_publishes_patrol_command():
 
     tools.execute(decision, authorize(decision, {'patrol_state': 'idle'}))
 
-    assert patrol_pub.messages[0]['command'] == 'go_to_target'
-    assert patrol_pub.messages[0]['target_id'] == 'target_003'
+    assert system_pub.messages[0]['command'] == 'go_to_checkpoint'
+    assert system_pub.messages[0]['target_id'] == 'target_003'
+    assert patrol_pub.messages == []
+
+
+def test_robot_summary_tool_uses_chinese_user_facing_message():
+    tools = AgentTools(
+        SimpleNamespace(),
+        SimpleNamespace(system_status={}, patrol_status={}, voice_status={}),
+        FakePub(), FakePub(), FakePub(), FakePub(),
+        status_aggregator=SimpleNamespace(summary=lambda: {'health': 'ok'}),
+    )
+    decision = {'tool_call': {'name': 'get_robot_summary', 'arguments': {}}}
+
+    result = tools.execute(decision, authorize(decision, {}))
+
+    assert result['message'] == '机器人状态摘要'
 
 
 def test_rotate_relative_publishes_base_skill_not_cmd_vel():

@@ -6,8 +6,13 @@ from std_msgs.msg import String
 
 from .agent_schema import tool_result
 
-SYSTEM_TOOLS = {'start_patrol_mode', 'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop'}
+SYSTEM_TOOLS = {
+    'start_patrol_mode', 'start_route', 'go_to_checkpoint',
+    'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop',
+}
 BASE_SKILL_TOOLS = {'rotate_relative', 'move_relative', 'stop_motion'}
+COMPONENT_TOOLS = {'start_component', 'stop_component'}
+VOICE_SESSION_TOOLS = {'end_voice_conversation', 'close_voice_mode'}
 
 @dataclass(frozen=True)
 class ToolDefinition:
@@ -48,6 +53,7 @@ class AgentTools:
         tool_schemas: Dict[str, Any] | None = None,
         operation_manager=None,
         status_aggregator=None,
+        voice_session_pub=None,
     ) -> None:
         self.node = node
         self.state = state
@@ -60,16 +66,18 @@ class AgentTools:
         self.route_toolpack = route_toolpack
         self.operation_manager = operation_manager
         self.status_aggregator = status_aggregator
+        self.voice_session_pub = voice_session_pub
         self.tool_schemas = dict(tool_schemas or {})
         self.registry = ToolRegistry()
         self._register_tools(self.tool_schemas)
 
     def _register_tools(self, tool_schemas: Dict[str, Any]) -> None:
-        for name in SYSTEM_TOOLS | {'start_route'}:
+        for name in SYSTEM_TOOLS | COMPONENT_TOOLS:
             self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_system))
         for name in BASE_SKILL_TOOLS:
             self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_base_skill))
-        self.registry.register(ToolDefinition('go_to_checkpoint', tool_schemas.get('go_to_checkpoint', {}), self._execute_patrol))
+        for name in VOICE_SESSION_TOOLS:
+            self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_voice_session))
         for name in {'get_robot_summary', 'get_system_status', 'get_patrol_status', 'get_voice_status', 'generate_local_status_reply', 'list_routes', 'describe_route', 'list_checkpoints', 'inspect_checkpoint'}:
             self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_local))
 
@@ -129,7 +137,7 @@ class AgentTools:
             return None
         name = str((decision.get('tool_call') or {}).get('name') or '')
         schema = self.tool_schemas.get(name) or {}
-        if schema.get('side_effect', 'none') == 'none' and name not in SYSTEM_TOOLS | BASE_SKILL_TOOLS | {'start_route', 'go_to_checkpoint'}:
+        if schema.get('side_effect', 'none') == 'none' and name not in SYSTEM_TOOLS | BASE_SKILL_TOOLS:
             return None
         return self.operation_manager.create(
             str(decision.get('run_id') or decision.get('decision_id') or ''),
@@ -155,28 +163,28 @@ class AgentTools:
 
     def _execute_system(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
         name = str(decision['tool_call']['name'])
-        command = str((self.tool_schemas.get(name) or {}).get('command') or ('start_patrol_mode' if name == 'start_route' else name))
+        if name in COMPONENT_TOOLS:
+            component = str(args.get('component') or '')
+            command = f'{"start" if name == "start_component" else "stop"}_{component}'
+        else:
+            command = str(
+                (self.tool_schemas.get(name) or {}).get('command')
+                or ('start_patrol_mode' if name == 'start_route' else name)
+            )
+        if name == 'go_to_checkpoint' and self.route_toolpack is not None:
+            args = {
+                **args,
+                'target_id': self.route_toolpack.catalog.resolve_target_id(
+                    str(args.get('target_id') or '')),
+            }
         payload = {'schema_version': '1.0', 'source': 'inspection_agent', **self._correlation_fields(decision)}
-        payload.update({key: value for key, value in args.items() if key != 'command'})
+        payload.update({
+            key: value for key, value in args.items()
+            if key not in {'command', 'component'}
+        })
         payload['command'] = command
         self.publish_json(self.system_pub, payload)
         return tool_result(name, True, 'sent', f'已发送系统命令: {command}', {'command': command})
-
-    def _execute_patrol(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
-        if self.patrol_pub is None:
-            return tool_result(decision['tool_call']['name'], False, 'failed', 'patrol publisher unavailable')
-        target_id = str(args.get('target_id') or '')
-        if self.route_toolpack is not None:
-            target_id = self.route_toolpack.catalog.resolve_target_id(target_id)
-        payload = {
-            'schema_version': '1.0',
-            'source': 'inspection_agent',
-            'command': str((self.tool_schemas.get('go_to_checkpoint') or {}).get('command') or 'go_to_target'),
-            'target_id': target_id,
-            **self._correlation_fields(decision),
-        }
-        self.publish_json(self.patrol_pub, payload)
-        return tool_result('go_to_checkpoint', True, 'sent', '已发送目标点导航命令', {'target_id': target_id})
 
     def _execute_base_skill(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
         if self.base_skill_pub is None:
@@ -192,6 +200,18 @@ class AgentTools:
         self.publish_json(self.base_skill_pub, payload)
         return tool_result(name, True, 'sent', '已发送基础运动技能命令', {'command': name, **args})
 
+    def _execute_voice_session(self, decision: Dict[str, Any], _args: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(decision['tool_call']['name'])
+        if self.voice_session_pub is None:
+            return tool_result(name, False, 'failed', 'voice session publisher unavailable')
+        self.publish_json(self.voice_session_pub, {
+            'schema_version': '1.0',
+            'source': 'inspection_agent',
+            'command': name,
+            **self._correlation_fields(decision),
+        })
+        return tool_result(name, True, 'sent', f'已发送语音会话命令: {name}', {'command': name})
+
     def _execute_local(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
         name = str(decision['tool_call']['name'])
         if name == 'get_system_status':
@@ -203,7 +223,7 @@ class AgentTools:
         if name == 'get_robot_summary':
             if self.status_aggregator is None:
                 return tool_result(name, False, 'failed', 'robot status aggregator unavailable')
-            return tool_result(name, True, 'ok', 'robot summary', self.status_aggregator.summary())
+            return tool_result(name, True, 'ok', '机器人状态摘要', self.status_aggregator.summary())
         if self.route_toolpack and name == 'list_routes':
             return tool_result(name, True, 'ok', 'routes', {'routes': self.route_toolpack.list_routes()})
         if self.route_toolpack and name == 'describe_route':

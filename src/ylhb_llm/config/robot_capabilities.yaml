@@ -23,16 +23,66 @@ capabilities:
     timeout_sec: 1.0
     result_schema: {status: [accepted, succeeded, failed]}
     argument_schema: {properties: {}, required: []}
+  start_component:
+    description: 仅在目标运动工具返回 precondition_failed 且 recovery_components=[bringup] 后启动 bringup；不能独立启动，也不能启动 navigation 或 patrol_executor；组件就绪不代表目标动作成功
+    model_visible: true
+    risk_level: system_control
+    executor: system
+    side_effect: component_lifecycle
+    requires_confirmation: false
+    preconditions: []
+    timeout_sec: 45.0
+    result_schema: {status: [sent, succeeded, failed, timeout]}
+    argument_schema:
+      properties:
+        component: {type: string, enum: [bringup]}
+      required: [component]
+  stop_component:
+    description: 停止本轮 Agent 实际启动且已不再需要的通用组件
+    model_visible: false
+    risk_level: system_control
+    executor: system
+    side_effect: component_lifecycle
+    requires_confirmation: false
+    preconditions: [started_this_turn]
+    timeout_sec: 20.0
+    result_schema: {status: [sent, succeeded, failed, timeout]}
+    argument_schema:
+      properties:
+        component: {type: string, enum: [bringup]}
+      required: [component]
+  end_voice_conversation:
+    description: 仅当整句明确要求结束当前对话时调用；保留语音模式并进入等待唤醒；不得依据单个词或模糊 ASR 猜测
+    risk_level: session_control
+    executor: voice_session
+    side_effect: voice_session_control
+    suppress_speech_after_call: true
+    requires_confirmation: false
+    preconditions: []
+    timeout_sec: 2.0
+    result_schema: {status: [succeeded, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
+  close_voice_mode:
+    description: 仅当整句明确要求关闭整个语音模式时调用；关闭后需通过服务重新开启；语义不清时不得调用
+    risk_level: session_control
+    executor: voice_session
+    side_effect: voice_session_control
+    suppress_speech_after_call: true
+    requires_confirmation: false
+    preconditions: []
+    timeout_sec: 2.0
+    result_schema: {status: [succeeded, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
   rotate_relative:
-    description: 在安全前提下相对旋转
+    description: 在安全前提下相对旋转；angle_deg 正值表示左转/逆时针，负值表示右转/顺时针，允许范围含 -180° 与 +180°；“转回来/恢复刚才朝向”只能依据会话中上一条成功 rotate_relative 的真实 angle_deg 取反，无成功旋转证据时必须澄清，不能猜 180°
     risk_level: reversible_motion
     executor: base_skill
     command: rotate_relative
     topic_role: base_skill_command
     side_effect: robot_motion
-    requires_confirmation: true
+    requires_confirmation: false
     preconditions: [robot_ready, chassis_online, sensor_fresh]
-    timeout_sec: 12.0
+    timeout_sec: 20.0
     result_schema: {status: [accepted, running, succeeded, failed, canceled, timeout]}
     argument_schema:
       properties:
@@ -45,7 +95,7 @@ capabilities:
     command: move_relative
     topic_role: base_skill_command
     side_effect: robot_motion
-    requires_confirmation: true
+    requires_confirmation: false
     preconditions: [robot_ready, chassis_online, sensor_fresh]
     timeout_sec: 12.0
     result_schema: {status: [accepted, running, succeeded, failed, canceled, timeout]}
@@ -54,26 +104,38 @@ capabilities:
         distance_m: {type: number, minimum: -0.5, maximum: 0.5}
       required: [distance_m]
   start_route:
-    description: 启动一条已存在并通过安全校验的巡逻路线
+    description: 启动一条已存在并通过安全校验的巡逻路线；Supervisor 内部负责 bringup、传感器、定位、Nav2 lifecycle、AMCL 初始位姿、map→odom 和 PatrolExecutor，不要预先启动 navigation 或 patrol_executor
     risk_level: mission
     executor: system
     command: start_patrol_mode
     topic_role: system_command
     side_effect: robot_navigation
-    requires_confirmation: true
-    preconditions: [robot_ready, chassis_online, no_active_patrol]
+    requires_confirmation: false
+    preconditions: [no_active_patrol]
     timeout_sec: 14400.0
     result_schema: {status: [accepted, running, failed, timeout]}
     argument_schema: {properties: {}, required: [route_id]}
-  go_to_checkpoint:
-    description: 通过 PatrolExecutor 前往已存在的检查点
-    risk_level: reversible_motion
-    executor: patrol
-    command: go_to_target
-    topic_role: patrol_command
+  start_patrol_mode:
+    description: start_route 使用的内部 Supervisor 适配器
+    model_visible: false
+    risk_level: mission
+    executor: system
+    command: start_patrol_mode
     side_effect: robot_navigation
-    requires_confirmation: true
-    preconditions: [robot_ready, chassis_online, sensor_fresh, no_active_patrol]
+    requires_confirmation: false
+    preconditions: []
+    timeout_sec: 14400.0
+    result_schema: {status: [accepted, running, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
+  go_to_checkpoint:
+    description: 前往路线目录中已存在的检查点；Supervisor 内部完成完整巡逻栈准备并等待到达、失败或取消；“位置”一词本身不能触发本工具
+    risk_level: reversible_motion
+    executor: system
+    command: go_to_checkpoint
+    topic_role: system_command
+    side_effect: robot_navigation
+    requires_confirmation: false
+    preconditions: [no_active_patrol]
     timeout_sec: 120.0
     result_schema: {status: [accepted, running, succeeded, failed, canceled, timeout]}
     argument_schema: {properties: {}, required: [target_id]}
@@ -96,7 +158,7 @@ capabilities:
     command: resume_patrol
     topic_role: system_command
     side_effect: patrol_control
-    requires_confirmation: true
+    requires_confirmation: false
     preconditions: [paused_patrol, robot_ready]
     timeout_sec: 15.0
     result_schema: {status: [accepted, running, failed, timeout]}
@@ -194,7 +256,8 @@ capabilities:
     result_schema: {status: [ok, failed]}
     argument_schema: {properties: {}, required: []}
   generate_local_status_reply:
-    description: 生成不执行动作的本地回复
+    description: 仅用于普通问答、解释或澄清，不执行任何机器人动作；用户明确要求运动、巡逻或停止时不得选择本工具
+    model_visible: true
     risk_level: read_only
     executor: local
     side_effect: none

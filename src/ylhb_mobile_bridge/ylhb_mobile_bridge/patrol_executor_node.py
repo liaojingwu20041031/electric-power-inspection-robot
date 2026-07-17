@@ -831,7 +831,16 @@ class PatrolExecutorNode(Node):
                         "timestamp": time.time(),
                     })
             elif command == "go_to_target":
-                self._go_to_target(str(payload.get("target_id") or ""))
+                started = self._go_to_target(str(payload.get("target_id") or ""))
+                if started:
+                    self._publish_event({
+                        "event": "command_accepted",
+                        "command": "go_to_target",
+                        "request_id": str(payload.get("request_id") or ""),
+                        "startup_id": getattr(self, "startup_id", ""),
+                        "route_path": getattr(self, "resolved_route_file_path", None) or "",
+                        "timestamp": time.time(),
+                    })
             elif command in {"pause", "resume", "cancel", "takeover"}:
                 context["active_control_request_id"] = str(payload.get("request_id") or "")
                 context["active_control_command_id"] = str(payload.get("command_id") or "")

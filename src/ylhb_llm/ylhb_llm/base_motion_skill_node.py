@@ -53,6 +53,10 @@ class BaseMotionSkillLogic:
             return ""
         return f"unknown command: {command}"
 
+    @staticmethod
+    def chassis_status_online(status: str) -> bool:
+        return status.strip().split(maxsplit=1)[0] == "online" if status.strip() else False
+
 
 class BaseMotionSkillNode(Node):
     def __init__(self) -> None:
@@ -69,12 +73,14 @@ class BaseMotionSkillNode(Node):
         self.declare_parameter("publish_rate_hz", 20.0)
         self.declare_parameter("max_angle_deg", 180.0)
         self.declare_parameter("max_distance_m", 0.5)
-        self.declare_parameter("timeout_sec", 12.0)
+        self.declare_parameter("timeout_sec", 20.0)
         self.declare_parameter("require_chassis_online", True)
         self.declare_parameter("chassis_status_max_age_sec", 2.5)
+        self.declare_parameter("pose_loss_timeout_sec", 0.5)
 
         self.system_mode = "ready"
         self.last_chassis_status_at = 0.0
+        self.last_chassis_status = ""
         self.logic = BaseMotionSkillLogic(
             SkillLimits(
                 max_angle_deg=float(self.get_parameter("max_angle_deg").value),
@@ -108,14 +114,19 @@ class BaseMotionSkillNode(Node):
         except json.JSONDecodeError:
             self.system_mode = msg.data
 
-    def chassis_callback(self, _msg: String) -> None:
+    def chassis_callback(self, msg: String) -> None:
+        self.last_chassis_status = msg.data
         self.last_chassis_status_at = time.time()
 
     def chassis_online(self) -> bool:
         if not bool(self.get_parameter("require_chassis_online").value):
             return True
         age = time.time() - self.last_chassis_status_at
-        return self.last_chassis_status_at > 0.0 and age <= self.logic.limits.chassis_status_max_age_sec
+        return (
+            self.last_chassis_status_at > 0.0
+            and age <= self.logic.limits.chassis_status_max_age_sec
+            and self.logic.chassis_status_online(self.last_chassis_status)
+        )
 
     def command_callback(self, msg: String) -> None:
         try:
@@ -134,17 +145,28 @@ class BaseMotionSkillNode(Node):
                 self.stop("canceled")
             self.publish_status("done", "stopped", correlation)
             return
+        if self.active:
+            self.stop("canceled", "new base motion command rejected")
+            self.reject("base motion already active", correlation)
+            return
         reason = self.logic.validate(command, arguments, self.system_mode, self.chassis_online())
         if reason:
             self.reject(reason, correlation)
             return
         now = time.time()
+        start_pose = self.current_pose()
+        if start_pose is None:
+            self.reject("pose unavailable", correlation)
+            return
         self.active = {
             "command": command,
             "arguments": arguments,
             "started_at": now,
             "deadline": now + min(float(payload.get("timeout_sec") or self.get_parameter("timeout_sec").value), float(self.get_parameter("timeout_sec").value)),
-            "start_pose": self.current_pose(),
+            "start_pose": start_pose,
+            "last_yaw": start_pose[2] if start_pose is not None else None,
+            "accumulated_yaw": 0.0,
+            "last_pose_at": now,
             "correlation": correlation,
         }
         self.publish_status("running", command, correlation)
@@ -155,7 +177,23 @@ class BaseMotionSkillNode(Node):
         if time.time() >= float(self.active["deadline"]):
             self.stop("timeout")
             return
-        if self.reached_target():
+        reason = self.logic.validate(
+            self.active["command"], self.active["arguments"],
+            self.system_mode, self.chassis_online(),
+        )
+        if reason:
+            self.stop("failed", reason)
+            return
+        current_pose = self.current_pose()
+        if current_pose is None:
+            self.cmd_vel_pub.publish(Twist())
+            if time.time() - float(self.active["last_pose_at"]) >= float(
+                self.get_parameter("pose_loss_timeout_sec").value
+            ):
+                self.stop("failed", "pose unavailable")
+            return
+        self.active["last_pose_at"] = time.time()
+        if self.reached_target(current_pose):
             self.stop("done")
             return
         twist = Twist()
@@ -169,21 +207,32 @@ class BaseMotionSkillNode(Node):
             twist.linear.x = math.copysign(float(self.get_parameter("linear_speed").value), distance)
         self.cmd_vel_pub.publish(twist)
 
-    def reached_target(self) -> bool:
+    def reached_target(self, current_pose=None) -> bool:
         if not self.active:
             return False
         start_pose = self.active.get("start_pose")
-        current_pose = self.current_pose()
+        if current_pose is None:
+            current_pose = self.current_pose()
         if start_pose is None or current_pose is None:
             return False
         command = self.active["command"]
         arguments = self.active["arguments"]
         if command == "rotate_relative":
-            wanted = abs(math.radians(float(arguments["angle_deg"])))
-            return abs(self._angle_diff(current_pose[2], start_pose[2])) >= wanted
+            last_yaw = self.active.get("last_yaw")
+            if last_yaw is None:
+                self.active["last_yaw"] = current_pose[2]
+                return False
+            self.active["accumulated_yaw"] = float(self.active.get("accumulated_yaw") or 0.0) + self._angle_diff(current_pose[2], last_yaw)
+            self.active["last_yaw"] = current_pose[2]
+            wanted = math.radians(float(arguments["angle_deg"]))
+            progress = float(self.active["accumulated_yaw"])
+            return progress >= wanted if wanted >= 0.0 else progress <= wanted
         if command == "move_relative":
-            wanted = abs(float(arguments["distance_m"]))
-            return math.hypot(current_pose[0] - start_pose[0], current_pose[1] - start_pose[1]) >= wanted
+            wanted = float(arguments["distance_m"])
+            dx = current_pose[0] - start_pose[0]
+            dy = current_pose[1] - start_pose[1]
+            progress = dx * math.cos(start_pose[2]) + dy * math.sin(start_pose[2])
+            return progress >= wanted if wanted >= 0.0 else progress <= wanted
         return False
 
     def current_pose(self):
@@ -196,6 +245,13 @@ class BaseMotionSkillNode(Node):
                 Time(),
             )
         except Exception:
+            return None
+        stamp = Time.from_msg(transform.header.stamp)
+        if (
+            stamp.nanoseconds > 0
+            and (self.get_clock().now() - stamp).nanoseconds / 1e9
+            > float(self.get_parameter("pose_loss_timeout_sec").value)
+        ):
             return None
         translation = transform.transform.translation
         rotation = transform.transform.rotation
@@ -213,11 +269,11 @@ class BaseMotionSkillNode(Node):
         self.cmd_vel_pub.publish(Twist())
         self.publish_status("rejected", reason, correlation)
 
-    def stop(self, status: str) -> None:
+    def stop(self, status: str, message: str = "") -> None:
         correlation = dict((self.active or {}).get("correlation") or {})
         self.active = None
         self.cmd_vel_pub.publish(Twist())
-        self.publish_status(status, status, correlation)
+        self.publish_status(status, message or status, correlation)
 
     def publish_status(self, status: str, message: str, correlation=None) -> None:
         msg = String()

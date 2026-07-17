@@ -684,6 +684,14 @@ private:
       return;
     }
     const bool nonzero = std::abs(msg->linear.x) > 1e-6 || std::abs(msg->angular.z) > 1e-6;
+    if (nonzero && (fault_latched_ || !feedback_is_fresh())) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting non-zero %s: drive feedback is stale or fault is active",
+        cmd_vel_topic_.c_str());
+      client_->write_target_velocity(0.0, 0.0);
+      return;
+    }
     if (require_fresh_scan_ && nonzero && !scan_is_fresh()) {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -711,6 +719,12 @@ private:
     return last_scan_received_sec_ > 0.0 && last_scan_stamp_sec_ > 0.0 &&
            now_sec - last_scan_received_sec_ <= scan_timeout_sec_ &&
            stamp_age >= -0.1 && stamp_age <= scan_timeout_sec_;
+  }
+
+  bool feedback_is_fresh() const
+  {
+    return last_feedback_time_.nanoseconds() != 0 &&
+           (now() - last_feedback_time_).seconds() <= 1.0;
   }
 
   void poll_can()
@@ -805,8 +819,10 @@ private:
   void handle_fault(uint32_t fault)
   {
     if (fault == 0) {
+      fault_latched_ = false;
       return;
     }
+    fault_latched_ = true;
     client_->write_target_velocity(0.0, 0.0);
     const auto logical_faults = channel_mapping_->channels_to_logical(ChannelFaults{
       static_cast<uint16_t>(fault & 0xFFFF),
@@ -832,18 +848,16 @@ private:
     double feedback_age = -1.0;
 
     if (online_) {
-      if (last_heartbeat_time_.nanoseconds() == 0) {
-        state = "stale/offline";
-      } else {
+      if (last_heartbeat_time_.nanoseconds() != 0) {
         heartbeat_age = (stamp - last_heartbeat_time_).seconds();
-        if (heartbeat_age > 2.0) {
-          state = "stale/offline";
-        } else if (last_feedback_time_.nanoseconds() == 0) {
-          state = "feedback_timeout";
-        } else {
-          feedback_age = (stamp - last_feedback_time_).seconds();
-          state = feedback_age > 1.0 ? "feedback_timeout" : "online";
-        }
+      }
+      if (fault_latched_) {
+        state = "fault";
+      } else if (last_feedback_time_.nanoseconds() == 0) {
+        state = "feedback_timeout";
+      } else {
+        feedback_age = (stamp - last_feedback_time_).seconds();
+        state = feedback_age > 1.0 ? "feedback_timeout" : "online";
       }
     }
 
@@ -856,6 +870,7 @@ private:
         << std::dec << " left_rpm=" << left_actual_rpm_ << " right_rpm=" << right_actual_rpm_
         << " low_channel_rpm=" << low_channel_actual_rpm_
         << " high_channel_rpm=" << high_channel_actual_rpm_
+        << " fault_latched=" << (fault_latched_ ? "true" : "false")
         << " timed_out=" << (timed_out_ ? "true" : "false");
     std_msgs::msg::String out;
     out.data = msg.str();
@@ -898,6 +913,7 @@ private:
 
   bool online_ = false;
   bool timed_out_ = false;
+  bool fault_latched_ = false;
   double left_actual_rpm_ = 0.0;
   double right_actual_rpm_ = 0.0;
   double low_channel_actual_rpm_ = 0.0;

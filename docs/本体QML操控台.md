@@ -122,10 +122,15 @@ ros2 topic echo /inspection_ai/system_status
 用户态自启动使用 wrapper，不直接裸跑主 launch：
 
 ```bash
+./scripts/configure_agent_env.sh
 ./scripts/install_ui_autostart.sh
 ./scripts/start_inspection_ui_autostart.sh
 ./scripts/uninstall_ui_autostart.sh
 ```
+
+`configure_agent_env.sh` 静默读取密钥并写入 `~/.config/ylhb/agent.env`，目录权限为 `700`、文件权限为 `600`。脚本拒绝空值、CRLF、多行内容和异常格式，输出中不包含密钥。
+
+安装器与 wrapper 共用只读静态预检：检查 agent.env 及权限、本地 KWS、`install/setup.bash`、Agent/basic motion/base motion/voice/Supervisor/UI 可执行文件和 Agent 配置。缺失密钥等永久错误不会进入三次崩溃重启；模型 endpoint 暂时不可达只写入自启动日志，认证失败仍视为永久错误。
 
 wrapper 会设置 `WS_DIR` 并调用：
 
@@ -177,7 +182,7 @@ pgrep -af 'ylhb_mobile_bridge mobile_bridge_server'
 
 ## 显示会话与自动恢复
 
-UI 是完整 inspection 栈的生命周期锚点：UI 退出会有意关闭 Agent、语音和 Supervisor，避免后台残留；禁止给 UI 单独 respawn。手工 `./scripts/run_on_jetson.sh inspection` 不自动重启。桌面自启动 wrapper 则在旧节点全部退出、图形会话恢复并等待 4 秒后，重新启动**完整** inspection 栈；60 秒内最多三次，超过即停止。
+UI 是完整 inspection 栈的生命周期锚点：UI 退出会有意关闭 Agent、basic motion、base motion、voice input/session/output、Supervisor 和 UI，避免后台残留；任一子节点尚在时 wrapper 都不会创建重复实例。禁止给 UI 单独 respawn。手工 `./scripts/run_on_jetson.sh inspection` 不自动重启。桌面自启动 wrapper 则在旧节点全部退出、图形会话恢复并等待 4 秒后，重新启动**完整** inspection 栈；60 秒内最多三次，超过即停止。
 
 ## 导航动态安全只读诊断
 

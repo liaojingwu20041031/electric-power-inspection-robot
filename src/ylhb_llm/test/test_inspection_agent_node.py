@@ -108,10 +108,10 @@ def make_node(runtime=None, now=100.0):
     return node
 
 
-def test_local_rules_only_cover_empty_stop_and_emergency_stop():
+def test_local_rules_only_cover_empty_input():
     assert decide_local({'text': ''}, {})['response_type'] == 'ignore'
-    assert decide_local({'text': '急停'}, {})['tool_call']['name'] == 'emergency_stop'
-    assert decide_local({'text': '停止'}, {})['tool_call']['name'] == 'stop_motion'
+    assert decide_local({'text': '急停'}, {}) is None
+    assert decide_local({'text': '停止'}, {}) is None
     assert decide_local({'text': '开始巡逻'}, {}) is None
     assert decide_local({'text': '你能够做什么'}, {}) is None
 
@@ -210,12 +210,57 @@ def test_terminal_operation_feedback_requeues_and_resumes_same_turn():
     assert node.chat_pub.messages[-1]['text'] == '已根据真实反馈完成。'
 
 
-def test_emergency_request_uses_entry_fast_path_without_queueing():
+def test_patrol_running_finishes_start_route_but_not_checkpoint_navigation():
+    node = make_node()
+    start = node.operation_manager.create('run_1', 'call_1', 'start_route', {}, 120.0)
+    target = node.operation_manager.create('run_2', 'call_2', 'go_to_checkpoint', {}, 120.0)
+    node.operation_manager.mark_sent(start.operation_id)
+    node.operation_manager.mark_sent(target.operation_id)
+
+    InspectionAgentNode.update_operation_from_feedback(node, {
+        'operation_id': start.operation_id, 'state': 'running',
+    })
+    InspectionAgentNode.update_operation_from_feedback(node, {
+        'operation_id': target.operation_id, 'state': 'running',
+    })
+
+    assert node.operation_manager.get(start.operation_id)['state'] == 'succeeded'
+    assert node.operation_manager.get(target.operation_id)['state'] == 'running'
+
+
+def test_voice_status_nested_feedback_completes_voice_session_operation():
+    node = make_node()
+    operation = node.operation_manager.create(
+        'run_1', 'call_1', 'end_voice_conversation', {}, 2.0)
+    node.operation_manager.mark_sent(operation.operation_id)
+
+    InspectionAgentNode.voice_status_callback(node, SimpleNamespace(data=json.dumps({
+        'state': 'WAIT_WAKE',
+        'agent_operation_feedback': {
+            'operation_id': operation.operation_id,
+            'state': 'succeeded',
+            'message': '已结束当前对话',
+        },
+    })))
+
+    assert node.operation_manager.get(operation.operation_id)['state'] == 'succeeded'
+
+
+def test_emergency_request_uses_same_planner_queue_as_other_tools():
     runtime = FakeRuntime()
     node = make_node(runtime)
 
     InspectionAgentNode.request_callback(
         node, SimpleNamespace(data='{"text":"急停","client_msg_id":"urgent_1"}'))
 
-    assert len(runtime.calls) == 1
-    assert node.request_queue.empty()
+    assert runtime.calls == []
+    assert node.request_queue.qsize() == 1
+
+
+def test_plain_text_chassis_status_preserves_offline_state():
+    node = make_node()
+
+    InspectionAgentNode.chassis_status_callback(
+        node, SimpleNamespace(data='offline heartbeat_age=-1 feedback_age=-1'))
+
+    assert node.status_aggregator.get('chassis_status')['state'] == 'offline'

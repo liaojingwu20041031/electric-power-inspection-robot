@@ -8,10 +8,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / 'scripts' / 'run_on_jetson.sh'
 PREFLIGHT = REPO_ROOT / 'scripts' / 'check_agent_setup.py'
+CONFIGURE_AGENT_ENV = REPO_ROOT / 'scripts' / 'configure_agent_env.sh'
 
 
 class RunOnJetsonTest(unittest.TestCase):
-    def run_script(self, *args, agent_env='', robot_env='', mobile_bridge_state='active', owner='auto'):
+    def run_script(
+        self, *args, agent_env='', robot_env='', mobile_bridge_state='active',
+        owner='auto', inherited_agent_key='',
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             fake_ros2 = Path(tmp) / 'ros2'
             fake_ros2.write_text(
@@ -25,6 +29,13 @@ class RunOnJetsonTest(unittest.TestCase):
                 encoding='utf-8',
             )
             fake_ros2.chmod(0o755)
+            fake_arecord = Path(tmp) / 'arecord'
+            fake_arecord.write_text(
+                '#!/usr/bin/env bash\n'
+                'printf "card 2: Luna [Luna], device 0: USB Audio [USB Audio]\\n"\n',
+                encoding='utf-8',
+            )
+            fake_arecord.chmod(0o755)
             fake_systemctl = Path(tmp) / 'systemctl'
             fake_systemctl.write_text(
                 '#!/usr/bin/env bash\n'
@@ -42,6 +53,8 @@ class RunOnJetsonTest(unittest.TestCase):
                 agent_env_path = fake_home / '.config' / 'ylhb' / 'agent.env'
                 agent_env_path.parent.mkdir(parents=True)
                 agent_env_path.write_text(agent_env, encoding='utf-8')
+                agent_env_path.parent.chmod(0o700)
+                agent_env_path.chmod(0o600)
             if robot_env:
                 robot_env_path = fake_home / '.config' / 'ylhb' / 'robot.env'
                 robot_env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +70,8 @@ class RunOnJetsonTest(unittest.TestCase):
             env['FAKE_MOBILE_BRIDGE_STATE'] = mobile_bridge_state
             env['YLHB_MOBILE_BRIDGE_OWNER'] = owner
             env.pop('DASHSCOPE_API_KEY', None)
+            if inherited_agent_key:
+                env['DASHSCOPE_API_KEY'] = inherited_agent_key
             return subprocess.run(
                 ['bash', str(SCRIPT), *args],
                 cwd=REPO_ROOT,
@@ -130,6 +145,13 @@ class RunOnJetsonTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('WARN: DASHSCOPE_API_KEY is missing;', result.stderr)
 
+    def test_inspection_preflight_requires_agent_env_instead_of_inherited_key(self):
+        result = self.run_script(
+            'inspection_preflight', inherited_agent_key='test-inherited-key-123456')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('configure_agent_env.sh', result.stderr)
+
     def test_inspection_reads_audio_devices_from_robot_env(self):
         result = self.run_script(
             'inspection',
@@ -144,6 +166,17 @@ class RunOnJetsonTest(unittest.TestCase):
         self.assertIn('YLHB_AUDIO_INPUT_DEVICE=plughw:CARD=USB,DEV=0', result.stdout)
         self.assertIn('YLHB_AUDIO_OUTPUT_DEVICE=hw:CARD=USB,DEV=0', result.stdout)
         self.assertIn('YLHB_TTS_VOICE=CustomVoice', result.stdout)
+
+    def test_inspection_auto_detects_luna_for_input_and_output_and_logs_both(self):
+        result = self.run_script('inspection')
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('YLHB_AUDIO_INPUT_DEVICE=plughw:CARD=Luna,DEV=0', result.stdout)
+        self.assertIn('YLHB_AUDIO_OUTPUT_DEVICE=plughw:CARD=Luna,DEV=0', result.stdout)
+        self.assertIn(
+            'Audio devices: input=plughw:CARD=Luna,DEV=0 output=plughw:CARD=Luna,DEV=0',
+            result.stderr,
+        )
 
     def test_agent_preflight_reports_missing_key_without_echoing_environment(self):
         env = os.environ.copy()
@@ -213,12 +246,95 @@ class RunOnJetsonTest(unittest.TestCase):
         self.assertTrue(payload['planner_available'])
         self.assertEqual(payload['model'], 'local-model')
 
+    def test_configure_agent_env_writes_secure_file_without_leaking_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'
+            home.mkdir()
+            secret = 'test-valid_key_123456'
+            result = subprocess.run(
+                ['bash', str(CONFIGURE_AGENT_ENV)],
+                input=secret + '\n',
+                env={**os.environ, 'HOME': str(home)},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            env_file = home / '.config' / 'ylhb' / 'agent.env'
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(env_file.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(env_file.read_text(encoding='utf-8'), f'DASHSCOPE_API_KEY={secret}\n')
+            self.assertNotIn(secret, result.stdout + result.stderr)
+
+    def test_configure_agent_env_rejects_empty_crlf_bad_format_and_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'
+            home.mkdir()
+            env = {**os.environ, 'HOME': str(home)}
+            for value in ('\n', 'bad key\n', 'test-valid-key\r\n'):
+                with self.subTest(value=repr(value)):
+                    result = subprocess.run(
+                        ['bash', str(CONFIGURE_AGENT_ENV)],
+                        input=value,
+                        env=env,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+
+            env_dir = home / '.config' / 'ylhb'
+            env_dir.mkdir(parents=True, exist_ok=True)
+            env_file = env_dir / 'agent.env'
+            env_file.write_text('DASHSCOPE_API_KEY=test-valid-key-123456\n', encoding='utf-8')
+            env_dir.chmod(0o700)
+            env_file.chmod(0o644)
+            result = subprocess.run(
+                ['bash', str(CONFIGURE_AGENT_ENV), '--check'],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('600', result.stderr)
+
+    def test_agent_preflight_allows_temporary_endpoint_failure_as_warning(self):
+        env = os.environ.copy()
+        env['DASHSCOPE_API_KEY'] = 'test-valid-key-123456'
+        env['PYTHONPATH'] = os.pathsep.join((
+            str(REPO_ROOT / 'src' / 'ylhb_llm'), str(REPO_ROOT / 'src' / 'ylhb_mobile_bridge'),
+        ))
+        result = subprocess.run(
+            [
+                'python3', str(PREFLIGHT),
+                '--skip-ros', '--network-optional',
+                '--endpoint', 'http://127.0.0.1:9/v1',
+                '--route-file', str(REPO_ROOT / 'maps' / 'route_patrol_001.json'),
+                '--capabilities-file', str(REPO_ROOT / 'src' / 'ylhb_llm' / 'config' / 'robot_capabilities.yaml'),
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        payload = __import__('json').loads(result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(payload['endpoint_reachable'])
+        self.assertTrue(any('unreachable' in warning for warning in payload['warnings']))
+
     def test_zed_3d_mapping_mode_is_removed_from_help(self):
         help_result = self.run_script('help')
         self.assertNotIn('zed_3d_mapping', help_result.stdout)
         self.assertIn('zed_3d_capture', help_result.stdout)
         self.assertIn('zed_3d_reconstruct', help_result.stdout)
-        self.assertNotIn('navigation_keepout', help_result.stdout)
 
     def test_zed_3d_capture_and_reconstruct_routes(self):
         capture = self.run_script('zed_3d_capture', 'duration_sec:=1')

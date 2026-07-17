@@ -6,6 +6,11 @@ AUTOSTART_DIR="${HOME}/.config/autostart"
 DESKTOP_FILE="${AUTOSTART_DIR}/ylhb-inspection-ui.desktop"
 LOG_DIR="${WS_DIR}/runs/ui_autostart"
 
+if ! "${WS_DIR}/scripts/run_on_jetson.sh" inspection_preflight; then
+  echo "ERROR: 自启动预检失败；修复后重试。缺少密钥时运行 ${WS_DIR}/scripts/configure_agent_env.sh" >&2
+  exit 2
+fi
+
 mkdir -p "${AUTOSTART_DIR}" "${LOG_DIR}"
 cat >"${DESKTOP_FILE}" <<EOF
 [Desktop Entry]

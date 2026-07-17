@@ -21,14 +21,20 @@ class InspectionAgentSpecConfig:
     capabilities: List[str] = field(default_factory=list)
     boundaries: List[str] = field(default_factory=lambda: list(BOUNDARIES))
     tool_policy: str = (
-        '执行动作前先查询必要状态；不知道真实路线或目标时先 list/describe，不猜；'
-        '不要把 sent 当成 completed；动作后必须读取 ToolResult；'
-        '工具失败时先查询状态，再决定重试或终止；不得重复执行相同有副作用工具。'
+        '通用调用协议：1. 优先调用用户要求的业务目标工具；2. 检查目标工具 preconditions；'
+        '3. 只有目标工具失败结果的 recovery_components=[bringup] 时才可启动 bringup；'
+        '4. bringup 反馈后依据系统注入的新鲜机器人摘要重试同一目标，不能切换目标；'
+        '5. sent/accepted/running 不等于完成，start_route 的 running 除外；'
+        '6. 同一目标取得终态后不得再次执行；7. 组件准备不能作为动作成功证据；'
+        '8. start_route/go_to_checkpoint 的 navigation 与 patrol_executor 由 Supervisor 内部准备；'
+        '9. 最终答案只能来自真实 ToolResult。'
     )
     project_context: str = ''
     extra_instructions: str = (
-        '急停和停止由本地安全反射优先处理；不允许编造 route_id、target_id 或状态；'
-        '最终答案只能描述真实 ToolResult；没有证据时说“未知”，不能猜测。'
+        '停止工具按待执行操作的 side_effect 选择；不允许编造 route_id、target_id 或状态；'
+        '最终答案只能描述真实 ToolResult；没有证据时说“未知”，不能猜测；'
+        '所有用户可见回答必须使用自然简体中文概括，不照抄英文 JSON 字段名或英文状态枚举；'
+        '语音 ASR 可能包含同音错字，短句语义不清时结合上一轮工具结果理解，仍不确定则询问澄清，禁止猜测调用副作用工具。'
     )
 
     def system_prompt(self) -> str:
@@ -68,6 +74,10 @@ class InspectionAgentSpecBuilder:
         if self.registry:
             names.update(self.registry.names())
         names.discard('send_motion_command')
+        names = {
+            name for name in names
+            if (self.skill_schemas.get(name) or {}).get('model_visible', True)
+        }
         return InspectionAgentSpecConfig(
             capabilities=[self._capability_line(name) for name in sorted(names)],
             project_context=self._project_context(),
