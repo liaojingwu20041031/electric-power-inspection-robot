@@ -1,0 +1,134 @@
+%%{init: {"theme":"base","flowchart":{"curve":"basis","nodeSpacing":20,"rankSpacing":38},"themeVariables":{"fontFamily":"Microsoft YaHei, Noto Sans CJK SC, sans-serif","background":"#F8FAFC","primaryTextColor":"#243447"}}}%%
+flowchart LR
+  subgraph I[交互与 Agent]
+    UI["inspection_display_ui_node"]
+    VS["voice_session_node"]
+    VI["voice_input_node"]
+    VO["voice_output_node"]
+    AG["inspection_agent_node"]
+    IT["inspection_task_node<br/>(可选任务层)"]
+    BM["basic_motion_command_node"]
+    BS["base_motion_skill_node"]
+    SUP["system_supervisor_node"]
+  end
+  subgraph N[巡逻与导航]
+    PE["patrol_executor"]
+    NAV["Nav2<br/>navigate_to_pose"]
+    AMCL["AMCL"]
+    SLAM["slam_toolbox"]
+  end
+  subgraph P[感知与定位]
+    EKF["ekf_filter_node"]
+    RSP["robot_state_publisher"]
+    YOLO["yolo_detector_node"]
+    LOC["object_localizer_node"]
+    ZED["ZED Wrapper<br/>zed_node"]
+    Z3D["zed_svo_capture_node /<br/>zed_spatial_mapping_node"]
+  end
+  subgraph B[底层与传感器]
+    BASE["zlac8015d_canopen_controller<br/>(默认)"]
+    STM["base_controller<br/>(串口回退)"]
+    LIDAR["rplidar_node"]
+    IMU["IMU_publisher"]
+    RTK["wtrtk980_nmea_node<br/>(可选)"]
+    HW["ZLAC8015D / RPLidar / IMU / RTK / ZED / ALSA"]
+  end
+  subgraph X[桥接、云与存储]
+    MB["mobile_bridge<br/>(mobile_bridge_server)"]
+    PHONE["手机调试端"]
+    CLOUD["PlatformCloudClient / MapUploadWorker<br/>(mobile_bridge 进程内组件)"]
+    PLATFORM["Robot Bridge / Spring<br/>(外部协议系统)"]
+    FILES["maps/*.yaml, *.pgm, route_*.json<br/>KWS/YOLO/SVO/PLY/OBJ"]
+    DB["platform.db + map_upload_snapshots"]
+  end
+
+  VS -->|"/inspection_ai/agent_request"| AG
+  AG -->|"/inspection_ai/agent_status · agent_event · agent_chat"| UI
+  AG -->|"/inspection_ai/system_command"| SUP
+  AG -->|"/inspection_ai/base_skill_command"| BS
+  AG -->|"/inspection_ai/motion_command"| BM
+  AG -->|"/inspection_ai/voice_session_command"| VS
+  AG -->|"/inspection_ai/say_text"| VO
+  SUP -->|"/inspection_ai/system_status · system_mode"| UI
+  SUP -->|"/patrol/command"| PE
+  PE -->|"/patrol/status · /patrol/event"| SUP
+  PE -->|"/inspection_ai/text_command（到点任务触发）"| UI
+  BM -->|"/cmd_vel"| BASE
+  BS -->|"/cmd_vel"| BASE
+  SUP -->|"/cmd_vel（急停置零）"| BASE
+  NAV -->|"/cmd_vel"| BASE
+  BASE -->|"/odom · /zlac8015d/status · /zlac8015d/fault"| EKF
+  LIDAR -->|"/scan"| SLAM
+  LIDAR -->|"/scan"| AMCL
+  IMU -->|"/imu/data"| EKF
+  SLAM -->|"/map"| MB
+  AMCL -->|"/amcl_pose"| SUP
+  ZED -->|"RGB image"| YOLO
+  YOLO -->|"/perception/detections"| LOC
+  ZED -->|"depth + camera_info"| LOC
+  LOC -->|"/perception/localized_objects"| AG
+  Z3D <-->|"capture/mapping command · status · result"| SUP
+  MB -->|"/inspection_ai/text_command"| IT
+  MB -->|"/patrol/command"| PE
+  MB -->|"/cmd_vel"| BASE
+  PE -->|"/initialpose"| AMCL
+  MB -->|"/initialpose"| AMCL
+  UI -->|"/inspection_ai/start_voice_session · stop_voice_session"| VS
+  UI -->|"/inspection_ai/capture_voice"| VI
+  SUP -->|"/set_initial_pose"| AMCL
+  SUP -->|"lifecycle manager services"| NAV
+  SUP -->|"/stop_motor"| LIDAR
+  PE ==>|"NavigateToPose action"| NAV
+  MB ==>|"NavigateToPose action（调试单点）"| NAV
+  SLAM -.->|"map → odom（建图）"| NAV
+  AMCL -.->|"map → odom（定位）"| NAV
+  EKF -.->|"odom → base_footprint"| NAV
+  RSP -.->|"base_footprint → base_link → sensor frames"| NAV
+  PHONE -->|"HTTP :8000 /api/*"| MB
+  MB -->|"WebSocket /ws/status · /ws/map"| PHONE
+  CLOUD -->|"HTTPS heartbeat / ACK / events / deployment GET / map-assets POST"| PLATFORM
+  MB -->|"本地状态与控制队列"| CLOUD
+  FILES -.->|"地图、路线、模型、三维资产"| SUP
+  FILES -.->|"默认地图 / 路线"| PE
+  DB -.->|"部署、命令、事件、上传任务"| CLOUD
+  BASE ---|"SocketCAN can1 / CANopen SDO"| HW
+  STM ---|"串口 /dev/ttyS1（回退）"| HW
+  LIDAR ---|"USB 串口 /dev/robot_lidar"| HW
+  IMU ---|"USB 串口 /dev/robot_imu"| HW
+  RTK ---|"USB 串口 /dev/rtk_4g"| HW
+  ZED ---|"USB + ZED SDK"| HW
+  VS ---|"ALSA 录音"| HW
+  VO ---|"HTTPS TTS + ALSA 播放"| HW
+
+  subgraph LEGEND[图例]
+    direction LR
+    LT["ROS Topic"]
+    LS["ROS Service"]
+    LA["ROS Action"]
+    LTF["TF"]
+    LH["HTTP / WebSocket / HTTPS"]
+    LF["文件 / 模型 / SQLite"]
+    LHW["CANopen / USB / 串口 / ALSA"]
+  end
+
+  classDef node fill:#F8FAFC,stroke:#7890A8,color:#243447;
+  classDef ext fill:#F5F3FF,stroke:#9480B8,color:#302B45;
+  classDef hardware fill:#F3F0EC,stroke:#9D8C7A,color:#3D3731;
+  class UI,VS,VI,VO,AG,IT,BM,BS,SUP,PE,NAV,AMCL,SLAM,EKF,RSP,YOLO,LOC,ZED,Z3D,BASE,STM,LIDAR,IMU,RTK,MB,CLOUD,FILES,DB node;
+  class PHONE,PLATFORM ext;
+  class HW hardware;
+  linkStyle 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30 stroke:#4F83CC,stroke-width:2px
+  linkStyle 31,32,33,34,35 stroke:#8055B5,stroke-width:2px
+  linkStyle 36,37 stroke:#2E9B70,stroke-width:4px
+  linkStyle 38,39,40,41 stroke:#D58236,stroke-width:2.5px,stroke-dasharray:7 5
+  linkStyle 42,43,44,45 stroke:#2D9BB3,stroke-width:2.5px
+  linkStyle 46,47,48 stroke:#8B949E,stroke-width:2px,stroke-dasharray:2 5
+  linkStyle 49,50,51,52,53,54,55,56 stroke:#333333,stroke-width:2px
+  style LEGEND fill:#FFFFFF,stroke:#CBD5E1
+  style LT fill:#EAF2FD,stroke:#4F83CC
+  style LS fill:#F3EDFA,stroke:#8055B5
+  style LA fill:#EAF8F1,stroke:#2E9B70,stroke-width:3px
+  style LTF fill:#FFF5E9,stroke:#D58236,stroke-dasharray:7 5
+  style LH fill:#EAF8FB,stroke:#2D9BB3
+  style LF fill:#F4F4F4,stroke:#8B949E,stroke-dasharray:2 5
+  style LHW fill:#F3F0EC,stroke:#333333

@@ -1,0 +1,90 @@
+%%{init: {"theme":"base","flowchart":{"curve":"basis","nodeSpacing":22,"rankSpacing":42},"themeVariables":{"fontFamily":"Microsoft YaHei, Noto Sans CJK SC, sans-serif","background":"#F8FAFC","primaryTextColor":"#243447"}}}%%
+flowchart LR
+  subgraph LOCAL[Jetson 本地地图生命周期·仓库已实现]
+    direction TB
+    SLAM["SLAM Toolbox 建图<br/>/scan + /odom + TF → /map"]
+    SAVE["地图保存<br/>map_saver_cli → 候选 *.yaml / *.pgm"]
+    PHONE["手机地图管理<br/>列表 / 预览 / 重命名 / 删除"]
+    CONFIRM["POST .../confirm_default<br/>MapManager.confirm_default"]
+    GUARD["变更保护<br/>SLAM Toolbox 或 map_server 运行时拒绝切图"]
+    ARCHIVE["归档旧默认地图与全部 route_patrol_*.json<br/>my_map_deprecated_时间戳.*<br/>deprecated_route_...json"]
+    DEFAULT["状态 L1：本地默认地图已生效<br/>my_map.yaml + my_map.pgm"]
+    QUEUE["SQLite platform.db<br/>map_uploads = PENDING<br/>内容身份 + SHA-256 + 幂等键"]
+    SNAP["map_upload_snapshots/<task_id><br/>上传快照"]
+    WORKER["MapUploadWorker<br/>单线程、指数退避、大小限制"]
+    UPLOADOK["状态 L2：云端上传成功<br/>本地任务 = SUCCEEDED<br/>获得 mapAssetId"]
+  end
+
+  subgraph EXTERNAL[外部平台·当前仓库只有协议/客户端]
+    direction TB
+    BRIDGE["Robot Bridge<br/>公网设备 API / 命令租约<br/>[外部系统·协议已定义]"]
+    SPRINGMAP["Spring 地图资产<br/>状态 = PENDING_REVIEW<br/>[外部系统·协议已定义]"]
+    REVIEW["状态 P1：平台审核通过<br/>地图资产可用于路线编辑<br/>[外部业务状态]"]
+    WEB["Web 路线编辑<br/>绑定 mapAssetId<br/>[后续规划·外部系统]"]
+    REV["Route Revision<br/>不可变内容 + content SHA-256<br/>[协议已定义]"]
+    PUBLISHED["状态 P2：路线已发布<br/>Route Revision 可创建任务"]
+    DEPLOY["Deployment<br/>manifest + route + YAML + PGM<br/>[协议已定义]"]
+  end
+
+  subgraph INSTALL[Jetson Deployment 安装与执行·仓库已实现]
+    direction TB
+    PULL["PlatformCloudClient 主动 HTTPS heartbeat<br/>领取 START；无公网入站控制"]
+    DOWNLOAD["GET manifest / route / yaml / pgm"]
+    VERIFY["校验 robotId / deploymentId<br/>routeRevision SHA-256 / route payload SHA-256<br/>map image SHA-256 / YAML-PGM 绑定"]
+    STAGE["staging 临时目录<br/>规范化 route.json"]
+    ATOMIC["os.replace 原子安装<br/>deployments/<deploymentId>"]
+    LOCALROUTE["生成本地 route_patrol_NNN.json<br/>绑定本地 my_map.yaml / my_map.pgm"]
+    INSTALLED["状态 J1：Deployment 已安装<br/>platform.db deployments = DEPLOYED"]
+    EXEC["Patrol Executor<br/>/patrol/command → NavigateToPose"]
+  end
+
+  SLAM --> SAVE
+  SAVE --> PHONE
+  PHONE --> CONFIRM
+  GUARD --> CONFIRM
+  CONFIRM --> ARCHIVE
+  ARCHIVE --> DEFAULT
+  CONFIRM --> DEFAULT
+  DEFAULT --> QUEUE
+  QUEUE -.-> SNAP
+  SNAP --> WORKER
+  WORKER ==>|"HTTPS POST /robot-api/v1/map-assets"| BRIDGE
+  BRIDGE --> SPRINGMAP
+  SPRINGMAP --> UPLOADOK
+  SPRINGMAP --> REVIEW
+  REVIEW --> WEB
+  WEB --> REV
+  REV --> PUBLISHED
+  PUBLISHED --> DEPLOY
+  DEPLOY --> BRIDGE
+  PULL ==>|"HTTPS heartbeat / ACK / events"| BRIDGE
+  BRIDGE ==>|"START + deploymentId"| PULL
+  PULL --> DOWNLOAD
+  DOWNLOAD ==>|"HTTPS GET deployment 4 件套"| BRIDGE
+  DOWNLOAD --> VERIFY
+  VERIFY -->|"通过"| STAGE
+  VERIFY -->|"失败：拒绝安装"| FAIL["故障状态<br/>HASH_MISMATCH / INVALID_MAP / INVALID_ROUTE"]
+  STAGE --> ATOMIC
+  ATOMIC --> LOCALROUTE
+  LOCALROUTE --> INSTALLED
+  INSTALLED --> EXEC
+
+  NOTE["状态不可合并：<br/>L1 本地默认生效 ≠ L2 上传成功<br/>L2 ≠ P1 审核通过 ≠ P2 路线发布<br/>P2 ≠ J1 Deployment 已安装"]
+  NOTE -.-> DEFAULT
+  NOTE -.-> UPLOADOK
+  NOTE -.-> REVIEW
+  NOTE -.-> PUBLISHED
+  NOTE -.-> INSTALLED
+
+  classDef local fill:#EDF7F6,stroke:#6A9F98,color:#243447;
+  classDef external fill:#F5F3FF,stroke:#9480B8,color:#302B45;
+  classDef state fill:#EAF2FD,stroke:#5E86B2,color:#243447,stroke-width:2px;
+  classDef storage fill:#F4F4F2,stroke:#8C9696,color:#30383B;
+  classDef fault fill:#FFF1F2,stroke:#C95C67,color:#7F1D1D,stroke-width:2px;
+  class SLAM,SAVE,PHONE,CONFIRM,GUARD,ARCHIVE,WORKER,PULL,DOWNLOAD,VERIFY,STAGE,ATOMIC,LOCALROUTE,EXEC local;
+  class BRIDGE,SPRINGMAP,WEB,REV,DEPLOY external;
+  class DEFAULT,UPLOADOK,REVIEW,PUBLISHED,INSTALLED state;
+  class QUEUE,SNAP,NOTE storage;
+  class FAIL fault;
+  linkStyle 10,19,20,22 stroke:#2D9BB3,stroke-width:4px
+

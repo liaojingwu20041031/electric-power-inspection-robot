@@ -1,0 +1,86 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Microsoft YaHei, Noto Sans CJK SC, sans-serif","background":"#F8FAFC","primaryTextColor":"#243447","actorBkg":"#EEF5FB","actorBorder":"#7198BF","signalColor":"#64748B"}}}%%
+sequenceDiagram
+    autonumber
+    actor OP as 操作员
+    participant KWS as 本地 KWS / VoiceSession
+    participant ASR as DashScope ASR
+    participant AG as Inspection Agent
+    participant LLM as LLM Planner
+    participant SP as Schema / Policy
+    participant TP as ToolPack
+    participant SUP as Supervisor
+    participant PN as Patrol Executor / Nav2
+    participant HW as Robot Hardware
+    participant OUT as UI / TTS
+
+    Note over KWS,OUT: 语音节点、Planner 与 TTS 均可选启用；Agent 只暴露任务级工具，不开放 /cmd_vel 或原始 Nav2 goal
+    OP->>KWS: 说出唤醒词“小零小零”
+    KWS->>KWS: sherpa-onnx 本地 KWS + VAD
+    KWS-->>OUT: /inspection_ai/voice_session_status
+    OP->>KWS: 说出巡逻/状态/运动指令
+    KWS->>ASR: HTTPS 上传临时 WAV，qwen3-asr-flash
+    alt ASR 成功
+        ASR-->>KWS: 识别文本
+        KWS->>AG: /inspection_ai/agent_request
+        AG->>LLM: OpenAI-compatible /chat/completions + AgentSpec
+        LLM-->>AG: tool_call + arguments + speak
+        AG->>SP: Agent chat schema 校验
+        SP-->>AG: 结构合法 / 拒绝
+        AG->>SP: Capability schema + Policy 前置条件校验
+        SP-->>AG: allowed / precondition_failed / policy_rejected
+        alt 校验通过
+            AG->>TP: 执行受控工具
+            Note over TP,HW: LLM 不直接发布 /cmd_vel；运动只能经 base_motion_skill 或 Supervisor→Patrol Executor→Nav2
+            TP->>SUP: /inspection_ai/system_command（巡逻/急停/组件）
+            opt 巡逻或检查点任务
+                SUP->>PN: 准备 bringup、AMCL、TF、Nav2 后发布 /patrol/command
+                PN->>HW: NavigateToPose → Nav2 /cmd_vel → 底盘 CANopen
+            end
+            TP-->>AG: sent + operation_id
+            AG-->>OUT: agent_status = waiting_feedback
+            loop operation_poll_sec 轮询真实反馈
+                HW-->>PN: /odom、/scan、底盘状态
+                PN-->>SUP: /patrol/status、/patrol/event
+                SUP-->>AG: /inspection_ai/system_status 或 base_skill_status
+            end
+            alt 成功
+                AG->>AG: OperationManager → succeeded
+                AG-->>OUT: agent_event / agent_chat + 成功答复
+            else 失败
+                AG->>AG: OperationManager → failed / rejected
+                AG-->>OUT: 错误码、原因与安全提示
+            else 用户取消
+                OP->>KWS: “取消巡逻/停止”
+                KWS->>AG: 新的取消请求
+                AG->>SUP: cancel_patrol / stop_motion
+                SUP->>PN: 取消当前 goal，发布零速度
+                PN-->>AG: canceled
+                AG-->>OUT: 已取消
+            else 超时
+                AG->>AG: OperationManager → timeout
+                AG->>SUP: timeout guard：cancel_patrol / stop_motion
+                SUP->>PN: 取消导航并置零
+                AG-->>OUT: 超时与已执行的安全收尾
+            end
+        else Schema 或 Policy 拒绝
+            AG-->>OUT: agent_event = rejected + 原因
+        end
+    else ASR 空结果、失败或超时
+        ASR-->>KWS: 空文本 / 错误 / timeout
+        KWS-->>OUT: 重试提示；连续失败进入待唤醒
+    end
+
+    par 最终可视输出
+        AG-->>OUT: /inspection_ai/agent_chat、agent_status、agent_event
+    and 最终语音输出（可选）
+        AG-->>OUT: /inspection_ai/say_text → DashScope TTS → ALSA
+    end
+
+    rect rgb(255, 241, 242)
+        Note over OP,HW: 急停本地快速通道：无需等待 Planner 的后续步骤
+        OP->>OUT: 点击本体 UI 软件急停
+        OUT->>SUP: /inspection_ai/system_command = emergency_stop
+        SUP->>HW: 连续发布 5 次零 Twist，并将 system_mode 置 fault
+        SUP-->>OUT: system_status / system_mode
+    end
+

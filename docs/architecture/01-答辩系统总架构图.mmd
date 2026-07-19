@@ -1,0 +1,139 @@
+%%{init: {"theme":"base","block":{"padding":10,"useMaxWidth":true},"themeVariables":{"fontFamily":"Microsoft YaHei, Noto Sans CJK SC, sans-serif","background":"#F8FAFC","primaryColor":"#F8FAFC","primaryBorderColor":"#7890A8","primaryTextColor":"#243447","lineColor":"#64748B"}}}%%
+block-beta
+columns 5
+
+OP["用户与交互端<br/>操作员<br/>[外部角色]"]
+PHONE["用户与交互端<br/>手机调试端 · HTTP / WebSocket<br/>[外部客户端]"]
+WEB["用户与交互端<br/>Web / 小程序路线编辑<br/>[后续规划·外部系统]"]
+DAS["云平台与模型服务<br/>DashScope · ASR / Planner / TTS<br/>[外部服务]"]
+PLATFORM["云平台与模型服务<br/>Spring 平台 + Robot Bridge<br/>审核 / Route Revision / Deployment<br/>[外部系统·协议已定义]"]
+
+block:J:5
+  columns 5
+  block:L1
+    columns 1
+    H1["① 交互接入层"]
+    UI["本体答辩操控台<br/>(inspection_display_ui_node)<br/>[已实现]"]
+    MB["移动端桥接<br/>(mobile_bridge_server / mobile_bridge)<br/>[已实现]"]
+    VOICE["连续语音会话<br/>(voice_session_node / voice_input_node / voice_output_node)<br/>[可选启用]"]
+  end
+  block:L2
+    columns 1
+    H2["② AI Agent 与任务编排层"]
+    AGENT["巡检智能体<br/>(inspection_agent_node)<br/>[已实现]"]
+    GUARD["AgentSpec + ToolPack<br/>Schema / Policy / OperationManager<br/>[已实现]"]
+  end
+  block:L3
+    columns 1
+    H3["③ 巡逻、导航与系统管理层"]
+    SUP["系统编排与软件急停<br/>(system_supervisor_node)<br/>[已实现]"]
+    MOTION["受限基础运动技能<br/>(basic_motion_command_node / base_motion_skill_node)<br/>[已实现]"]
+    PATROL["路线巡逻执行器<br/>(patrol_executor_node / patrol_executor)<br/>[已实现]"]
+    NAV["Nav2 子系统<br/>AMCL / planner / controller / map_server<br/>[已实现]"]
+  end
+  block:L4
+    columns 1
+    H4["④ 感知、定位与建图层"]
+    SLAM["二维建图与定位<br/>SLAM Toolbox / AMCL<br/>[已实现]"]
+    EKF["状态融合与 TF<br/>(ekf_filter_node + robot_state_publisher)<br/>[已实现]"]
+    PER["目标检测与深度定位<br/>(yolo_detector_node / object_localizer_node)<br/>[可选启用]"]
+    ZEDSYS["ZED 图像与三维建模<br/>Wrapper / SVO capture / Spatial Mapping<br/>[可选启用]"]
+  end
+  block:L5
+    columns 1
+    H5["⑤ 硬件驱动与平台本地服务层"]
+    BASEDRV["底盘驱动<br/>zlac8015d_canopen_controller<br/>STM32 回退: base_controller<br/>[已实现]"]
+    SENSORDRV["传感器驱动<br/>rplidar_node / IMU_publisher / wtrtk980_nmea_node<br/>[RTK 可选]"]
+    MAPMGR["MapManager / MapUploadWorker<br/>PlatformCloudClient<br/>[已实现；云连接可选]"]
+  end
+end
+
+DRIVE["机器人硬件<br/>ZLAC8015D 控制器 + 轮毂电机<br/>[已实现]"]
+SENSORS["机器人硬件<br/>RPLidar / IMU / RTK / ZED 2i<br/>麦克风 / 扬声器 / 触摸显示<br/>[RTK、ZED、语音可选]"]
+LOCALMAP["本地数据存储<br/>my_map.yaml + my_map.pgm<br/>route_patrol_*.json / 归档<br/>[已实现]"]
+LOCALDB["本地数据存储<br/>platform.db / 模型 / SVO / PLY / OBJ<br/>部署 / 命令 / 事件 / 上传任务<br/>[已实现或可选资产]"]
+CLOUDDATA["平台数据存储<br/>地图资产 / Route Revision / Deployment<br/>[外部系统·协议已定义]"]
+
+OP --> UI
+OP --> VOICE
+PHONE --> MB
+WEB --> PLATFORM
+VOICE == "A① 本地唤醒与云端 ASR" ==> DAS
+DAS == "A② 工具规划 / TTS" ==> AGENT
+AGENT == "A③ Schema + Policy + ToolPack" ==> GUARD
+GUARD == "A④ 真实反馈后 UI / TTS 答复" ==> UI
+GUARD --> SUP
+GUARD --> MOTION
+SUP == "B① 高层巡逻命令" ==> PATROL
+PATROL == "B② NavigateToPose" ==> NAV
+NAV == "B③ /cmd_vel" ==> BASEDRV
+BASEDRV == "B④ 轮速 / 里程计闭环" ==> DRIVE
+DRIVE --> BASEDRV
+BASEDRV --> EKF
+SENSORS --> SENSORDRV
+SENSORDRV --> SLAM
+SENSORDRV --> EKF
+SLAM --> NAV
+EKF --> NAV
+SENSORS --> ZEDSYS
+ZEDSYS --> PER
+SENSORS --> VOICE
+SENSORS --> UI
+MB --> MAPMGR
+MAPMGR == "C① confirm_default：本地生效" ==> LOCALMAP
+MAPMGR == "C② HTTPS 地图上传 / heartbeat" ==> PLATFORM
+PLATFORM == "C③ 审核、路线发布、Deployment 下发" ==> MAPMGR
+MAPMGR == "C④ 哈希校验与原子安装" ==> LOCALDB
+LOCALDB --> PATROL
+PLATFORM --> CLOUDDATA
+
+classDef user fill:#EFF6FF,stroke:#7AA2D6,color:#243447,stroke-width:1.4px;
+classDef cloud fill:#F5F3FF,stroke:#9B8AC4,color:#2F2A44,stroke-width:1.4px;
+classDef interaction fill:#EAF7F7,stroke:#6BA8A8,color:#243447,stroke-width:1.4px;
+classDef agent fill:#F2EEFA,stroke:#9480B8,color:#2F2A44,stroke-width:1.4px;
+classDef control fill:#EDF4FB,stroke:#7198BF,color:#243447,stroke-width:1.4px;
+classDef perception fill:#ECF8F5,stroke:#6EA99A,color:#243447,stroke-width:1.4px;
+classDef hardware fill:#F3F0EC,stroke:#A08F7E,color:#3F3832,stroke-width:1.4px;
+classDef storage fill:#F7F7F5,stroke:#929A9A,color:#30383B,stroke-width:1.4px;
+classDef header fill:#DDEAF5,stroke:#5E7F9F,color:#203547,stroke-width:1.6px;
+class OP,PHONE,WEB user;
+class DAS,PLATFORM,CLOUDDATA cloud;
+class UI,MB,VOICE interaction;
+class AGENT,GUARD agent;
+class SUP,MOTION,PATROL,NAV control;
+class SLAM,EKF,PER,ZEDSYS,MAPMGR perception;
+class BASEDRV,SENSORDRV,DRIVE,SENSORS,IO hardware;
+class LOCALMAP,LOCALDB storage;
+class H1,H2,H3,H4,H5 header;
+style J fill:#FFFFFF,stroke:#4F759B,stroke-width:2px;
+style L1 fill:#F7FCFC,stroke:#A9CACA;
+style L2 fill:#FBF9FE,stroke:#C7BBDD;
+style L3 fill:#F8FBFE,stroke:#B4C9DC;
+style L4 fill:#F7FCFA,stroke:#B2D3C8;
+style L5 fill:#FBFAF8,stroke:#C9BEB3;
+style OP fill:#EFF6FF,stroke:#7AA2D6;
+style PHONE fill:#EFF6FF,stroke:#7AA2D6;
+style WEB fill:#EFF6FF,stroke:#7AA2D6;
+style DAS fill:#F5F3FF,stroke:#9B8AC4;
+style PLATFORM fill:#F5F3FF,stroke:#9B8AC4;
+style UI fill:#EAF7F7,stroke:#6BA8A8;
+style MB fill:#EAF7F7,stroke:#6BA8A8;
+style VOICE fill:#EAF7F7,stroke:#6BA8A8;
+style AGENT fill:#F2EEFA,stroke:#9480B8;
+style GUARD fill:#F2EEFA,stroke:#9480B8;
+style SUP fill:#EDF4FB,stroke:#7198BF;
+style MOTION fill:#EDF4FB,stroke:#7198BF;
+style PATROL fill:#EDF4FB,stroke:#7198BF;
+style NAV fill:#EDF4FB,stroke:#7198BF;
+style SLAM fill:#ECF8F5,stroke:#6EA99A;
+style EKF fill:#ECF8F5,stroke:#6EA99A;
+style PER fill:#ECF8F5,stroke:#6EA99A;
+style ZEDSYS fill:#ECF8F5,stroke:#6EA99A;
+style MAPMGR fill:#ECF8F5,stroke:#6EA99A;
+style BASEDRV fill:#F3F0EC,stroke:#A08F7E;
+style SENSORDRV fill:#F3F0EC,stroke:#A08F7E;
+style DRIVE fill:#F3F0EC,stroke:#A08F7E;
+style SENSORS fill:#F3F0EC,stroke:#A08F7E;
+style LOCALMAP fill:#F7F7F5,stroke:#929A9A;
+style LOCALDB fill:#F7F7F5,stroke:#929A9A;
+style CLOUDDATA fill:#F5F3FF,stroke:#9B8AC4;
