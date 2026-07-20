@@ -5,7 +5,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
@@ -296,7 +296,8 @@ def default_route_directory() -> Path:
 def resolve_route_file_path(
     route_file_path: str,
     route_directory: Union[str, Path, None] = None,
-) -> Path:
+    required: bool = True,
+) -> Optional[Path]:
     requested_path = str(route_file_path).strip()
     if requested_path != "auto":
         explicit_path = Path(requested_path).expanduser()
@@ -313,6 +314,8 @@ def resolve_route_file_path(
     )
     candidates = list(directory.glob(ROUTE_FILE_PATTERN))
     if not candidates:
+        if not required:
+            return None
         raise ValueError(
             f"no patrol route files found in {directory} "
             f"matching {ROUTE_FILE_PATTERN}"

@@ -112,9 +112,12 @@ class InspectionAgentNode(Node):
         self.route_directory = Path(route_directory).expanduser() if route_directory else self.workspace_dir / 'maps'
         patrol_route_path = str(self.get_parameter('patrol_route_path').value).strip()
         route_file_path = str(self.get_parameter('route_file_path').value).strip()
-        self.resolved_route_file = str(resolve_route_file_path(
-            patrol_route_path or route_file_path or 'auto', self.route_directory,
-        ))
+        resolved_route_file = resolve_route_file_path(
+            patrol_route_path or route_file_path or 'auto',
+            self.route_directory,
+            required=False,
+        )
+        self.resolved_route_file = str(resolved_route_file or '')
         self.seen_request_ids: set[str] = set()
         self.seen_request_order: deque[str] = deque(maxlen=256)
         self.request_queue: queue.Queue = queue.Queue()

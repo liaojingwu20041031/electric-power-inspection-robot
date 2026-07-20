@@ -44,3 +44,6 @@ def test_voice_session_config_has_wake_phrase_and_threshold():
 
     assert params['wake_phrase']
     assert 0.45 <= params['wake_match_threshold'] <= 0.8
+    assert {'小林小林', '小玲小玲'} <= set(params['wake_aliases'])
+    assert 1.2 <= params['kws_keywords_score'] <= 1.5
+    assert params['kws_keywords_threshold'] >= 0.2

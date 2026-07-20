@@ -262,6 +262,12 @@ def test_auto_route_path_fails_clearly_when_no_routes_exist(tmp_path):
         patrol_route_store.resolve_route_file_path("auto", tmp_path)
 
 
+def test_auto_route_path_can_be_optional_when_no_routes_exist(tmp_path):
+    assert patrol_route_store.resolve_route_file_path(
+        "auto", tmp_path, required=False,
+    ) is None
+
+
 def test_explicit_absolute_route_path_is_preserved(tmp_path):
     route_path = tmp_path / "custom.json"
     route_path.write_text("{}", encoding="utf-8")

@@ -26,5 +26,8 @@ if [[ ! -d "${MODEL_DIR}" ]]; then
   rm -f "${ARCHIVE}"
 fi
 
-printf '%s\n' 'x iǎo l íng x iǎo l íng @小零小零' > "${MODEL_DIR}/keywords.txt"
+printf '%s\n' \
+  'x iǎo l íng x iǎo l íng @小零小零' \
+  'x iǎo l ín x iǎo l ín @小林小林' \
+  > "${MODEL_DIR}/keywords.txt"
 python3 "$(dirname "$0")/check_local_kws.py"

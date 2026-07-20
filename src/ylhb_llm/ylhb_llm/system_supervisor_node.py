@@ -318,9 +318,12 @@ class SystemSupervisorNode(Node):
         self.local_patrol_route_request = self.patrol_route_request
         self.local_default_navigation_map = self.default_navigation_map
         self.platform_context = {}
-        self.patrol_route_path = str(resolve_route_file_path(
-            self.patrol_route_request, self.route_directory,
-        ))
+        resolved_route_file = resolve_route_file_path(
+            self.patrol_route_request,
+            self.route_directory,
+            required=False,
+        )
+        self.patrol_route_path = str(resolved_route_file or '')
         self.keepout_route_path = self.patrol_route_path
         perception_model_path = str(self.get_parameter('perception_model_path').value).strip()
         self.perception_model_path = os.path.expanduser(perception_model_path) if perception_model_path else os.path.join(self.workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
