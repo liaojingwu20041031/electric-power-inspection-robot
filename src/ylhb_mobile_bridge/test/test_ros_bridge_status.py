@@ -166,6 +166,12 @@ def make_bridge(
     bridge._system_mode = "unknown"
     bridge._system_status = {}
     bridge._patrol_status = {}
+    bridge._platform_context = {}
+    bridge._inspection_navigation_key = ''
+    bridge._inspection_capture = None
+    bridge._inspection_last_moving_slot = None
+    bridge._inspection_arrival_keys = set()
+    bridge.inspection_image_moving_interval_sec = 10.0
     bridge._last_command_result_key = ""
     bridge._status_cache = {}
     bridge.host = '0.0.0.0'
@@ -564,6 +570,117 @@ def test_cloud_command_is_dispatched_only_after_ros_publish():
 
     assert bridge.platform_store.states[-1][1] == "DISPATCHED"
     assert len(bridge._system_command_pub.messages) == 1
+
+
+def test_start_cloud_command_preserves_task_id_when_present():
+    bridge = make_velocity_bridge()
+    bridge._cloud_command_queue = queue.Queue()
+    bridge._platform_context = {}
+    bridge.platform_store = FakePlatformStore()
+    bridge.enqueue_cloud_command({
+        "type": "START", "commandId": "command-1", "requestId": "request-1",
+        "taskId": "task-1", "executionId": "execution-1",
+        "deploymentId": "deployment-1", "executorRouteId": "route-1",
+    })
+
+    bridge._drain_cloud_commands()
+
+    payload = json.loads(bridge._system_command_pub.messages[-1].data)
+    assert bridge._platform_context["active_task_id"] == "task-1"
+    assert payload["active_task_id"] == "task-1"
+
+
+def test_formal_target_navigation_uses_stable_moving_time_slot(monkeypatch):
+    bridge = make_bridge()
+    bridge._platform_context = {
+        "active_task_id": "task-1",
+        "active_execution_id": "execution-1",
+    }
+    requests = []
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    monkeypatch.setattr(bridge, "_request_inspection_capture", requests.append)
+    status = SimpleNamespace(data=json.dumps({
+        "state": "running", "navigation_phase": "target",
+        "execution_id": "execution-1", "target_id": "checkpoint-1",
+        "target_index": 0, "cycle_index": 1,
+    }))
+
+    bridge._on_patrol_status(status)
+    bridge._on_patrol_status(status)
+
+    assert len(requests) == 1
+    assert requests[0]["kind"] == "MOVING"
+    assert requests[0]["capture_identity"] == (
+        "execution-1:1:0:checkpoint-1:MOVING:123"
+    )
+
+
+@pytest.mark.parametrize("state", ["paused", "manual_takeover", "returning_home", "waiting_loop", "succeeded"])
+def test_non_target_patrol_states_do_not_schedule_images(monkeypatch, state):
+    bridge = make_bridge()
+    bridge._platform_context = {
+        "active_task_id": "task-1",
+        "active_execution_id": "execution-1",
+    }
+    requests = []
+    monkeypatch.setattr(bridge, "_request_inspection_capture", requests.append)
+
+    bridge._on_patrol_status(SimpleNamespace(data=json.dumps({
+        "state": state, "navigation_phase": "target",
+        "execution_id": "execution-1", "target_id": "checkpoint-1",
+        "target_index": 0, "cycle_index": 1,
+    })))
+
+    assert requests == []
+
+
+def test_status_recovers_task_context_for_matching_execution(monkeypatch):
+    bridge = make_bridge()
+    bridge._platform_context = {"active_execution_id": "execution-1"}
+    bridge.platform_store = SimpleNamespace(
+        task_id_for_execution=lambda execution_id: (
+            "task-1" if execution_id == "execution-1" else ""
+        )
+    )
+    monkeypatch.setattr(bridge, "_handle_inspection_patrol_status", lambda _status: None)
+
+    bridge._on_patrol_status(SimpleNamespace(data=json.dumps({
+        "state": "running", "execution_id": "execution-1",
+    })))
+
+    assert bridge._platform_context["active_task_id"] == "task-1"
+
+
+def test_target_reached_replaces_moving_capture_with_one_arrival(monkeypatch):
+    bridge = make_bridge()
+    bridge.platform_store = FakePlatformStore()
+    bridge.platform_robot_id = "robot-1"
+    bridge.platform_boot_id = "boot-1"
+    bridge._platform_context = {
+        "active_task_id": "task-1",
+        "active_execution_id": "execution-1",
+    }
+    bridge._patrol_status = {
+        "state": "running", "navigation_phase": "target",
+        "execution_id": "execution-1", "target_id": "checkpoint-1",
+        "target_index": 0, "cycle_index": 2,
+    }
+    requests = []
+    cancellations = []
+    monkeypatch.setattr(bridge, "_request_inspection_capture", requests.append)
+    monkeypatch.setattr(bridge, "_cancel_inspection_capture", lambda kind=None: cancellations.append(kind))
+    event = SimpleNamespace(data=json.dumps({
+        "event": "target_reached", "execution_id": "execution-1",
+        "target_id": "checkpoint-1",
+    }))
+
+    bridge._on_patrol_event(event)
+    bridge._on_patrol_event(event)
+
+    assert cancellations == ["MOVING"]
+    assert len(requests) == 1
+    assert requests[0]["kind"] == "ARRIVAL"
+    assert requests[0]["capture_identity"] == "execution-1:2:0:checkpoint-1:ARRIVAL"
 
 
 def test_local_app_toggle_persists_without_changing_cloud_state():

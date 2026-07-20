@@ -19,7 +19,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import CompressedImage, Imu, LaserScan
 from std_msgs.msg import String
 from std_srvs.srv import SetBool
 
@@ -28,6 +28,7 @@ from .map_snapshot import (
     occupancy_grid_to_png_snapshot,
 )
 from .network_status import NetworkStatusProvider
+from .inspection_image_upload import prepare_inspection_image
 
 CHASSIS_SAFE_MAX_LINEAR_SPEED = 0.35
 CHASSIS_SAFE_MAX_ANGULAR_SPEED = 0.55
@@ -51,6 +52,14 @@ def map_qos_profile() -> QoSProfile:
         depth=1,
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
+def inspection_image_qos_profile() -> QoSProfile:
+    return QoSProfile(
+        depth=1,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.VOLATILE,
     )
 
 
@@ -83,6 +92,37 @@ class MobileRosBridge(Node):
             'patrol_status_topic'
         ).value
         self.patrol_event_topic = self.get_parameter('patrol_event_topic').value
+        self.inspection_image_topic = str(
+            self.get_parameter('inspection_image_topic').value
+        )
+        self.inspection_image_moving_interval_sec = max(
+            0.1,
+            float(self.get_parameter(
+                'inspection_image_moving_interval_sec'
+            ).value),
+        )
+        self.inspection_image_moving_max_edge = max(
+            1,
+            int(self.get_parameter('inspection_image_moving_max_edge').value),
+        )
+        self.inspection_image_moving_jpeg_quality = max(
+            1,
+            min(95, int(self.get_parameter(
+                'inspection_image_moving_jpeg_quality'
+            ).value)),
+        )
+        self.inspection_image_arrival_delay_sec = max(
+            0.0,
+            float(self.get_parameter(
+                'inspection_image_arrival_delay_sec'
+            ).value),
+        )
+        self.inspection_image_capture_timeout_sec = max(
+            0.1,
+            float(self.get_parameter(
+                'inspection_image_capture_timeout_sec'
+            ).value),
+        )
         self.max_linear_speed = self._safe_speed_limit(
             self.get_parameter('max_linear_speed').value,
             CHASSIS_SAFE_MAX_LINEAR_SPEED,
@@ -142,6 +182,12 @@ class MobileRosBridge(Node):
         self._stop_timer: Optional[threading.Timer] = None
         self._nav_goal_handle = None
         self.cloud_client = None
+        self.inspection_image_worker = None
+        self._inspection_capture: Optional[dict] = None
+        self._inspection_navigation_key = ''
+        self._inspection_last_moving_slot: Optional[int] = None
+        self._inspection_arrival_keys = set()
+        self._inspection_context_warning_key = ''
         self._local_app_enabled = os.environ.get(
             'YLHB_LOCAL_APP_ENABLED', 'true'
         ).strip().lower() in TRUE_VALUES
@@ -264,6 +310,12 @@ class MobileRosBridge(Node):
             'patrol_command_topic': '/patrol/command',
             'patrol_status_topic': '/patrol/status',
             'patrol_event_topic': '/patrol/event',
+            'inspection_image_topic': '/zed/zed_node/rgb/color/rect/image/compressed',
+            'inspection_image_moving_interval_sec': 10.0,
+            'inspection_image_moving_max_edge': 640,
+            'inspection_image_moving_jpeg_quality': 70,
+            'inspection_image_arrival_delay_sec': 1.0,
+            'inspection_image_capture_timeout_sec': 5.0,
             'status_rate_hz': 2.0,
             'map_stream_rate_hz': 1.0,
             'map_max_size_px': 1024,
@@ -375,9 +427,12 @@ class MobileRosBridge(Node):
 
     def _on_patrol_status(self, msg: String) -> None:
         self._patrol_status = self._parse_json_message(msg.data)
+        self._recover_platform_task_context(self._patrol_status)
+        self._handle_inspection_patrol_status(self._patrol_status)
 
     def _on_patrol_event(self, msg: String) -> None:
         event = self._parse_json_message(msg.data)
+        self._handle_inspection_patrol_event(event)
         if not event or not getattr(self, 'platform_store', None):
             return
         context = self._platform_context
@@ -415,6 +470,219 @@ class MobileRosBridge(Node):
                         'error_message': str(saved.get('reason') or saved.get('error') or 'route failed'),
                     })
                     self.platform_store.set_command_state(command_id, 'FAILED', failed)
+
+    def _recover_platform_task_context(self, status: dict) -> None:
+        execution_id = str(status.get('execution_id') or '')
+        context = self._platform_context
+        if not execution_id or (
+            context.get('active_execution_id') == execution_id
+            and context.get('active_task_id')
+        ):
+            return
+        store = getattr(self, 'platform_store', None)
+        if store is None:
+            return
+        task_id = store.task_id_for_execution(execution_id)
+        if task_id:
+            self.set_platform_context({
+                **context,
+                'active_task_id': task_id,
+                'active_execution_id': execution_id,
+            })
+
+    @staticmethod
+    def _inspection_navigation_identity(status: dict) -> str:
+        values = (
+            status.get('execution_id'), status.get('cycle_index'),
+            status.get('target_index'), status.get('target_id'),
+        )
+        return ':'.join(str(value) for value in values)
+
+    def _inspection_context(self, status: dict) -> Optional[dict]:
+        context = self._platform_context
+        task_id = str(context.get('active_task_id') or '')
+        active_execution = str(context.get('active_execution_id') or '')
+        execution_id = str(status.get('execution_id') or '')
+        checkpoint_id = str(status.get('target_id') or '')
+        formal_target = (
+            str(status.get('state') or '') == 'running'
+            and str(status.get('navigation_phase') or '') == 'target'
+            and execution_id and checkpoint_id
+            and status.get('cycle_index') is not None
+            and status.get('target_index') is not None
+        )
+        if not formal_target:
+            return None
+        if not task_id or execution_id != active_execution:
+            warning_key = f'{execution_id}:{active_execution}:{task_id}'
+            if warning_key != self._inspection_context_warning_key:
+                self._inspection_context_warning_key = warning_key
+                self.get_logger().warning(
+                    'inspection image capture skipped: task/execution context missing or mismatched'
+                )
+            return None
+        self._inspection_context_warning_key = ''
+        return {
+            'task_id': task_id,
+            'execution_id': execution_id,
+            'checkpoint_id': checkpoint_id,
+            'navigation_identity': self._inspection_navigation_identity(status),
+        }
+
+    def _handle_inspection_patrol_status(self, status: dict) -> None:
+        capture_context = self._inspection_context(status)
+        if capture_context is None:
+            self._inspection_navigation_key = ''
+            self._inspection_last_moving_slot = None
+            self._cancel_inspection_capture('MOVING')
+            return
+        navigation_key = capture_context['navigation_identity']
+        if navigation_key in self._inspection_arrival_keys:
+            return
+        if navigation_key != self._inspection_navigation_key:
+            self._inspection_navigation_key = navigation_key
+            self._inspection_last_moving_slot = None
+        slot = int(time.time() // self.inspection_image_moving_interval_sec)
+        if slot == self._inspection_last_moving_slot:
+            return
+        self._inspection_last_moving_slot = slot
+        self._request_inspection_capture({
+            **capture_context,
+            'kind': 'MOVING',
+            'capture_identity': f'{navigation_key}:MOVING:{slot}',
+        })
+
+    def _handle_inspection_patrol_event(self, event: dict) -> None:
+        if str(event.get('event') or '') != 'target_reached':
+            return
+        capture_context = self._inspection_context(self._patrol_status)
+        if capture_context is None:
+            return
+        if (
+            str(event.get('execution_id') or '') != capture_context['execution_id']
+            or str(event.get('target_id') or '') != capture_context['checkpoint_id']
+        ):
+            return
+        navigation_key = capture_context['navigation_identity']
+        if navigation_key in self._inspection_arrival_keys:
+            return
+        self._inspection_arrival_keys.add(navigation_key)
+        self._cancel_inspection_capture('MOVING')
+        self._request_inspection_capture({
+            **capture_context,
+            'kind': 'ARRIVAL',
+            'capture_identity': f'{navigation_key}:ARRIVAL',
+        })
+
+    def _request_inspection_capture(self, request: dict) -> None:
+        worker = getattr(self, 'inspection_image_worker', None)
+        if worker is None or not worker.capture_allowed():
+            return
+        current = self._inspection_capture
+        if current and current.get('capture_identity') == request['capture_identity']:
+            return
+        if current and current.get('kind') == 'ARRIVAL' and request['kind'] == 'MOVING':
+            return
+        self._cancel_inspection_capture()
+        self._inspection_capture = dict(request)
+        delay = (
+            self.inspection_image_arrival_delay_sec
+            if request['kind'] == 'ARRIVAL' else 0.0
+        )
+        if delay:
+            self._inspection_capture['delay_timer'] = self._inspection_one_shot_timer(
+                delay,
+                lambda: self._start_inspection_capture(request['capture_identity']),
+            )
+        else:
+            self._start_inspection_capture(request['capture_identity'])
+
+    def _inspection_one_shot_timer(self, delay: float, callback):
+        holder = {}
+
+        def run_once():
+            timer = holder.get('timer')
+            if timer is not None:
+                self.destroy_timer(timer)
+            callback()
+
+        holder['timer'] = self.create_timer(max(0.001, delay), run_once)
+        return holder['timer']
+
+    def _start_inspection_capture(self, capture_identity: str) -> None:
+        current = self._inspection_capture
+        if not current or current.get('capture_identity') != capture_identity:
+            return
+        current.pop('delay_timer', None)
+        current['subscription'] = self.create_subscription(
+            CompressedImage,
+            self.inspection_image_topic,
+            lambda msg: self._on_inspection_image(msg, capture_identity),
+            inspection_image_qos_profile(),
+        )
+        current['timeout_timer'] = self._inspection_one_shot_timer(
+            self.inspection_image_capture_timeout_sec,
+            lambda: self._inspection_capture_timeout(capture_identity),
+        )
+
+    def _on_inspection_image(
+        self, msg: CompressedImage, capture_identity: str,
+    ) -> None:
+        current = self._inspection_capture
+        if not current or current.get('capture_identity') != capture_identity:
+            return
+        worker = getattr(self, 'inspection_image_worker', None)
+        if worker is None:
+            self._cancel_inspection_capture()
+            return
+        try:
+            image = prepare_inspection_image(
+                bytes(msg.data), str(msg.format or ''), current['kind'],
+                self.inspection_image_moving_max_edge,
+                self.inspection_image_moving_jpeg_quality,
+            )
+        except Exception:
+            worker.note_capture_error('CAPTURE_INVALID_FRAME')
+            return
+        request = {
+            key: current[key]
+            for key in (
+                'capture_identity', 'task_id', 'execution_id',
+                'checkpoint_id', 'kind',
+            )
+        }
+        request['captured_at'] = _now()
+        try:
+            worker.enqueue(request, image)
+            worker.clear_capture_error()
+        except Exception as exc:
+            worker.note_capture_error(
+                f'CAPTURE_QUEUE_ERROR: {type(exc).__name__}'
+            )
+        finally:
+            self._cancel_inspection_capture()
+
+    def _inspection_capture_timeout(self, capture_identity: str) -> None:
+        current = self._inspection_capture
+        if not current or current.get('capture_identity') != capture_identity:
+            return
+        worker = getattr(self, 'inspection_image_worker', None)
+        if worker is not None:
+            worker.note_capture_error('CAPTURE_TIMEOUT')
+        self._cancel_inspection_capture()
+
+    def _cancel_inspection_capture(self, kind: Optional[str] = None) -> None:
+        current = self._inspection_capture
+        if not current or (kind and current.get('kind') != kind):
+            return
+        subscription = current.get('subscription')
+        if subscription is not None:
+            self.destroy_subscription(subscription)
+        for name in ('delay_timer', 'timeout_timer'):
+            timer = current.get(name)
+            if timer is not None:
+                self.destroy_timer(timer)
+        self._inspection_capture = None
 
     def _age(self, last_time: Optional[float]) -> Optional[float]:
         return None if last_time is None else round(time.time() - last_time, 3)
@@ -723,13 +991,14 @@ class MobileRosBridge(Node):
             request_id = str(command.get('requestId') or '')
             execution_id = str(command.get('executionId') or '')
             deployment_id = str(command.get('deploymentId') or '')
+            task_id = str(command.get('taskId') or '')
             mapping = {'START': 'start_platform_patrol', 'PAUSE': 'pause_patrol', 'RESUME': 'resume_patrol', 'TAKEOVER': 'takeover_patrol', 'CANCEL': 'cancel_patrol'}
             if command_type not in mapping or not command_id or not request_id or not execution_id:
                 self._record_cloud_queue_result(command, 'REJECTED', 'command_rejected', 'INVALID_COMMAND', 'cloud command queue item is incomplete')
                 continue
             context = {**self._platform_context, 'active_command_id': command_id, 'active_request_id': request_id, 'active_execution_id': execution_id, 'active_deployment_id': deployment_id}
             if command_type == 'START':
-                context.update({'active_route_revision_id': str(command.get('routeRevisionId') or ''), 'active_route_path': str(command.get('routePath') or ''), 'active_map_yaml_path': str(command.get('mapYamlPath') or ''), 'executor_route_id': str(command.get('executorRouteId') or '')})
+                context.update({'active_task_id': task_id, 'active_route_revision_id': str(command.get('routeRevisionId') or ''), 'active_route_path': str(command.get('routePath') or ''), 'active_map_yaml_path': str(command.get('mapYamlPath') or ''), 'executor_route_id': str(command.get('executorRouteId') or '')})
             self.set_platform_context(context)
             try:
                 self.publish_system_command(mapping[command_type], command_id=command_id, request_id=request_id, execution_id=execution_id, deployment_id=deployment_id, profile=str(command.get('profile') or 'inspection'), **context)
@@ -749,7 +1018,13 @@ class MobileRosBridge(Node):
         context.setdefault('active_deployment_id', str(patrol.get('deployment_id') or ''))
         context.setdefault('active_request_id', str(patrol.get('request_id') or ''))
         context.setdefault('active_command_id', str(patrol.get('command_id') or ''))
-        self._cloud_snapshot = {'state': str(patrol.get('state') or 'idle'), 'mapPose': status.get('mapPose'), 'odomPose': status.get('odomPose'), 'platformContext': context, 'health': {'odomAgeSec': status.get('last_odom_age_sec'), 'scanAgeSec': status.get('last_scan_age_sec'), 'imuAgeSec': status.get('last_imu_age_sec'), 'nav2': status.get('nav2_status'), 'systemMode': status.get('system_mode'), 'lastError': patrol.get('last_error') or self._system_status.get('last_error')}}
+        image_worker = getattr(self, 'inspection_image_worker', None)
+        image_status = image_worker.status() if image_worker else {
+            'enabled': False, 'state': 'DISABLED', 'pendingCount': 0,
+            'failedCount': 0, 'currentCaptureKind': '',
+            'lastSuccessAt': '', 'lastError': '',
+        }
+        self._cloud_snapshot = {'state': str(patrol.get('state') or 'idle'), 'mapPose': status.get('mapPose'), 'odomPose': status.get('odomPose'), 'platformContext': context, 'health': {'odomAgeSec': status.get('last_odom_age_sec'), 'scanAgeSec': status.get('last_scan_age_sec'), 'imuAgeSec': status.get('last_imu_age_sec'), 'nav2': status.get('nav2_status'), 'systemMode': status.get('system_mode'), 'lastError': patrol.get('last_error') or self._system_status.get('last_error'), 'inspectionImageUpload': image_status}}
         if self.cloud_client:
             self.publish_cloud_status_now()
         self._publish_local_app_status()
@@ -947,6 +1222,9 @@ class MobileRosBridge(Node):
 
     def set_platform_context(self, context: dict) -> None:
         self._platform_context = dict(context)
+
+    def stop_inspection_capture(self) -> None:
+        self._cancel_inspection_capture()
 
     def has_system_supervisor(self) -> bool:
         return bool(self._system_status)

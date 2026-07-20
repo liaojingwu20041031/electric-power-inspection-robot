@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from .platform_store import DeploymentStore, PlatformStoreError
 from .map_upload import MapUploadWorker
+from .inspection_image_upload import InspectionImageUploadWorker
 
 
 STATE_MAP = {"idle": "idle", "starting": "starting", "running": "running", "paused": "paused", "manual_takeover": "manual_takeover", "returning_home": "returning_home", "waiting_loop": "waiting_loop", "succeeded": "succeeded", "failed": "failed", "canceled": "canceled", "cancelled": "canceled"}
@@ -93,7 +94,7 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
         execution = store.upsert_execution(execution_id, deployment_id, request_id, "starting")
         directory = Path(deployment["directory"])
         command_id = str(body.get("commandId") or uuid.uuid4())
-        platform_context = {"active_execution_id": execution_id, "active_deployment_id": deployment_id, "active_request_id": request_id, "active_command_id": command_id, "active_route_revision_id": deployment["manifest"]["routeRevisionId"], "active_route_path": deployment["routePath"], "active_map_yaml_path": deployment["mapYamlPath"], "executor_route_id": executor_route_id}
+        platform_context = {"active_task_id": str(body.get("taskId") or ""), "active_execution_id": execution_id, "active_deployment_id": deployment_id, "active_request_id": request_id, "active_command_id": command_id, "active_route_revision_id": deployment["manifest"]["routeRevisionId"], "active_route_path": deployment["routePath"], "active_map_yaml_path": deployment["mapYamlPath"], "executor_route_id": executor_route_id}
         bridge.set_platform_context(platform_context)
         bridge.publish_system_command("start_platform_patrol", command_id=command_id, profile=str(body.get("profile") or "inspection"), **platform_context)
         return {"accepted": True, "state": "STARTING", "executionId": execution["execution_id"]}
@@ -131,4 +132,5 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
     from .platform_cloud_client import PlatformCloudClient
     bridge.cloud_client = PlatformCloudClient(store, bridge, robot_id, boot_id)
     bridge.map_upload_worker = MapUploadWorker(store, robot_id)
+    bridge.inspection_image_worker = InspectionImageUploadWorker(store, robot_id)
     return store

@@ -739,10 +739,13 @@ def main() -> None:
     executor_thread.start()
     bridge.cloud_client.start()
     bridge.map_upload_worker.start()
+    bridge.inspection_image_worker.start()
 
     try:
         uvicorn.run(app, host=host, port=port, access_log=False)
     finally:
+        bridge.stop_inspection_capture()
+        bridge.inspection_image_worker.stop()
         bridge.map_upload_worker.stop()
         bridge.cloud_client.stop()
         bridge.stop_motion()

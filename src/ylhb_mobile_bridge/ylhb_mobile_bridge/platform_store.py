@@ -117,6 +117,29 @@ class DeploymentStore:
                   created_at REAL NOT NULL,
                   updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS inspection_image_uploads (
+                  capture_task_id TEXT PRIMARY KEY,
+                  capture_identity TEXT NOT NULL UNIQUE,
+                  idempotency_key TEXT NOT NULL UNIQUE,
+                  task_id TEXT NOT NULL,
+                  execution_id TEXT NOT NULL,
+                  checkpoint_id TEXT NOT NULL,
+                  capture_kind TEXT NOT NULL CHECK (capture_kind IN ('MOVING','ARRIVAL')),
+                  captured_at TEXT NOT NULL,
+                  image_sha256 TEXT NOT NULL,
+                  file_path TEXT NOT NULL,
+                  file_size INTEGER NOT NULL,
+                  status TEXT NOT NULL CHECK (status IN (
+                    'PENDING','FAILED_RETRYABLE','FAILED_FINAL',
+                    'CREDENTIAL_BLOCKED','SUCCEEDED'
+                  )),
+                  retry_count INTEGER NOT NULL DEFAULT 0,
+                  next_retry_at REAL NOT NULL DEFAULT 0,
+                  image_id TEXT NOT NULL DEFAULT '',
+                  last_error TEXT NOT NULL DEFAULT '',
+                  created_at REAL NOT NULL,
+                  updated_at REAL NOT NULL
+                );
             """)
 
     def _default_map_yaml_path(self) -> Path | None:
@@ -345,6 +368,25 @@ class DeploymentStore:
             row = db.execute("SELECT COUNT(*) AS count FROM processed_commands WHERE state IN ('RECEIVED','ACKED','DISPATCHED')").fetchone()
         return int(row["count"])
 
+    def task_id_for_execution(self, execution_id: str) -> str:
+        if not execution_id:
+            return ""
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT payload_json FROM processed_commands "
+                "WHERE execution_id=? AND command_type='START' "
+                "ORDER BY created_at DESC",
+                (execution_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                task_id = str(json.loads(row["payload_json"]).get("taskId") or "")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if task_id:
+                return task_id
+        return ""
+
     def pending_event_count(self, after_sequence: int | None = None) -> int:
         cursor = int(self.cloud_state("last_uploaded_sequence", "0") or 0) if after_sequence is None else max(0, int(after_sequence))
         with self._connection() as db:
@@ -484,4 +526,130 @@ class DeploymentStore:
                 "UPDATE map_uploads SET yaml_path='',pgm_path='',updated_at=? "
                 "WHERE task_id=?",
                 (time.time(), task_id),
+            )
+
+    @staticmethod
+    def _inspection_image_upload_dict(
+        row: sqlite3.Row | None,
+    ) -> Dict[str, Any] | None:
+        return dict(row) if row is not None else None
+
+    def inspection_image_upload_by_identity(
+        self, capture_identity: str,
+    ) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM inspection_image_uploads WHERE capture_identity=?",
+                (capture_identity,),
+            ).fetchone()
+        return self._inspection_image_upload_dict(row)
+
+    def inspection_image_upload(
+        self, capture_task_id: str,
+    ) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM inspection_image_uploads WHERE capture_task_id=?",
+                (capture_task_id,),
+            ).fetchone()
+        return self._inspection_image_upload_dict(row)
+
+    def create_inspection_image_upload(
+        self, record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        stamp = time.time()
+        with self._connection() as db:
+            db.execute(
+                "INSERT INTO inspection_image_uploads ("
+                "capture_task_id,capture_identity,idempotency_key,task_id,"
+                "execution_id,checkpoint_id,capture_kind,captured_at,"
+                "image_sha256,file_path,file_size,status,retry_count,"
+                "next_retry_at,image_id,last_error,created_at,updated_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',0,0,'','',?,?)",
+                (
+                    record["capture_task_id"], record["capture_identity"],
+                    record["idempotency_key"], record["task_id"],
+                    record["execution_id"], record["checkpoint_id"],
+                    record["capture_kind"], record["captured_at"],
+                    record["image_sha256"], record["file_path"],
+                    record["file_size"], stamp, stamp,
+                ),
+            )
+        return self.inspection_image_upload(record["capture_task_id"]) or {}
+
+    def next_due_inspection_image_upload(self) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM inspection_image_uploads WHERE status='PENDING' OR "
+                "(status='FAILED_RETRYABLE' AND next_retry_at<=?) "
+                "ORDER BY created_at LIMIT 1",
+                (time.time(),),
+            ).fetchone()
+        return self._inspection_image_upload_dict(row)
+
+    def finish_inspection_image_upload(
+        self,
+        capture_task_id: str,
+        status: str,
+        *,
+        image_id: str = "",
+        error: str = "",
+        next_retry_at: float = 0.0,
+    ) -> Dict[str, Any]:
+        if status not in {
+            "FAILED_RETRYABLE", "FAILED_FINAL", "CREDENTIAL_BLOCKED", "SUCCEEDED",
+        }:
+            raise ValueError("invalid inspection image upload status")
+        with self._connection() as db:
+            db.execute(
+                "UPDATE inspection_image_uploads SET status=?,"
+                "retry_count=retry_count+1,next_retry_at=?,image_id=?,"
+                "last_error=?,updated_at=? WHERE capture_task_id=?",
+                (
+                    status, next_retry_at, image_id, error[:300], time.time(),
+                    capture_task_id,
+                ),
+            )
+        return self.inspection_image_upload(capture_task_id) or {}
+
+    def inspection_image_upload_diagnostics(self) -> Dict[str, Any]:
+        with self._connection() as db:
+            counts = db.execute(
+                "SELECT "
+                "SUM(CASE WHEN status IN ('PENDING','FAILED_RETRYABLE') THEN 1 ELSE 0 END) pending_count, "
+                "SUM(CASE WHEN status IN ('FAILED_FINAL','CREDENTIAL_BLOCKED') THEN 1 ELSE 0 END) failed_count, "
+                "SUM(CASE WHEN status='CREDENTIAL_BLOCKED' THEN 1 ELSE 0 END) credential_blocked "
+                "FROM inspection_image_uploads"
+            ).fetchone()
+            last_success = db.execute(
+                "SELECT updated_at FROM inspection_image_uploads "
+                "WHERE status='SUCCEEDED' ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            last_error = db.execute(
+                "SELECT last_error FROM inspection_image_uploads "
+                "WHERE last_error<>'' ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+        return {
+            "pending_count": int(counts["pending_count"] or 0),
+            "failed_count": int(counts["failed_count"] or 0),
+            "credential_blocked": bool(counts["credential_blocked"] or 0),
+            "last_success_at": float(last_success["updated_at"]) if last_success else 0.0,
+            "last_error": str(last_error["last_error"]) if last_error else "",
+        }
+
+    def inspection_image_uploads_for_cleanup(self) -> List[Dict[str, Any]]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT * FROM inspection_image_uploads "
+                "WHERE status='FAILED_FINAL' AND file_path<>'' "
+                "ORDER BY created_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_inspection_image_snapshot(self, capture_task_id: str) -> None:
+        with self._connection() as db:
+            db.execute(
+                "UPDATE inspection_image_uploads SET file_path='',file_size=0,"
+                "updated_at=? WHERE capture_task_id=?",
+                (time.time(), capture_task_id),
             )

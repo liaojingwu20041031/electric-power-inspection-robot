@@ -1,10 +1,12 @@
 import hashlib
+import io
 import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from ylhb_mobile_bridge.platform_cloud_client import PlatformCloudClient
 from ylhb_mobile_bridge.platform_store import DeploymentStore, canonical_json
@@ -209,6 +211,110 @@ def test_map_upload_identity_snapshot_and_persistent_states(tmp_path, monkeypatc
     limited = MapUploadWorker(DeploymentStore(tmp_path / 'limited'), 'robot-1')
     with pytest.raises(ValueError, match='disk limit'):
         limited.enqueue(yaml_path, snapshot)
+
+
+def test_start_command_task_id_can_be_restored_without_changing_start_contract(tmp_path):
+    store = DeploymentStore(tmp_path / 'platform')
+    command = {
+        'commandId': 'command-1', 'requestId': 'request-1', 'type': 'START',
+        'executionId': 'execution-1', 'deploymentId': 'deployment-1',
+        'executorRouteId': 'route-1',
+    }
+
+    store.receive_cloud_command(command)
+    assert store.task_id_for_execution('execution-1') == ''
+
+    second = {
+        **command, 'commandId': 'command-2', 'requestId': 'request-2',
+        'executionId': 'execution-2', 'taskId': 'task-2',
+    }
+    store.receive_cloud_command(second)
+    assert store.task_id_for_execution('execution-2') == 'task-2'
+
+
+def test_inspection_image_is_persisted_deduplicated_and_removed_after_success(tmp_path, monkeypatch):
+    from ylhb_mobile_bridge.inspection_image_upload import InspectionImageUploadWorker
+
+    monkeypatch.setenv('YLHB_INSPECTION_IMAGE_UPLOAD_ENABLED', 'true')
+    monkeypatch.setenv('YLHB_CLOUD_BASE_URL', 'https://cloud.example')
+    monkeypatch.setenv('YLHB_CLOUD_ROBOT_TOKEN', 'secret')
+    store = DeploymentStore(tmp_path / 'platform')
+    worker = InspectionImageUploadWorker(store, 'robot-1')
+    request = {
+        'capture_identity': 'execution-1:1:0:checkpoint-1:MOVING:123',
+        'task_id': 'task-1', 'execution_id': 'execution-1',
+        'checkpoint_id': 'checkpoint-1', 'kind': 'MOVING',
+        'captured_at': '2026-07-20T00:00:00+00:00',
+    }
+    created = worker.enqueue(request, b'jpeg-bytes')
+    duplicate = worker.enqueue(request, b'different-bytes')
+    record = store.inspection_image_upload(created['capture_task_id'])
+
+    assert created['task_created'] is True
+    assert duplicate['task_created'] is False
+    assert duplicate['capture_task_id'] == created['capture_task_id']
+    assert Path(record['file_path']).read_bytes() == b'jpeg-bytes'
+    idempotency_key = record['idempotency_key']
+    monkeypatch.setattr(worker, '_upload', lambda _record: {
+        'taskId': 'task-1', 'executionId': 'execution-1',
+        'checkpointId': 'checkpoint-1', 'imageId': 'image-1',
+    })
+
+    worker._process(record)
+
+    succeeded = store.inspection_image_upload(created['capture_task_id'])
+    assert succeeded['status'] == 'SUCCEEDED'
+    assert succeeded['idempotency_key'] == idempotency_key
+    assert succeeded['image_id'] == 'image-1'
+    assert not Path(record['file_path']).exists()
+
+
+def test_inspection_image_retry_reuses_file_and_idempotency_key(tmp_path, monkeypatch):
+    from ylhb_mobile_bridge.inspection_image_upload import (
+        InspectionImageUploadError,
+        InspectionImageUploadWorker,
+    )
+
+    monkeypatch.setenv('YLHB_INSPECTION_IMAGE_UPLOAD_ENABLED', 'true')
+    monkeypatch.setenv('YLHB_CLOUD_BASE_URL', 'https://cloud.example')
+    monkeypatch.setenv('YLHB_CLOUD_ROBOT_TOKEN', 'secret')
+    store = DeploymentStore(tmp_path / 'platform')
+    worker = InspectionImageUploadWorker(store, 'robot-1')
+    created = worker.enqueue({
+        'capture_identity': 'execution-1:1:0:checkpoint-1:MOVING:123',
+        'task_id': 'task-1', 'execution_id': 'execution-1',
+        'checkpoint_id': 'checkpoint-1', 'kind': 'MOVING',
+        'captured_at': '2026-07-20T00:00:00+00:00',
+    }, b'jpeg-bytes')
+    record = store.inspection_image_upload(created['capture_task_id'])
+    path = record['file_path']
+    key = record['idempotency_key']
+    monkeypatch.setattr(worker, '_upload', lambda _record: (_ for _ in ()).throw(
+        InspectionImageUploadError('HTTP 503', retryable=True)
+    ))
+
+    worker._process(record)
+
+    retry = store.inspection_image_upload(created['capture_task_id'])
+    assert retry['status'] == 'FAILED_RETRYABLE'
+    assert retry['idempotency_key'] == key
+    assert retry['file_path'] == path
+    assert Path(path).read_bytes() == b'jpeg-bytes'
+
+
+def test_moving_image_longest_edge_is_resized_but_arrival_jpeg_is_unchanged():
+    from ylhb_mobile_bridge.inspection_image_upload import prepare_inspection_image
+
+    source = io.BytesIO()
+    Image.new('RGB', (600, 1200), color=(1, 2, 3)).save(source, format='JPEG', quality=90)
+    original = source.getvalue()
+
+    moving = prepare_inspection_image(original, 'jpeg', 'MOVING', 640, 70)
+    arrival = prepare_inspection_image(original, 'jpeg', 'ARRIVAL', 640, 70)
+
+    with Image.open(io.BytesIO(moving)) as image:
+        assert image.size == (320, 640)
+    assert arrival == original
 
 
 def test_deployment_hashes_raw_route_and_publishes_next_local_route(tmp_path):

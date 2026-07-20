@@ -17,6 +17,12 @@ mobile_bridge:
     patrol_command_topic: "/patrol/command"
     patrol_status_topic: "/patrol/status"
     patrol_event_topic: "/patrol/event"
+    inspection_image_topic: "/zed/zed_node/rgb/color/rect/image/compressed"
+    inspection_image_moving_interval_sec: 10.0
+    inspection_image_moving_max_edge: 640
+    inspection_image_moving_jpeg_quality: 70
+    inspection_image_arrival_delay_sec: 1.0
+    inspection_image_capture_timeout_sec: 5.0
     status_rate_hz: 2.0
     map_stream_rate_hz: 1.0
     map_max_size_px: 1024
