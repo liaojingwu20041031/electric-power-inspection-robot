@@ -1070,6 +1070,8 @@ class PatrolExecutorNode(Node):
             goal_handle.cancel_goal_async()
             self._finish_navigation(context, False, notify=False)
             return
+        context["navigation_phase"] = "target"
+        self._publish_current_status()
         self._active_goal_handle = goal_handle
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(

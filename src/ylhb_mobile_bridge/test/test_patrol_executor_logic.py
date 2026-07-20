@@ -675,6 +675,19 @@ def test_navigation_waits_for_nav2_without_immediate_failure():
     assert node.statuses[-1]["navigation_phase"] == "waiting_nav2"
 
 
+def test_accepted_navigation_goal_publishes_target_phase():
+    node = make_timer_node(
+        FakeActionClient(ready=True, goal_handles=[FakeGoalHandle()])
+    )
+
+    node._request_navigation(
+        {"x": 1.0, "y": 2.0, "yaw": 0.0}, 9.0, lambda _ok: None
+    )
+
+    assert node._active_navigation["navigation_phase"] == "target"
+    assert node.statuses[-1]["navigation_phase"] == "target"
+
+
 def test_navigation_wait_timeout_reports_nav2_unavailable():
     node = make_timer_node(FakeActionClient(ready=False))
     callbacks = []
