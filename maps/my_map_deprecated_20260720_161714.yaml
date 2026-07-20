@@ -1,9 +1,9 @@
-image: my_map_deprecated_20260715_103356.pgm
+image: my_map_deprecated_20260720_161714.pgm
 mode: trinary
 resolution: 0.025
 origin:
-- -6.09
-- -13.3
+- -3.93
+- -2.91
 - 0
 negate: 0
 occupied_thresh: 0.65

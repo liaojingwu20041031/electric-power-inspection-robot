@@ -6,6 +6,8 @@ import threading
 import time
 from typing import List, Optional
 
+os.environ.setdefault('QT_QUICK_BACKEND', 'software')
+
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from PyQt5.QtCore import QTimer, QUrl

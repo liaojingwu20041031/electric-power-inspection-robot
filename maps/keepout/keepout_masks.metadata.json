@@ -1,14 +1,14 @@
 {
-  "map_yaml_sha256": "fdae1202aef85258eef28163a0ee1ca78e51ad8715985213b9207c96031607d7",
-  "map_pgm_sha256": "952e407bd2c076ac77907338a8c5cc7ce51f2e38e0f0dfab5fbd31cc0d924435",
-  "route_sha256": "bf4a735a389318d66a901ded4b57a6c7f78c251fabebd895eac066ac765fcfb1",
-  "nav2_params_sha256": "2aa6abe1cce7fc33571c234279df6be17739531e2586e36bc11f72fcca8e7b27",
-  "width": 391,
-  "height": 649,
+  "map_yaml_sha256": "b991e7533c13657c4fbb50c38c5d7a435eb75422457471b9b572c64cc0998f67",
+  "map_pgm_sha256": "18de8bf5375fda275724653d9a60f8143283cd4c58088d8b8dda2ed71d4c43e6",
+  "route_sha256": "57f558132153f73f3b03419423089f06be5909494c5a41ff878f1fd664126df6",
+  "nav2_params_sha256": "14e5540f95b84370d7bc40dc4151214cdef509a734e863f825a2a678c75515fa",
+  "width": 376,
+  "height": 652,
   "resolution_m": 0.025,
   "origin": [
-    -3.5,
-    -3.15,
+    -3.52,
+    -3.27,
     0.0
   ],
   "zones": {
@@ -17,18 +17,21 @@
     },
     "keepout_002": {
       "hard_padding_m": 0.025
+    },
+    "keepout_003": {
+      "hard_padding_m": 0.025
     }
   },
   "keepout_mode": "active",
-  "enabled_hard_keepout_count": 2,
+  "enabled_hard_keepout_count": 3,
   "global_mask": {
-    "hard_cells": 1468,
+    "hard_cells": 1252,
     "weighted_cells": 0,
-    "free_cells": 252291
+    "free_cells": 243900
   },
   "local_mask": {
-    "hard_cells": 1468,
+    "hard_cells": 1252,
     "weighted_cells": 0,
-    "free_cells": 252291
+    "free_cells": 243900
   }
 }
