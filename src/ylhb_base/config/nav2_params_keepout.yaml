@@ -146,7 +146,7 @@ controller_server:
     goal_checker_plugins: ["goal_checker"]
 
     FollowPath:
-      # 大角度起步时先原地对齐路径，再交回原有 DWB 局部规划器。
+      # 大角度起步时先原地对齐路径；末端朝向交给 DWB RotateToGoal。
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "dwb_core::DWBLocalPlanner"
       angular_dist_threshold: 0.785
@@ -156,7 +156,7 @@ controller_server:
       rotate_to_heading_angular_vel: 0.55
       max_angular_accel: 0.80
       simulate_ahead_time: 1.0
-      rotate_to_goal_heading: True
+      rotate_to_goal_heading: False
       closed_loop: True
       debug_trajectory_details: False
       # 差速底盘不使用横向速度 y。
@@ -167,10 +167,11 @@ controller_server:
       max_vel_y: 0.0
       # Nav2 输出角速度上限，给大角度掉头留出有效角速度。
       max_vel_theta: 0.65
-      min_speed_xy: 0.0
+      # 设为小正值，使 DWB 在纯旋转时能过滤低于底盘死区的角速度。
+      min_speed_xy: 0.01
       # 平面合速度上限，与 max_vel_x 保持一致。
       max_speed_xy: 0.12
-      min_speed_theta: 0.25
+      min_speed_theta: 0.50
       # 加速度/减速度限制，避免 /cmd_vel 突变。
       acc_lim_x: 0.30
       acc_lim_y: 0.0
@@ -180,7 +181,8 @@ controller_server:
       decel_lim_theta: -0.80
       vx_samples: 4
       vy_samples: 5
-      vtheta_samples: 5
+      # 14 个角速度样本包含约 0.55rad/s，匹配实车可靠起转基线。
+      vtheta_samples: 14
       # DWB 前向仿真时间和采样分辨率。
       sim_time: 1.7
       linear_granularity: 0.05
@@ -217,7 +219,7 @@ controller_server:
       # 目标检查器：明确使用 SimpleGoalChecker，消除默认 goal checker 警告。
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.08
-      yaw_goal_tolerance: 0.08
+      yaw_goal_tolerance: 0.05
       stateful: True
 
 local_costmap:

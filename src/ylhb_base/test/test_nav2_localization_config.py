@@ -229,7 +229,7 @@ def test_rotation_shim_handles_large_initial_heading_changes():
     assert 0.55 <= follow_path["rotate_to_heading_angular_vel"] <= smoother["max_velocity"][2]
     assert follow_path["max_angular_accel"] == smoother["max_accel"][2]
     assert follow_path["simulate_ahead_time"] > 0
-    assert follow_path["rotate_to_goal_heading"] is True
+    assert follow_path["rotate_to_goal_heading"] is False
     assert follow_path["closed_loop"] is True
 
 
@@ -312,14 +312,25 @@ def test_dwb_low_speed_limits_match_velocity_smoother():
     assert follow_path["max_speed_xy"] == 0.12
     assert follow_path["max_vel_theta"] == smoother["max_velocity"][2]
     assert follow_path["max_vel_theta"] >= 0.65
-    assert follow_path["min_speed_theta"] >= 0.25
+    assert follow_path["min_speed_xy"] > 0.0
+    assert 0.50 <= follow_path["min_speed_theta"] <= follow_path["rotate_to_heading_angular_vel"]
     assert follow_path["acc_lim_theta"] >= 0.80
     assert follow_path["decel_lim_theta"] <= -0.80
     assert base["max_angular_speed"] >= follow_path["max_vel_theta"]
     assert zlac["profile_acceleration"] >= 200
     assert zlac["profile_deceleration"] >= 200
     assert follow_path["vx_samples"] >= 3
-    assert follow_path["vtheta_samples"] >= 3
+    assert follow_path["vtheta_samples"] >= 14
+    theta_step = 2 * follow_path["max_vel_theta"] / (follow_path["vtheta_samples"] - 1)
+    theta_samples = [
+        -follow_path["max_vel_theta"] + index * theta_step
+        for index in range(follow_path["vtheta_samples"])
+    ]
+    assert any(
+        follow_path["min_speed_theta"] <= sample
+        <= follow_path["rotate_to_heading_angular_vel"] + 1e-9
+        for sample in theta_samples
+    )
     assert 1.0 <= follow_path["sim_time"] <= 3.0
     assert follow_path["linear_granularity"] > 0
     assert follow_path["angular_granularity"] > 0
@@ -358,12 +369,14 @@ def test_navigation_goal_tolerances_are_conservative_and_consistent():
     controller = config["controller_server"]["ros__parameters"]
     follow_path = controller["FollowPath"]
     goal_checker = controller["goal_checker"]
+    keepout_goal_checker = load_keepout_nav2_params()["controller_server"]["ros__parameters"]["goal_checker"]
     planner = config["planner_server"]["ros__parameters"]["GridBased"]
 
+    assert goal_checker == keepout_goal_checker
     assert 0.08 <= follow_path["xy_goal_tolerance"] <= 0.15
     assert 0.08 <= goal_checker["xy_goal_tolerance"] <= 0.15
     assert abs(follow_path["xy_goal_tolerance"] - goal_checker["xy_goal_tolerance"]) <= 0.01
-    assert 0.08 <= goal_checker["yaw_goal_tolerance"] <= 0.15
+    assert 0.04 <= goal_checker["yaw_goal_tolerance"] <= 0.05
     assert 0.08 <= planner["tolerance"] <= 0.10
 
 
