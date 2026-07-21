@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import wave
 
 from ylhb_llm.patrol_voice import PatrolVoice
 
@@ -39,6 +40,7 @@ def test_target_reached_inserts_target_name():
 
     assert '一号开关柜' in request.text
     assert request.audio_path == ''
+    assert request.max_delay_sec == 5.0
 
 
 def test_return_home_selects_normal_or_failure_rule():
@@ -85,3 +87,17 @@ def test_duplicate_event_is_only_returned_once():
 
     assert voice.request_for_json(raw) is not None
     assert voice.request_for_json(raw) is None
+
+
+def test_fixed_patrol_audio_is_standard_pcm_wav():
+    paths = sorted(AUDIO_DIR.glob('patrol_*.wav'))
+    assert paths
+
+    for path in paths:
+        with wave.open(str(path), 'rb') as wav:
+            duration_sec = wav.getnframes() / wav.getframerate()
+            assert wav.getnchannels() == 1, path.name
+            assert wav.getsampwidth() == 2, path.name
+            assert wav.getframerate() in (16000, 24000), path.name
+            assert wav.getcomptype() == 'NONE', path.name
+            assert 0.5 <= duration_sec <= 30.0, (path.name, duration_sec)

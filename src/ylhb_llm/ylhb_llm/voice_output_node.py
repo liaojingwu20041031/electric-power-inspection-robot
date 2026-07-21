@@ -1,3 +1,4 @@
+import itertools
 import os
 import queue
 import subprocess
@@ -71,7 +72,8 @@ class VoiceOutputNode(Node):
         self.interrupt_current_playback = bool(
             self.get_parameter('interrupt_current_playback').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
-        self.queue: 'queue.PriorityQueue[tuple[int, float, VoiceRequest]]' = queue.PriorityQueue()
+        self.queue: 'queue.PriorityQueue[tuple[int, int, VoiceRequest, float]]' = queue.PriorityQueue()
+        self._queue_sequence = itertools.count()
         self._queued_say_keys: set[tuple[str, str]] = set()
         self.stop_event = threading.Event()
         self.current_task_id = ''
@@ -139,12 +141,17 @@ class VoiceOutputNode(Node):
         if key in self._queued_say_keys:
             return
         self._queued_say_keys.add(key)
-        self.queue.put((-request.priority, time.time(), request))
+        self.queue.put((
+            -request.priority,
+            next(self._queue_sequence),
+            request,
+            time.monotonic(),
+        ))
 
     def play_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
-                _priority, _ts, request = self.queue.get(timeout=0.2)
+                _priority, _sequence, request, enqueued_at = self.queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             self._queued_say_keys.discard((request.task_id, request.text.strip()))
@@ -152,21 +159,31 @@ class VoiceOutputNode(Node):
                 text = request.text.strip()
                 if text:
                     self.get_logger().info(f'播报请求[{request.task_id}]：{text}')
-                self.play_request(request)
+                self.play_request(request, enqueued_at)
             finally:
                 self.current_task_id = ''
                 self.publish_status_once()
                 self.queue.task_done()
 
-    def play_request(self, request: VoiceRequest) -> None:
+    def play_request(self, request: VoiceRequest, enqueued_at: float | None = None) -> None:
         if not self.enabled:
+            return
+        generation = self.playback_generation
+        enqueued_at = time.monotonic() if enqueued_at is None else enqueued_at
+        deadline = (
+            enqueued_at + request.max_delay_sec
+            if request.max_delay_sec > 0.0 else 0.0
+        )
+        if not self.playback_request_valid(generation, deadline):
             return
         if request.audio_path:
             if os.path.isfile(request.audio_path):
-                self.play_audio_file(request.audio_path, request.task_id, False)
+                self.play_audio_file(
+                    request.audio_path, request.task_id, False, generation, deadline)
                 return
             if request.inventory_path and os.path.isfile(request.inventory_path):
-                self.play_audio_file(request.inventory_path, request.task_id, False)
+                self.play_audio_file(
+                    request.inventory_path, request.task_id, False, generation, deadline)
                 return
             self.get_logger().warn(
                 f'本地巡逻语音不存在，回退 TTS：task_id={request.task_id}, '
@@ -180,13 +197,21 @@ class VoiceOutputNode(Node):
             if self.should_split_tts(request.task_id, text)
             else [text]
         )
-        generation = self.playback_generation
         for segment in segments:
-            if self.stop_event.is_set() or generation != self.playback_generation:
+            if not self.playback_request_valid(generation, deadline):
                 break
-            self.speak(segment, request.task_id, request.inventory_path)
+            self.speak(
+                segment, request.task_id, request.inventory_path, generation, deadline)
 
-    def speak(self, text: str, task_id: str, inventory_path: str = '') -> None:
+    def speak(
+        self,
+        text: str,
+        task_id: str,
+        inventory_path: str = '',
+        generation: int | None = None,
+        deadline: float = 0.0,
+    ) -> None:
+        generation = self.playback_generation if generation is None else generation
         self.current_task_id = task_id
         self.publish_status_once()
         audio_path = ''
@@ -209,6 +234,8 @@ class VoiceOutputNode(Node):
                     voice=self.tts_voice,
                     language_type=self.tts_language_type,
                 )
+                if not self.playback_request_valid(generation, deadline):
+                    return
                 self.get_logger().info(
                     f'TTS 合成完成：task_id={task_id}, audio_bytes={len(audio) if audio else 0}'
                 )
@@ -221,6 +248,8 @@ class VoiceOutputNode(Node):
             if not audio:
                 self.get_logger().warn(f'TTS 未返回音频：task_id={task_id}')
                 return
+            if not self.playback_request_valid(generation, deadline):
+                return
             if inventory_path:
                 try:
                     audio_path = self.save_audio_inventory(audio, inventory_path)
@@ -229,13 +258,18 @@ class VoiceOutputNode(Node):
                 except OSError as exc:
                     self.get_logger().warn(f'巡逻语音库存写入失败，改用临时文件：{exc}')
             if not audio_path:
+                if not self.playback_request_valid(generation, deadline):
+                    return
                 with tempfile.NamedTemporaryFile(
                     prefix='ylhb_tts_', suffix='.wav', delete=False
                 ) as f:
                     f.write(audio)
                     audio_path = f.name
             time.sleep(0.25)
-            self.play_audio_file(audio_path, task_id, delete_after)
+            if not self.playback_request_valid(generation, deadline):
+                return
+            self.play_audio_file(
+                audio_path, task_id, delete_after, generation, deadline)
         except QwenClientError as exc:
             self.get_logger().warn(f'TTS 合成失败：task_id={task_id}, error={exc}')
         except subprocess.TimeoutExpired:
@@ -249,7 +283,10 @@ class VoiceOutputNode(Node):
                     self.current_playback = None
             self.current_task_id = ''
             self.publish_status_once()
-            if audio_path and delete_after:
+            if audio_path and (
+                delete_after
+                or (inventory_path and not self.playback_request_valid(generation, deadline))
+            ):
                 try:
                     os.unlink(audio_path)
                 except OSError:
@@ -275,12 +312,24 @@ class VoiceOutputNode(Node):
                     pass
             raise
 
-    def play_audio_file(self, audio_path: str, task_id: str, delete_after: bool) -> None:
+    def play_audio_file(
+        self,
+        audio_path: str,
+        task_id: str,
+        delete_after: bool,
+        generation: int | None = None,
+        deadline: float = 0.0,
+    ) -> None:
+        generation = self.playback_generation if generation is None else generation
+        if not self.playback_request_valid(generation, deadline):
+            return
         self.current_task_id = task_id
         self.publish_status_once()
         try:
-            proc, play_timeout, _duration = self._start_audio_process(audio_path, task_id)
             with self.playback_lock:
+                if not self.playback_request_valid(generation, deadline):
+                    return
+                proc, play_timeout, _duration = self._start_audio_process(audio_path, task_id)
                 self.current_playback = proc
             returncode = proc.wait(timeout=play_timeout)
             if returncode not in (0, -15):
@@ -374,6 +423,13 @@ class VoiceOutputNode(Node):
             old = self.tts_cache_order.pop(0)
             self.tts_cache.pop(old, None)
 
+    def playback_request_valid(self, generation: int, deadline: float = 0.0) -> bool:
+        return (
+            not self.stop_event.is_set()
+            and generation == self.playback_generation
+            and (deadline <= 0.0 or time.monotonic() <= deadline)
+        )
+
     def publish_status(self) -> None:
         msg = VoiceStatus()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -394,7 +450,8 @@ class VoiceOutputNode(Node):
                 return
 
     def interrupt_playback(self) -> None:
-        self.playback_generation += 1
+        with self.playback_lock:
+            self.playback_generation += 1
         if self.interrupt_current_playback:
             self.terminate_current_playback()
 

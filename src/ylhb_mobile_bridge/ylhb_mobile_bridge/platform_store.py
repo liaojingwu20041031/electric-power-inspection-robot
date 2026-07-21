@@ -30,6 +30,7 @@ START_MODES = {START_MODE_REMOTE_IMMEDIATE, START_MODE_LOCAL_CONFIRM}
 COMMAND_STATE_RECEIVED = "RECEIVED"
 COMMAND_STATE_ACKED = "ACKED"
 COMMAND_STATE_ARMED = "ARMED"
+COMMAND_STATE_CONFIRMED = "CONFIRMED"
 COMMAND_STATE_DISPATCHED = "DISPATCHED"
 COMMAND_STATE_APPLIED = "APPLIED"
 COMMAND_STATE_REJECTED = "REJECTED"
@@ -41,7 +42,10 @@ COMMAND_TRANSITIONS = {
         COMMAND_STATE_REJECTED, COMMAND_STATE_FAILED,
     },
     COMMAND_STATE_ARMED: {
-        COMMAND_STATE_ACKED, COMMAND_STATE_REJECTED, COMMAND_STATE_FAILED,
+        COMMAND_STATE_CONFIRMED, COMMAND_STATE_REJECTED, COMMAND_STATE_FAILED,
+    },
+    COMMAND_STATE_CONFIRMED: {
+        COMMAND_STATE_DISPATCHED, COMMAND_STATE_REJECTED, COMMAND_STATE_FAILED,
     },
     COMMAND_STATE_DISPATCHED: {
         COMMAND_STATE_APPLIED, COMMAND_STATE_REJECTED, COMMAND_STATE_FAILED,
@@ -60,7 +64,10 @@ class PlatformStoreError(ValueError):
 
 
 def canonical_json(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def normalize_command_business_payload(command: Dict[str, Any]) -> Dict[str, Any]:
@@ -388,12 +395,12 @@ class DeploymentStore:
 
     def pending_cloud_commands(self) -> List[Dict[str, Any]]:
         with self._connection() as db:
-            rows = db.execute("SELECT * FROM processed_commands WHERE state IN ('RECEIVED','ACKED','DISPATCHED') ORDER BY created_at").fetchall()
+            rows = db.execute("SELECT * FROM processed_commands WHERE state IN ('RECEIVED','ACKED','CONFIRMED','DISPATCHED') ORDER BY created_at").fetchall()
         return [self._command_dict(row) for row in rows]
 
     def pending_command_count(self) -> int:
         with self._connection() as db:
-            row = db.execute("SELECT COUNT(*) AS count FROM processed_commands WHERE state IN ('RECEIVED','ACKED','ARMED','DISPATCHED')").fetchone()
+            row = db.execute("SELECT COUNT(*) AS count FROM processed_commands WHERE state IN ('RECEIVED','ACKED','ARMED','CONFIRMED','DISPATCHED')").fetchone()
         return int(row["count"])
 
     @staticmethod
@@ -502,12 +509,17 @@ class DeploymentStore:
             event = self._insert_event(db, self._event_from_record(
                 record, "local_start_confirmed", robot_id, boot_id,
             ))
-            db.execute(
+            updated = db.execute(
                 "UPDATE processed_commands SET state=?,result_json=?,updated_at=? "
                 "WHERE command_id=? AND state=?",
-                (COMMAND_STATE_ACKED, json.dumps(event, ensure_ascii=False), _now(),
+                (COMMAND_STATE_CONFIRMED, json.dumps(event, ensure_ascii=False), _now(),
                  record["command_id"], COMMAND_STATE_ARMED),
             )
+            if updated.rowcount != 1:
+                raise PlatformStoreError(
+                    "LOCAL_CONFIRM_ALREADY_CLAIMED",
+                    "platform START was already confirmed or canceled", 409,
+                )
         return self.command(record["command_id"]) or record
 
     def cancel_armed_start(
@@ -517,7 +529,7 @@ class DeploymentStore:
             db.execute("BEGIN IMMEDIATE")
             start_row = db.execute(
                 "SELECT * FROM processed_commands WHERE command_type='START' "
-                "AND state='ARMED' AND execution_id=?",
+                "AND state IN ('ARMED','CONFIRMED') AND execution_id=?",
                 (cancel_record["execution_id"],),
             ).fetchone()
             if not start_row:

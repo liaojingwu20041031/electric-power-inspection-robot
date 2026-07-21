@@ -15,6 +15,7 @@ from typing import Any, Dict
 from .platform_store import (
     COMMAND_STATE_ACKED,
     COMMAND_STATE_ARMED,
+    COMMAND_STATE_CONFIRMED,
     START_MODE_LOCAL_CONFIRM,
     START_MODE_REMOTE_IMMEDIATE,
     PlatformStoreError,
@@ -25,6 +26,11 @@ LOG = logging.getLogger(__name__)
 BACKOFF_SECONDS = (1, 2, 4, 8, 15, 30)
 TRUE_VALUES = {"1", "true", "yes", "on"}
 ACTIVE_STATES = {"starting", "running", "paused", "manual_takeover", "returning_home", "waiting_loop"}
+LOCAL_CONFIRM_PROTOCOL_VERSION = "1"
+HEARTBEAT_STATE_MAP = {
+    "waiting_schedule": "idle", "canceling": "running",
+    "unavailable": "idle", "unknown": "idle",
+}
 
 
 def _now() -> str:
@@ -44,9 +50,14 @@ def _safe_server_url(value: str) -> str:
 
 
 class CloudRequestError(RuntimeError):
-    def __init__(self, message: str, retry_after: float | None = None):
+    def __init__(
+        self, message: str, retry_after: float | None = None,
+        status_code: int = 0, code: str = "",
+    ):
         super().__init__(message)
         self.retry_after = retry_after
+        self.status_code = status_code
+        self.code = code
 
 
 class PlatformCloudClient:
@@ -207,13 +218,34 @@ class PlatformCloudClient:
                 retry_after_value = min(self.max_backoff, max(0.0, float(retry_after)))
             except ValueError:
                 retry_after_value = None
-            raise CloudRequestError(f"HTTP {exc.code}", retry_after_value) from exc
+            detail = ""
+            error_code = ""
+            try:
+                error = json.loads(exc.read().decode("utf-8"))
+                if isinstance(error, dict):
+                    error_code = str(error.get("code") or "")
+                    detail = ": ".join(str(error.get(key) or "") for key in ("code", "message")).strip(": ")
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
+            raise CloudRequestError(
+                f"HTTP {exc.code}" + (f": {detail}" if detail else ""),
+                retry_after_value,
+                exc.code,
+                error_code,
+            ) from exc
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise CloudRequestError(f"request failed: {type(exc).__name__}") from exc
 
     def _upload_events(self) -> None:
         cursor = int(self.store.cloud_state("last_uploaded_sequence", "0") or 0)
-        events = self.store.events(cursor, 100)
+        blocked = int(self.store.cloud_state("blocked_event_sequence", "0") or 0)
+        if blocked > cursor:
+            return
+        if blocked:
+            self.store.set_cloud_state("blocked_event_sequence", "0")
+            self.store.set_cloud_state("blocked_event_error", "")
+        # ponytail: one-at-a-time makes a 409 sequence-specific; batch again if event volume grows.
+        events = self.store.events(cursor, 1)
         if not events:
             return
         required_identity = (
@@ -228,22 +260,62 @@ class PlatformCloudClient:
                 invalid.get("sequence"), invalid.get("event"),
             )
             return
-        reply = self._request("POST", "/robot-api/v1/events/batch", {"robotId": self.robot_id, "events": events})
+        try:
+            reply = self._request("POST", "/robot-api/v1/events/batch", {"robotId": self.robot_id, "events": events})
+        except CloudRequestError as exc:
+            if exc.status_code == 409 and exc.code.startswith("EVENT_"):
+                sequence = int(events[0]["sequence"])
+                self.store.set_cloud_state("blocked_event_sequence", str(sequence))
+                self.store.set_cloud_state("blocked_event_error", f"{exc.code}: {exc}")
+                LOG.error("isolated conflicting cloud event: sequence=%s error=%s", sequence, exc)
+            else:
+                LOG.warning("cloud event upload failed: %s", exc)
+            return
         accepted = int(reply.get("acceptedThroughSequence", cursor))
         self.store.set_cloud_state("last_uploaded_sequence", str(max(0, accepted)))
 
     def _heartbeat_payload(self) -> Dict[str, Any]:
         snapshot = self.bridge.cloud_status_snapshot()
         context = snapshot.get("platformContext", {})
+        readiness = self._local_confirm_readiness()
         return {
             "protocolVersion": "1.0", "robotId": self.robot_id, "bootId": self.boot_id,
-            "softwareVersion": self.software_version, "state": snapshot.get("state", "idle"),
+            "softwareVersion": self.software_version,
+            "state": HEARTBEAT_STATE_MAP.get(
+                str(snapshot.get("state") or "idle"),
+                str(snapshot.get("state") or "idle"),
+            ),
             "activeExecutionId": context.get("active_execution_id"), "activeDeploymentId": context.get("active_deployment_id"),
             "lastReceivedCommandId": self.store.cloud_state("last_received_command_id", "") or None,
             "latestLocalEventSequence": self.store.latest_event_sequence(),
             "mapPose": snapshot.get("mapPose"), "odomPose": snapshot.get("odomPose"),
-            "health": snapshot.get("health", {}),
+            "capabilities": {
+                "remoteImmediateStart": True,
+                "localConfirmStart": True,
+                "localConfirmProtocolVersion": LOCAL_CONFIRM_PROTOCOL_VERSION,
+            },
+            "health": {
+                **snapshot.get("health", {}),
+                "localConfirmStartReady": readiness["ready"],
+                "localConfirmStartError": readiness["error"],
+            },
         }
+
+    def _local_confirm_readiness(self) -> Dict[str, Any]:
+        provider = getattr(self.bridge, "local_confirm_start_readiness", None)
+        if not callable(provider):
+            return {"ready": False, "error": "LOCAL_CONFIRM_RUNTIME_UNAVAILABLE"}
+        try:
+            status = provider()
+        except Exception:
+            return {"ready": False, "error": "LOCAL_CONFIRM_RUNTIME_UNAVAILABLE"}
+        if not isinstance(status, dict):
+            return {"ready": False, "error": "LOCAL_CONFIRM_RUNTIME_UNAVAILABLE"}
+        ready = bool(status.get("ready"))
+        error = None if ready else str(
+            status.get("error") or "LOCAL_CONFIRM_NOT_READY"
+        )
+        return {"ready": ready, "error": error}
 
     def _download_deployment(self, deployment_id: str) -> Dict[str, Any]:
         manifest = self._request("GET", f"/robot-api/v1/deployments/{deployment_id}/manifest")
@@ -270,18 +342,23 @@ class PlatformCloudClient:
     def _record_failure(self, record: Dict[str, Any], state: str, event: str, exc: Exception) -> None:
         code = str(getattr(exc, "code", "COMMAND_FAILED" if state == "FAILED" else "COMMAND_REJECTED"))
         result = {
+            "schema_version": "1.0",
             "event": event,
             "robot_id": self.robot_id, "boot_id": self.boot_id,
             "command_id": record["command_id"], "request_id": record["request_id"],
             "execution_id": record["execution_id"], "deployment_id": record["deployment_id"],
-            "error_code": code, "error_message": str(exc),
+            "reason": code, "error_code": code, "error_message": str(exc),
         }
         saved = self.store.append_event(result)
         self.store.set_command_state(record["command_id"], state, saved)
 
     def _handle_command(self, command: Dict[str, Any]) -> None:
         record = self.store.receive_cloud_command(command)
-        if record["state"] in {"APPLIED", "REJECTED", "FAILED", "DISPATCHED", COMMAND_STATE_ARMED}:
+        self.store.set_cloud_state("last_received_command_id", record["command_id"])
+        if record["state"] in {
+            "APPLIED", "REJECTED", "FAILED", "DISPATCHED",
+            COMMAND_STATE_ARMED, COMMAND_STATE_CONFIRMED,
+        }:
             return
         if record["state"] == "RECEIVED":
             self._request("POST", f"/robot-api/v1/commands/{record['command_id']}/ack", {
@@ -298,19 +375,27 @@ class PlatformCloudClient:
                     record, self.robot_id, self.boot_id
                 )
                 if canceled:
-                    self.store.set_cloud_state("last_received_command_id", record["command_id"])
                     return
             if record["command_type"] == "START" and str(
                 record["payload"].get("startMode") or START_MODE_REMOTE_IMMEDIATE
             ) == START_MODE_LOCAL_CONFIRM:
+                readiness = self._local_confirm_readiness()
+                if not readiness["ready"]:
+                    raise PlatformStoreError(
+                        "LOCAL_CONFIRM_NOT_READY",
+                        str(readiness["error"] or "local confirmation is not ready"),
+                        409,
+                    )
                 self._prepared_command(record)
                 self.store.arm_start(record["command_id"], self.robot_id, self.boot_id)
-                self.store.set_cloud_state("last_received_command_id", record["command_id"])
                 return
             self._enqueue(record)
-            self.store.set_cloud_state("last_received_command_id", record["command_id"])
         except PlatformStoreError as exc:
-            deployment_error = record["command_type"] == "START" and not self.store.deployment(record["deployment_id"])
+            deployment_error = (
+                exc.code != "LOCAL_CONFIRM_NOT_READY"
+                and record["command_type"] == "START"
+                and not self.store.deployment(record["deployment_id"])
+            )
             self._record_failure(record, "FAILED" if deployment_error else "REJECTED", "command_failed" if deployment_error else "command_rejected", exc)
             raise
         except Exception as exc:
@@ -337,6 +422,33 @@ class PlatformCloudClient:
         active_execution = str((snapshot.get("platformContext") or {}).get("active_execution_id") or "")
         for record in self.store.pending_cloud_commands():
             if record["state"] == "ACKED":
+                try:
+                    if (
+                        record["command_type"] == "START"
+                        and record["payload"].get("startMode") == START_MODE_LOCAL_CONFIRM
+                    ):
+                        readiness = self._local_confirm_readiness()
+                        if not readiness["ready"]:
+                            raise PlatformStoreError(
+                                "LOCAL_CONFIRM_NOT_READY",
+                                str(readiness["error"]), 409,
+                            )
+                        self._prepared_command(record)
+                        self.store.arm_start(
+                            record["command_id"], self.robot_id, self.boot_id
+                        )
+                    else:
+                        self._enqueue(record)
+                except Exception as exc:
+                    rejected = getattr(exc, "code", "") == "LOCAL_CONFIRM_NOT_READY"
+                    self._record_failure(
+                        record,
+                        "REJECTED" if rejected else "FAILED",
+                        "command_rejected" if rejected else "command_failed",
+                        exc,
+                    )
+                continue
+            if record["state"] == COMMAND_STATE_CONFIRMED:
                 try:
                     self._enqueue(record)
                 except Exception as exc:
@@ -384,7 +496,7 @@ class PlatformCloudClient:
 
     def _record_recovered_result(self, record: Dict[str, Any], state: str, event: str) -> None:
         result = {
-            "event": event, "recovered": True,
+            "schema_version": "1.0", "event": event, "recovered": True,
             "robot_id": self.robot_id, "boot_id": self.boot_id,
             "command_id": record["command_id"], "request_id": record["request_id"],
             "execution_id": record["execution_id"], "deployment_id": record["deployment_id"],

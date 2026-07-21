@@ -1392,22 +1392,29 @@ def test_patrol_control_event_publishes_correlated_operation_terminal():
     assert snapshots[-1]['result_status'] == 'canceled'
 
 
-def test_agent_operation_ids_are_forwarded_to_patrol_executor():
+def test_platform_and_agent_ids_are_forwarded_to_patrol_executor():
     published = []
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.agent_operation_context = {
         'run_id': 'run_1', 'tool_call_id': 'call_1', 'operation_id': 'op_1',
     }
-    node.platform_context = {}
+    node.platform_context = {
+        'active_request_id': 'platform_request_1',
+        'active_command_id': 'platform_command_1',
+    }
     node.patrol_command_pub = type(
         'Publisher', (), {'publish': lambda _self, msg: published.append(json.loads(msg.data))}
     )()
 
-    node.publish_patrol_command('start', request_id='request_1', route_id='route_1')
+    node.publish_patrol_command(
+        'start', request_id='platform_request_1', route_id='route_1'
+    )
 
     assert published[0]['run_id'] == 'run_1'
     assert published[0]['tool_call_id'] == 'call_1'
     assert published[0]['operation_id'] == 'op_1'
+    assert published[0]['request_id'] == 'platform_request_1'
+    assert published[0]['command_id'] == 'platform_command_1'
 
 
 def test_go_to_checkpoint_uses_existing_patrol_start_transaction():
@@ -1426,11 +1433,12 @@ def test_go_to_checkpoint_uses_existing_patrol_start_transaction():
     assert node.agent_operation_context['operation_id'] == 'op_target'
 
 
-def test_checkpoint_terminal_cleans_only_transaction_owned_components():
+@pytest.mark.parametrize('transaction_kind', ['checkpoint', 'route'])
+def test_patrol_terminal_cleans_only_transaction_owned_components(transaction_kind):
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.patrol_mode_state = 'running'
     node.patrol_error = ''
-    node.patrol_transaction_kind = 'checkpoint'
+    node.patrol_transaction_kind = transaction_kind
     node.patrol_transaction_owned_components = ['patrol_executor', 'navigation']
     node.processes = {
         'bringup': FakeProcess(running=True),
@@ -1450,10 +1458,22 @@ def test_checkpoint_terminal_cleans_only_transaction_owned_components():
     assert 'bringup' not in [call.args[0] for call in node.stop_process.call_args_list]
 
 
-def test_checkpoint_transaction_reuses_full_patrol_preparation_then_sends_one_target():
+@pytest.mark.parametrize(
+    'target_id,platform_context,expected_command,expected_request_id',
+    [
+        ('target_003', {}, 'go_to_target', ''),
+        ('', {
+            'active_request_id': 'platform-request-1',
+            'active_command_id': 'platform-command-1',
+        }, 'start', 'platform-request-1'),
+    ],
+)
+def test_patrol_transaction_uses_one_request_id_for_send_and_ack(
+    target_id, platform_context, expected_command, expected_request_id,
+):
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.lock = threading.Lock()
-    node.platform_context = {}
+    node.platform_context = platform_context
     node.processes = {}
     node.start_process = Mock(return_value=True)
     node.start_navigation_process = Mock(return_value=True)
@@ -1482,17 +1502,23 @@ def test_checkpoint_transaction_reuses_full_patrol_preparation_then_sends_one_ta
     node.active_patrol_navigation_mode = 'normal'
     node.active_hard_keepout_count = 0
 
-    node.start_patrol_mode(target_id='target_003')
+    node.start_patrol_mode(target_id=target_id)
 
     assert [call.args[0] for call in node.start_process.call_args_list] == [
         'bringup', 'patrol_executor',
     ]
     node.start_navigation_process.assert_called_once_with()
     node.publish_patrol_command.assert_called_once()
-    assert node.publish_patrol_command.call_args.args[0] == 'go_to_target'
-    assert node.publish_patrol_command.call_args.kwargs['target_id'] == 'target_003'
-    node.set_result.assert_called_with(
-        'go_to_checkpoint', True, '检查点导航命令已发送')
+    assert node.publish_patrol_command.call_args.args[0] == expected_command
+    sent_request_id = node.publish_patrol_command.call_args.kwargs['request_id']
+    waited_request_id = node.wait_for_patrol_command_ack.call_args.args[0]
+    assert sent_request_id == waited_request_id
+    if expected_request_id:
+        assert sent_request_id == expected_request_id
+    if target_id:
+        assert node.publish_patrol_command.call_args.kwargs['target_id'] == target_id
+        node.set_result.assert_called_with(
+            'go_to_checkpoint', True, '检查点导航命令已发送')
 
 
 def test_patrol_start_failure_keeps_agent_operation_correlation():

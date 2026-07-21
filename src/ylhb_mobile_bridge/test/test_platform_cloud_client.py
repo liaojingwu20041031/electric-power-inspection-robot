@@ -91,6 +91,10 @@ def make_client(monkeypatch):
     monkeypatch.setenv('YLHB_CLOUD_ROBOT_TOKEN', 'secret')
     bridge = SimpleNamespace(
         network_status=FakeNetworkStatusProvider(),
+        local_confirm_start_readiness=lambda: {
+            'ready': False,
+            'error': 'UI_CONFIRM_ENDPOINT_UNAVAILABLE',
+        },
         cloud_status_snapshot=lambda: {
             'state': 'idle',
             'platformContext': {},
@@ -138,7 +142,16 @@ def test_heartbeat_payload_does_not_include_local_network_diagnostics(monkeypatc
         'latestLocalEventSequence': 7,
         'mapPose': None,
         'odomPose': None,
-        'health': {'ok': True},
+        'capabilities': {
+            'remoteImmediateStart': True,
+            'localConfirmStart': True,
+            'localConfirmProtocolVersion': '1',
+        },
+        'health': {
+            'ok': True,
+            'localConfirmStartReady': False,
+            'localConfirmStartError': 'UI_CONFIRM_ENDPOINT_UNAVAILABLE',
+        },
     }
     assert 'cloudEgress' not in payload
     assert 'networkMode' not in payload
@@ -268,6 +281,7 @@ def _command_client(tmp_path, monkeypatch):
     queued = []
     bridge = SimpleNamespace(
         network_status=None,
+        local_confirm_start_readiness=lambda: {'ready': True, 'error': None},
         cloud_status_snapshot=lambda: {'state': 'idle', 'platformContext': {}},
         enqueue_cloud_command=queued.append,
     )
@@ -327,7 +341,7 @@ def test_local_confirm_survives_restart_and_only_queues_once(tmp_path, monkeypat
         client.confirm_local_start()
 
     assert len(queued) == 1
-    assert store.command('command-1')['state'] == 'ACKED'
+    assert store.command('command-1')['state'] == 'CONFIRMED'
     assert [event['event'] for event in store.events(0, 10)] == [
         'start_waiting_local_confirmation', 'local_start_confirmed',
     ]

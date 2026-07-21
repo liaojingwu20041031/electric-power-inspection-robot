@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from geometry_msgs.msg import Twist
@@ -12,6 +13,8 @@ from std_srvs.srv import SetBool, Trigger
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
 from ylhb_interfaces.msg import SayText, TaskEvent, TaskStatus, VoiceStatus
+
+LOCAL_CONFIRM_PROTOCOL_VERSION = '1'
 
 
 def latched_qos() -> QoSProfile:
@@ -61,6 +64,7 @@ class InspectionDisplayRosBridge(Node):
             'cloud_status_topic': '/mobile_bridge/cloud_status',
             'set_cloud_enabled_service_name': '/mobile_bridge/set_cloud_enabled',
             'confirm_platform_start_service_name': '/mobile_bridge/confirm_platform_start',
+            'local_confirm_ui_status_topic': '/mobile_bridge/local_confirm_ui_status',
             'local_app_status_topic': '/mobile_bridge/local_app_status',
             'set_local_app_enabled_service_name': '/mobile_bridge/set_local_app_enabled',
             'task_event_topic': '/inspection_ai/task_event',
@@ -100,6 +104,9 @@ class InspectionDisplayRosBridge(Node):
         self.system_command_pub = self.create_publisher(String, self._param('system_command_topic'), 10)
         self.patrol_command_pub = self.create_publisher(String, self._param('patrol_command_topic'), 10)
         self.cmd_vel_pub = self.create_publisher(Twist, self._param('cmd_vel_topic'), 10)
+        self.local_confirm_ui_status_pub = self.create_publisher(
+            String, self._param('local_confirm_ui_status_topic'), latched_qos()
+        )
         self.create_subscription(String, self._param('system_status_topic'), self._system_status, latched_qos())
         self.create_subscription(String, self._param('local_app_status_topic'), self._local_app_status, latched_qos())
         self.create_subscription(String, self._param('cloud_status_topic'), self._cloud_status, latched_qos())
@@ -163,6 +170,16 @@ class InspectionDisplayRosBridge(Node):
                 'error': type(exc).__name__,
             }
         self.signals.bridgeAvailability.emit(payload)
+        self.publish_local_confirm_ui_status(
+            bool(payload['platformStartConfirmServiceReady'])
+        )
+
+    def publish_local_confirm_ui_status(self, ready: bool) -> None:
+        self._publish_json(self.local_confirm_ui_status_pub, {
+            'protocolVersion': LOCAL_CONFIRM_PROTOCOL_VERSION,
+            'ready': bool(ready),
+            'updatedAt': datetime.now(timezone.utc).isoformat(),
+        })
 
     def _param(self, name: str) -> str:
         return str(self.get_parameter(name).value)

@@ -173,7 +173,19 @@ def test_target_events_text_and_status_use_target_semantics():
 
     event_types = [event["event"] for event in adapter.events]
     assert "target_reached" in event_types
+    assert "target_task_started" in event_types
     assert "target_task_finished" in event_types
+    reached = [
+        event for event in adapter.events if event["event"] == "target_reached"
+    ]
+    assert [event["payload"] for event in reached] == [
+        {
+            "target_id": target["id"],
+            "target_index": index,
+            "progress": min(99, int((index + 1) * 100 / len(targets))),
+        }
+        for index, target in enumerate(targets)
+    ]
     assert adapter.text_commands[0] == (
         f"已到达{targets[0]['name']}，开始执行任务"
     )
@@ -408,6 +420,7 @@ def test_abort_and_return_home_attempts_start_pose_and_finally_fails():
 
     assert adapter.navigation_requests[-1][0] == start_pose
     assert logic.state == "failed"
+    assert logic.last_error == "target navigation failed"
 
 
 def test_interval_schedule_triggers_only_when_idle_or_waiting():
@@ -447,6 +460,7 @@ def test_initial_pose_publisher_uses_transient_local_reliable_qos():
 def test_status_and_event_publishers_use_patrol_status_qos(monkeypatch):
     defaults = {
         "route_file_path": "auto",
+        "route_directory": "",
         "command_topic": "/patrol/command",
         "status_topic": "/patrol/status",
         "event_topic": "/patrol/event",
@@ -455,6 +469,10 @@ def test_status_and_event_publishers_use_patrol_status_qos(monkeypatch):
         "cmd_vel_topic": "/cmd_vel",
         "auto_start": False,
         "startup_id": "",
+        "execution_id": "",
+        "deployment_id": "",
+        "platform_request_id": "",
+        "platform_command_id": "",
         "schedule_check_period_sec": 1.0,
         "publish_initial_pose_on_startup": True,
         "initial_pose_publish_count": 3,

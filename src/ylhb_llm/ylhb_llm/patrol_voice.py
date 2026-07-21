@@ -25,6 +25,7 @@ class VoiceRequest:
     interrupt: bool
     audio_path: str = ''
     inventory_path: str = ''
+    max_delay_sec: float = 0.0
 
 
 class PatrolVoice:
@@ -100,6 +101,7 @@ class PatrolVoice:
             interrupt=bool(rule.get('interrupt', False)),
             audio_path=audio_path,
             inventory_path=inventory_path,
+            max_delay_sec=float(rule.get('max_delay_sec', 0.0)),
         )
 
     def _validate_rules(self) -> None:

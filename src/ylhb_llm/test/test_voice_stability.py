@@ -1,12 +1,14 @@
+import itertools
 import os
+import queue
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import wave
-import threading
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 if 'ylhb_interfaces.msg' not in sys.modules:
     fake_interfaces = types.ModuleType('ylhb_interfaces')
@@ -67,6 +69,7 @@ class VoiceStabilityTest(unittest.TestCase):
     def test_voice_output_deduplicates_queued_same_task_and_text(self):
         node = VoiceOutputNode.__new__(VoiceOutputNode)
         node._queued_say_keys = set()
+        node._queue_sequence = itertools.count()
         node.queue = Mock()
 
         msg = SimpleNamespace(task_id='emergency_stop_1', text='已收到停止指令。', priority=5, interrupt=False)
@@ -94,6 +97,8 @@ class VoiceStabilityTest(unittest.TestCase):
         node.tts_cache = {}
         node.playback_lock = threading.Lock()
         node.current_playback = None
+        node.playback_generation = 0
+        node.stop_event = threading.Event()
         node.statuses = []
         node.publish_status_once = lambda: node.statuses.append(node.current_task_id)
         node.get_logger = lambda: SimpleNamespace(info=lambda _msg: None, warn=lambda _msg: None)
@@ -125,6 +130,7 @@ class VoiceStabilityTest(unittest.TestCase):
         node.audio_device = 'default'
         node.stop_event = threading.Event()
         node.playback_generation = 0
+        node._queue_sequence = itertools.count()
         node.current_task_id = ''
         node.playback_lock = threading.Lock()
         node.current_playback = None
@@ -132,6 +138,70 @@ class VoiceStabilityTest(unittest.TestCase):
         node.publish_status_once = lambda: node.statuses.append(node.current_task_id)
         node.get_logger = lambda: SimpleNamespace(info=lambda _msg: None, warn=lambda _msg: None)
         return node
+
+    def test_interrupted_tts_result_is_not_saved_or_played(self):
+        node = self._playback_node()
+        node.tts_model = 'tts'
+        node.tts_voice = 'Serena'
+        node.tts_language_type = 'Chinese'
+        node.request_timeout_sec = 1.0
+        node.enable_tts_cache = False
+        node.tts_cache = {}
+        node.play_audio_file = Mock()
+
+        def synthesize(**_kwargs):
+            node.playback_generation += 1
+            return b'old generated wav'
+
+        node.qwen = SimpleNamespace(available=lambda: True, synthesize_speech_bytes=synthesize)
+        with tempfile.TemporaryDirectory() as directory:
+            inventory_path = os.path.join(directory, 'patrol.wav')
+            node.play_request(VoiceRequest(
+                'patrol:old', '旧播报', 40, False,
+                '/missing.wav', inventory_path))
+
+            self.assertFalse(os.path.exists(inventory_path))
+            node.play_audio_file.assert_not_called()
+
+    def test_expired_checkpoint_tts_is_not_played(self):
+        node = self._playback_node()
+        node.tts_model = 'tts'
+        node.tts_voice = 'Serena'
+        node.tts_language_type = 'Chinese'
+        node.request_timeout_sec = 1.0
+        node.enable_tts_cache = False
+        node.tts_cache = {}
+        node.play_audio_file = Mock()
+        clock = [100.0]
+
+        def synthesize(**_kwargs):
+            clock[0] = 106.0
+            return b'generated wav'
+
+        node.qwen = SimpleNamespace(available=lambda: True, synthesize_speech_bytes=synthesize)
+
+        with patch('ylhb_llm.voice_output_node.time.monotonic', side_effect=lambda: clock[0]):
+            node.play_request(
+                VoiceRequest(
+                    'patrol:checkpoint', '已到达检查点。', 40, False,
+                    max_delay_sec=5.0),
+                enqueued_at=100.0,
+            )
+
+        node.play_audio_file.assert_not_called()
+
+    def test_same_priority_requests_are_queued_fifo(self):
+        node = self._playback_node()
+        node._queued_say_keys = set()
+        node.queue = queue.PriorityQueue()
+
+        first = VoiceRequest('patrol:first', '第一条', 40, False)
+        second = VoiceRequest('patrol:second', '第二条', 40, False)
+        node.enqueue_request(first)
+        node.enqueue_request(second)
+
+        self.assertIs(node.queue.get_nowait()[2], first)
+        self.assertIs(node.queue.get_nowait()[2], second)
 
     def test_existing_local_wav_does_not_call_qwen(self):
         node = self._playback_node()
@@ -142,7 +212,8 @@ class VoiceStabilityTest(unittest.TestCase):
             node.play_request(request)
 
         node.qwen.assert_not_called()
-        node.play_audio_file.assert_called_once_with(wav.name, 'patrol:1', False)
+        node.play_audio_file.assert_called_once_with(
+            wav.name, 'patrol:1', False, 0, 0.0)
 
     def test_missing_local_wav_falls_back_to_tts(self):
         node = self._playback_node()
@@ -153,7 +224,7 @@ class VoiceStabilityTest(unittest.TestCase):
             '/missing.wav', '/inventory/patrol.wav'))
 
         node.speak.assert_called_once_with(
-            '回退播报', 'patrol:2', '/inventory/patrol.wav')
+            '回退播报', 'patrol:2', '/inventory/patrol.wav', 0, 0.0)
 
     def test_missing_fixed_wav_is_synthesized_into_inventory(self):
         node = self._playback_node()
@@ -176,7 +247,7 @@ class VoiceStabilityTest(unittest.TestCase):
             with open(inventory_path, 'rb') as stream:
                 self.assertEqual(stream.read(), b'generated wav')
             node.play_audio_file.assert_called_once_with(
-                inventory_path, 'patrol:fixed', False)
+                inventory_path, 'patrol:fixed', False, 0, 0.0)
 
     def test_audio_file_delete_policy_and_busy_status(self):
         node = self._playback_node()

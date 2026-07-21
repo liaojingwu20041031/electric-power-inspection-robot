@@ -11,10 +11,11 @@ announcements:
 
   target_reached:
     enabled: true
-    text: "已到达{target_name}，即将开始巡检，请勿触碰机器人及周边设备。"
+    text: "已到达{target_name}。"
     audio_file: ""
-    priority: 60
+    priority: 40
     interrupt: false
+    max_delay_sec: 5.0
 
   return_home_started:
     enabled: true
@@ -32,9 +33,9 @@ announcements:
 
   route_finished:
     enabled: true
-    text: "巡逻检测任务已完成，机器人已返回起点。"
+    text: "巡逻检测任务已完成。"
     audio_file: "patrol_route_finished.wav"
-    priority: 50
+    priority: 40
     interrupt: false
 
   route_failed:
@@ -55,7 +56,7 @@ announcements:
     enabled: true
     text: "巡逻检测任务已恢复。"
     audio_file: "patrol_route_resumed.wav"
-    priority: 60
+    priority: 40
     interrupt: false
 
   route_canceled:

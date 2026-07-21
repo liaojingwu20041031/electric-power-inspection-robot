@@ -792,8 +792,10 @@ def test_platform_start_confirmation_service_uses_cloud_client_queue():
     assert published == [True]
 
 
-def test_invalid_cloud_queue_item_is_rejected_with_event():
+def test_invalid_cloud_queue_item_is_rejected_without_platform_event():
     bridge = make_velocity_bridge()
+    bridge.platform_robot_id = "robot-1"
+    bridge.platform_boot_id = "boot-1"
     bridge._cloud_command_queue = queue.Queue()
     bridge._platform_context = {}
     bridge.platform_store = FakePlatformStore()
@@ -802,11 +804,13 @@ def test_invalid_cloud_queue_item_is_rejected_with_event():
     bridge._drain_cloud_commands()
 
     assert bridge.platform_store.states[-1][1] == "REJECTED"
-    assert bridge.platform_store.events[-1]["event"] == "command_rejected"
+    assert bridge.platform_store.events == []
 
 
 def test_cloud_ros_publish_exception_is_failed_with_event():
     bridge = make_velocity_bridge()
+    bridge.platform_robot_id = "robot-1"
+    bridge.platform_boot_id = "boot-1"
     bridge._system_command_pub = FailingPublisher()
     bridge._cloud_command_queue = queue.Queue()
     bridge._platform_context = {}
@@ -822,7 +826,7 @@ def test_cloud_ros_publish_exception_is_failed_with_event():
     assert bridge.platform_store.events[-1]["error_code"] == "ROS_PUBLISH_FAILED"
 
 
-def test_patrol_event_keeps_its_own_command_context():
+def test_patrol_event_normalizes_bridge_identity_and_keeps_command_context():
     bridge = make_bridge()
     bridge.platform_store = FakePlatformStore()
     bridge.platform_robot_id = "robot-1"
@@ -833,6 +837,7 @@ def test_patrol_event_keeps_its_own_command_context():
     }
     event = {
         "event": "route_paused", "robot_id": "event-robot",
+        "boot_id": "event-boot",
         "execution_id": "execution-1", "deployment_id": "deployment-1",
         "request_id": "request-1", "command_id": "command-1",
         "occurred_at": "2026-07-21T00:00:00+00:00",
@@ -842,18 +847,27 @@ def test_patrol_event_keeps_its_own_command_context():
 
     saved = bridge.platform_store.events[-1]
     assert (
-        saved["robot_id"], saved["execution_id"], saved["deployment_id"],
+        saved["robot_id"], saved["boot_id"],
+        saved["execution_id"], saved["deployment_id"],
         saved["request_id"], saved["command_id"], saved["occurred_at"],
     ) == (
-        "event-robot", "execution-1", "deployment-1",
+        "robot-1", "boot-1", "execution-1", "deployment-1",
         "request-1", "command-1", "2026-07-21T00:00:00+00:00",
     )
     assert bridge.platform_store.states[-1][1] == "APPLIED"
 
 
-def test_patrol_event_missing_identity_is_not_filled_from_global_context():
+@pytest.mark.parametrize(
+    "missing_field",
+    ["execution_id", "deployment_id", "request_id", "command_id"],
+)
+def test_patrol_event_missing_task_identity_is_not_filled_from_global_context(
+    missing_field,
+):
     bridge = make_bridge()
     bridge.platform_store = FakePlatformStore()
+    bridge.platform_robot_id = "robot-1"
+    bridge.platform_boot_id = "boot-1"
     bridge._platform_context = {
         "active_execution_id": "wrong-execution",
         "active_deployment_id": "wrong-deployment",
@@ -861,10 +875,14 @@ def test_patrol_event_missing_identity_is_not_filled_from_global_context():
         "active_command_id": "wrong-command",
     }
 
-    bridge._on_patrol_event(SimpleNamespace(data=json.dumps({
-        "event": "route_started", "robot_id": "robot-1",
-        "execution_id": "execution-1",
-    })))
+    event = {
+        "event": "route_started",
+        "execution_id": "execution-1", "deployment_id": "deployment-1",
+        "request_id": "request-1", "command_id": "command-1",
+    }
+    event.pop(missing_field)
+
+    bridge._on_patrol_event(SimpleNamespace(data=json.dumps(event)))
 
     assert bridge.platform_store.events == []
 

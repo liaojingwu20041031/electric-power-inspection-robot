@@ -686,7 +686,7 @@ class SystemSupervisorNode(Node):
             elif state == 'idle' and self.patrol_mode_state in ('starting', 'command_sent'):
                 self.startup_step = 'waiting_executor_response'
             if (
-                getattr(self, 'patrol_transaction_kind', '') == 'checkpoint'
+                getattr(self, 'patrol_transaction_kind', '') in {'checkpoint', 'route'}
                 and state in {'failed', 'succeeded', 'canceled', 'cancelled'}
             ):
                 self.cleanup_checkpoint_transaction()
@@ -1539,8 +1539,11 @@ class SystemSupervisorNode(Node):
             return
         # 17. send patrol start
         self.startup_step = 'executor_ready'
-        request_id = f"{self.startup_id}_command"
         command = 'go_to_target' if target_id else 'start'
+        request_id = str(
+            getattr(self, 'platform_context', {}).get('active_request_id')
+            or f"{self.startup_id}_command"
+        )
         if target_id:
             self.publish_patrol_command(command, request_id=request_id, target_id=target_id)
         elif route_id:
