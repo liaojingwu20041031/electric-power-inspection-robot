@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import rclpy
+from ament_index_python.packages import get_package_share_path
 from geometry_msgs.msg import Twist, PoseWithCovarianceStamped
 from lifecycle_msgs.msg import State
 from lifecycle_msgs.srv import GetState
@@ -30,6 +31,7 @@ from ylhb_mobile_bridge.patrol_route_store import (
     resolve_route_file_path,
     validate_route_map_binding,
 )
+from .robot_recovery import RecoveryCatalog
 
 try:
     from ylhb_3d_mapping import zed_3d_asset_manager
@@ -61,6 +63,7 @@ LONG_RUNNING_COMMANDS = {
     'stop_navigation',
     'stop_bringup',
     'stop_patrol_mode',
+    'recover_component',
 }
 AGENT_COMPONENTS = {'bringup', 'navigation', 'perception', 'patrol_executor'}
 
@@ -282,6 +285,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('patrol_command_timeout_sec', 8.0)
         self.declare_parameter('mobile_bridge_managed_externally', False)
         self.declare_parameter('auto_start_mobile_bridge', True)
+        self.declare_parameter('recovery_config_file', '')
 
         workspace_dir = str(self.get_parameter('workspace_dir').value).strip()
         self.workspace_dir = os.path.expanduser(workspace_dir) if workspace_dir else str(default_workspace_dir())
@@ -357,6 +361,7 @@ class SystemSupervisorNode(Node):
         self.jetson_ip = discover_jetson_ip()
         self.mobile_bridge_url = f'http://{self.jetson_ip}:8000'
         self.mobile_bridge_http = 'stopped'
+        self.current_system_mode = 'ready'
         self.patrol_mode_state = 'idle'
         self.patrol_error = ''
         self.patrol_warning = ''
@@ -435,6 +440,14 @@ class SystemSupervisorNode(Node):
                 self.build_patrol_executor_command(),
             ),
         }
+        recovery_config = str(self.get_parameter('recovery_config_file').value).strip()
+        recovery_path = Path(recovery_config or 'agent_recovery.yaml').expanduser()
+        if not recovery_path.is_absolute():
+            recovery_path = get_package_share_path('ylhb_llm') / 'config' / recovery_path
+        self.recovery_catalog = RecoveryCatalog.from_file(
+            recovery_path, managed_processes=self.processes)
+        self.recovery_last_attempt_at: Dict[str, float] = {}
+        self.recovery_incidents: set[tuple[str, str]] = set()
 
         self.status_pub = self.create_publisher(
             String, self.get_parameter('system_status_topic').value, latched_qos())
@@ -536,6 +549,72 @@ class SystemSupervisorNode(Node):
         started = self.start_process('mobile_bridge')
         self.mobile_bridge_started_by_supervisor = bool(started)
         return started
+
+    def recover_component(self, component: str, payload: Dict[str, Any]) -> None:
+        correlation = {
+            key: str(payload.get(key) or '')
+            for key in ('run_id', 'operation_id', 'tool_call_id')
+        }
+
+        def finish(success: bool, result_status: str, message: str) -> None:
+            self.set_result('recover_component', success, message)
+            self.publish_component_operation_feedback(correlation, success, result_status)
+
+        catalog = getattr(self, 'recovery_catalog', None)
+        if catalog is None or component not in catalog.names():
+            finish(False, 'rejected', '组件不在恢复白名单')
+            return
+        recovery = catalog.get(component)
+        process_name = str(recovery.get('process') or '')
+        if process_name not in getattr(self, 'processes', {}):
+            finish(False, 'rejected', '恢复目标不是 Supervisor 受管进程')
+            return
+        if recovery.get('requires_no_active_patrol') and str(
+            getattr(self, 'patrol_mode_state', 'idle')) in {
+                'starting', 'command_sent', 'running', 'paused', 'returning_home',
+            }:
+            finish(False, 'rejected', '活动巡逻期间禁止恢复该组件')
+            return
+        if recovery.get('requires_supervisor_ownership') and str(
+            getattr(self, 'mobile_bridge_owner', 'unknown')) != 'supervisor':
+            finish(False, 'rejected', 'Mobile Bridge 由 systemd 管理，应由 systemd 处理')
+            return
+        now = time.monotonic()
+        diagnostic_id = str(payload.get('diagnostic_id') or '')
+        incident = (component, diagnostic_id)
+        cooldown = float(recovery.get('cooldown_sec') or 0.0)
+        if (
+            (diagnostic_id and incident in getattr(self, 'recovery_incidents', set()))
+            or now - float(getattr(self, 'recovery_last_attempt_at', {}).get(component, 0.0)) < cooldown
+        ):
+            finish(False, 'rejected', '该故障已尝试恢复，当前处于冷却期')
+            return
+        self.recovery_last_attempt_at[component] = now
+        if diagnostic_id:
+            self.recovery_incidents.add(incident)
+        try:
+            self.stop_process(process_name, report=False)
+            if not self.start_process(process_name):
+                finish(False, 'failed', f'{component} 恢复失败：进程未能启动')
+                return
+        except Exception as exc:
+            finish(False, 'failed', f'{component} 恢复失败：{exc}')
+            return
+        process = self.processes[process_name]
+        if not process.is_running() or str(getattr(process, 'last_error', '') or ''):
+            finish(False, 'failed', f'{component} 启动后立即退出或报告错误')
+            return
+        if recovery.get('verification') == 'bridge_tcp_ok':
+            if mobile_bridge_tcp_status(True) != 'tcp_ok':
+                finish(False, 'failed', 'Mobile Bridge 进程已启动，但 TCP 端口不可达')
+                return
+            self.mobile_bridge_started_by_supervisor = True
+        if component == 'perception':
+            zed = self.processes.get('zed')
+            if zed is not None and not zed.is_running():
+                finish(True, 'succeeded', '感知进程已恢复，但相机输入尚未就绪')
+                return
+        finish(True, 'succeeded', f'{component} 已恢复并通过验证')
 
     def command_callback(self, msg: String) -> None:
         try:
@@ -679,9 +758,12 @@ class SystemSupervisorNode(Node):
             key: str(payload.get(key) or '')
             for key in ('run_id', 'operation_id', 'tool_call_id')
         }
-        if command in {'start_patrol_mode', 'go_to_checkpoint', 'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop'}:
+        if command in {'start_patrol_mode', 'go_to_checkpoint', 'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop', 'recover_component'}:
             self.agent_operation_context = correlation if correlation['operation_id'] else {}
             self.last_agent_operation_feedback = {}
+        if command == 'recover_component':
+            self.recover_component(str(payload.get('component') or ''), payload)
+            return
         if command in {'start_mobile_bridge', 'stop_mobile_bridge', 'restart_mobile_bridge'} and getattr(self, 'mobile_bridge_managed_externally', False):
             self.set_result(command, True, 'Mobile Bridge 由 systemd 常驻管理')
             return
@@ -2884,6 +2966,7 @@ class SystemSupervisorNode(Node):
         self.set_result('emergency_stop', True, '软件急停已发送')
 
     def publish_mode(self, mode: str) -> None:
+        self.current_system_mode = str(mode)
         msg = String()
         msg.data = mode
         self.mode_pub.publish(msg)
@@ -3020,7 +3103,15 @@ class SystemSupervisorNode(Node):
         }
         if keepout_required:
             keepout_status.update(self.keepout_subscription_status())
+        system_mode = getattr(self, 'current_system_mode', 'ready')
+        if patrol_state in {'starting', 'command_sent', 'running', 'paused', 'returning_home'}:
+            system_mode = 'inspection' if payload.get('perception') == 'running' else 'patrol'
+        elif payload.get('mapping') == 'running':
+            system_mode = 'mapping'
+        elif payload.get('navigation') == 'running':
+            system_mode = 'navigation'
         payload.update({
+            'system_mode': system_mode,
             'mobile_bridge_owner': getattr(self, 'mobile_bridge_owner', 'systemd' if getattr(self, 'mobile_bridge_managed_externally', False) else 'supervisor'),
             'mobile_bridge_core_state': mobile_bridge_core_state,
             'mobile_bridge_tcp': tcp_status,

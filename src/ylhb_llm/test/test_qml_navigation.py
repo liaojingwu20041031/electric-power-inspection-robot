@@ -93,15 +93,18 @@ def test_bridge_page_separates_local_and_cloud_controls():
     assert 'backend.sendSystemCommand("restart_mobile_bridge")' in qml
     assert "cloud_status_topic" in bridge
     assert "set_cloud_enabled_service_name" in bridge
+    assert "confirm_platform_start_service_name" in bridge
     assert "local_app_status_topic" in bridge
     assert "set_local_app_enabled_service_name" in bridge
     assert "localAppStatus = pyqtSignal(dict)" in bridge
     assert "localAppControlResult = pyqtSignal(bool, bool, str)" in bridge
     assert "cloudControlResult = pyqtSignal(bool, bool, str)" in bridge
+    assert "platformStartConfirmResult = pyqtSignal(bool, str)" in bridge
     assert "signals.cloudStatus.connect(backend.update_cloud_status)" in node
     assert "signals.localAppStatus.connect(backend.update_local_app_status)" in node
     assert "signals.localAppControlResult.connect(backend.update_local_app_control_result)" in node
     assert "signals.cloudControlResult.connect(backend.update_cloud_control_result)" in node
+    assert "backend.update_platform_start_confirm_result" in node
     assert "signals.bridgeAvailability.connect(backend.update_bridge_availability)" in node
     assert "cloudDisplayState" in qml
     assert "cloudRequestedEnabled" in qml
@@ -516,7 +519,8 @@ def test_route_preview_viewer_has_zoom_pan_and_error_controls():
 def test_patrol_page_sends_controls_to_supervisor():
     qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
 
-    assert 'backend.startPatrolMode()' in qml
+    assert 'backend.startPatrolMode()' not in qml
+    assert 'backend.confirmPlatformPatrolStart()' in qml
     assert 'backend.sendSystemCommand("pause_patrol")' in qml
     assert 'backend.sendSystemCommand("resume_patrol")' in qml
     assert 'backend.sendSystemCommand("stop_robot_stack")' in qml
@@ -527,8 +531,9 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.sendPatrolCommand("resume")' not in qml
     assert 'backend.sendPatrolCommand("cancel")' not in qml
     assert 'backend.sendPatrolCommand("reload")' not in qml
-    assert "启动巡逻任务" in qml
-    assert "enabled: backend.patrolCanStart" in qml
+    assert "确认启动平台巡检" in qml
+    assert "等待平台任务" in qml
+    assert "backend.pendingPlatformStart.executionId" in qml
     assert "!root.patrolStarting && !root.patrolRunning && backend.routePreviewOk" not in qml
     assert 'backend.patrolModeState === "running"' not in qml
     assert 'backend.patrolModeState === "command_sent"' not in qml
@@ -544,9 +549,9 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'id: stopPatrolDialog' in qml
     assert 'onClicked: startPatrolDialog.open()' in qml
     assert 'onClicked: stopPatrolDialog.open()' in qml
-    assert qml.count('backend.startPatrolMode()') == 1
+    assert qml.count('backend.confirmPlatformPatrolStart()') == 1
     assert qml.count('backend.sendSystemCommand("stop_robot_stack")') == 1
-    assert 'onAccepted: backend.startPatrolMode()' in qml
+    assert 'onAccepted: backend.startPatrolMode()' not in qml
     assert 'onAccepted: backend.sendSystemCommand("stop_robot_stack")' in qml
 
 
@@ -630,8 +635,9 @@ def test_patrol_page_loads_responsively_and_confirms_start_and_stop():
         from ylhb_llm.ui_models import UiState
 
         class Bridge:
-            def __init__(self): self.system = []
+            def __init__(self): self.system = []; self.confirmed = 0
             def publish_system_command(self, command, **extra): self.system.append((command, extra))
+            def call_confirm_platform_start(self): self.confirmed += 1
 
         def click(window, item):
             point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
@@ -643,6 +649,11 @@ def test_patrol_page_loads_responsively_and_confirms_start_and_stop():
         state = UiState(route_preview={{'targets': [], 'safety_warnings': [], 'map_identity': {{}}}})
         backend = UiBackend(bridge, state, route_preview_loader=lambda **kwargs: {{'ok': False, 'targets': []}})
         backend.startup_timer.stop()
+        backend.update_cloud_status({{'pendingPlatformStart': {{
+            'taskName': '夜间巡检', 'routeName': '一层路线',
+            'executionId': 'execution-1', 'deploymentId': 'deployment-1',
+            'armedAt': '2026-07-21T00:00:00+00:00'
+        }}}})
         engine = QQmlEngine()
         engine.rootContext().setContextProperty('backend', backend)
         component = QQmlComponent(engine)
@@ -671,20 +682,24 @@ def test_patrol_page_loads_responsively_and_confirms_start_and_stop():
         click(window, start)
         confirm = window.findChild(QQuickItem, 'confirmStartPatrolButton')
         click(window, confirm)
-        assert [item[0] for item in bridge.system] == ['start_patrol_mode']
+        assert bridge.confirmed == 1
+        assert bridge.system == []
+        backend.update_platform_start_confirm_result(True, 'ok')
+        backend.update_cloud_status({{'pendingPlatformStart': {{}}}})
+        app.processEvents()
 
         backend.update_system_status({{'patrol_executor': 'running', 'patrol_mode_state': 'running'}})
         backend.update_patrol_status({{'state': 'running'}})
         app.processEvents()
         stop = window.findChild(QQuickItem, 'stopPatrolButton')
         click(window, stop)
-        assert [item[0] for item in bridge.system] == ['start_patrol_mode']
+        assert bridge.system == []
         cancel_stop = window.findChild(QQuickItem, 'cancelStopPatrolButton')
         click(window, cancel_stop)
         click(window, stop)
         confirm_stop = window.findChild(QQuickItem, 'confirmStopPatrolButton')
         click(window, confirm_stop)
-        assert [item[0] for item in bridge.system] == ['start_patrol_mode', 'stop_robot_stack']
+        assert [item[0] for item in bridge.system] == ['stop_robot_stack']
     """)
     env = os.environ.copy()
     env['QT_QPA_PLATFORM'] = 'offscreen'

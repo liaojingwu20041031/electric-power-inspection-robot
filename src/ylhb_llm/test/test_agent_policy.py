@@ -181,3 +181,24 @@ def test_fresh_offline_chassis_is_not_treated_as_online():
     assert authorize(decision('close_voice_mode'), {}, {
         'close_voice_mode': {'properties': {}, 'required': []},
     }).allowed is True
+
+
+def test_recovery_requires_fresh_matching_recoverable_diagnostic_and_idle_robot():
+    schema = {
+        'properties': {'component': {'type': 'string', 'enum': ['perception']}},
+        'required': ['component'],
+        'side_effect': 'component_recovery',
+    }
+    healthy_context = {
+        'patrol_state': 'idle', 'active_operations': [], 'now': 100.0,
+        'latest_diagnostic': {
+            'generated_at': 99.0,
+            'issues': [{'component': 'perception', 'recoverable': True, 'recovery_component': 'perception'}],
+        },
+        'diagnostic_freshness_sec': 5.0,
+    }
+
+    assert authorize(decision('recover_component', component='perception'), healthy_context, {'recover_component': schema}).allowed is True
+    assert authorize(decision('recover_component', component='perception'), {**healthy_context, 'patrol_state': 'running'}, {'recover_component': schema}).allowed is False
+    stale = {**healthy_context, 'latest_diagnostic': {**healthy_context['latest_diagnostic'], 'generated_at': 90.0}}
+    assert authorize(decision('recover_component', component='perception'), stale, {'recover_component': schema}).allowed is False

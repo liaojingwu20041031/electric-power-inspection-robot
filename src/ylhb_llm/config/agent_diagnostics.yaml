@@ -1,0 +1,20 @@
+freshness:
+  system_status_sec: 3.0
+  odom_sec: 2.5
+  scan_sec: 2.5
+  imu_sec: 3.0
+  chassis_sec: 2.5
+  localization_sec: 3.0
+  perception_sec: 5.0
+  voice_sec: 5.0
+
+expected_components:
+  ready: []
+  mapping: [bringup, mapping]
+  navigation: [bringup, navigation]
+  patrol: [bringup, navigation, patrol_executor]
+  inspection: [bringup, navigation, patrol_executor, zed, perception]
+
+diagnostic:
+  max_evidence_items: 8
+  max_likely_causes: 3

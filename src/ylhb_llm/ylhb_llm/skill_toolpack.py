@@ -54,5 +54,7 @@ class SkillToolPack:
                 "constraints": capability.get("constraints") or {},
                 "timeout_sec": capability.get("timeout_sec"),
                 "result_schema": capability.get("result_schema") or {},
+                "refresh_summary_after": bool(capability.get("refresh_summary_after", False)),
+                "requires_fresh_diagnostic": bool(capability.get("requires_fresh_diagnostic", False)),
             }
         return schemas

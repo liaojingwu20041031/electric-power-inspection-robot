@@ -24,6 +24,7 @@ from ylhb_mobile_bridge.patrol_route_store import (
 class FakeStore:
     def __init__(self):
         self.values = {}
+        self.events_data = []
 
     def cloud_state(self, key, default=''):
         return self.values.get(key, default)
@@ -39,6 +40,12 @@ class FakeStore:
 
     def latest_event_sequence(self):
         return 7
+
+    def pending_platform_start(self):
+        return {}
+
+    def events(self, _cursor, _limit):
+        return list(self.events_data)
 
 
 class FakeNetworkStatusProvider:
@@ -154,6 +161,20 @@ def test_successful_cloud_request_records_egress_without_changing_request(monkey
     ]
 
 
+def test_event_upload_rejects_missing_identity_instead_of_filling_context(monkeypatch):
+    client = make_client(monkeypatch)
+    client.store.events_data = [{
+        'sequence': 1, 'event': 'route_started',
+        'execution_id': 'execution-1',
+    }]
+    requests = []
+    client._request = lambda *args, **kwargs: requests.append((args, kwargs))
+
+    client._upload_events()
+
+    assert requests == []
+
+
 def test_map_upload_identity_snapshot_and_persistent_states(tmp_path, monkeypatch):
     monkeypatch.setenv('YLHB_MAP_UPLOAD_ENABLED', 'false')
     maps = tmp_path / 'maps'
@@ -198,19 +219,27 @@ def test_map_upload_identity_snapshot_and_persistent_states(tmp_path, monkeypatc
     assert store.next_due_map_upload()['task_id'] == record['task_id']
     final = store.finish_map_upload(record['task_id'], 'FAILED_FINAL', error='format')
     assert final['status'] == 'FAILED_FINAL'
-    requeued = store.requeue_map_upload(record['task_id'])
-    assert requeued['status'] == 'PENDING'
+    retried = worker.enqueue(yaml_path, snapshot)
+    assert retried['task_created'] is True
+    assert retried['task_id'] != record['task_id']
+    retried_record = store.map_upload(retried['task_id'])
+    assert retried_record['idempotency_key'] != record['idempotency_key']
     succeeded = store.finish_map_upload(
-        record['task_id'], 'SUCCEEDED', map_asset_id='map-1'
+        retried['task_id'], 'SUCCEEDED', map_asset_id='map-1'
     )
     assert succeeded['status'] == 'SUCCEEDED'
-    assert worker.enqueue(yaml_path, snapshot)['task_id'] == record['task_id']
-    assert store.map_upload(record['task_id'])['map_asset_id'] == 'map-1'
+    uploaded_again = worker.enqueue(yaml_path, Path(retried_record['pgm_path']))
+    assert uploaded_again['task_created'] is True
+    assert uploaded_again['task_id'] != retried['task_id']
+    assert store.map_upload(uploaded_again['task_id'])['map_asset_id'] == ''
 
     monkeypatch.setenv('YLHB_MAP_UPLOAD_SNAPSHOT_MAX_BYTES', '1')
     limited = MapUploadWorker(DeploymentStore(tmp_path / 'limited'), 'robot-1')
     with pytest.raises(ValueError, match='disk limit'):
-        limited.enqueue(yaml_path, snapshot)
+        limited.enqueue(
+            yaml_path,
+            Path(store.map_upload(uploaded_again['task_id'])['pgm_path']),
+        )
 
 
 def test_start_command_task_id_can_be_restored_without_changing_start_contract(tmp_path):
@@ -230,6 +259,120 @@ def test_start_command_task_id_can_be_restored_without_changing_start_contract(t
     }
     store.receive_cloud_command(second)
     assert store.task_id_for_execution('execution-2') == 'task-2'
+
+
+def _command_client(tmp_path, monkeypatch):
+    monkeypatch.setenv('YLHB_CLOUD_BASE_URL', 'https://cloud.example')
+    monkeypatch.setenv('YLHB_CLOUD_ROBOT_TOKEN', 'secret')
+    store = DeploymentStore(tmp_path / 'platform')
+    queued = []
+    bridge = SimpleNamespace(
+        network_status=None,
+        cloud_status_snapshot=lambda: {'state': 'idle', 'platformContext': {}},
+        enqueue_cloud_command=queued.append,
+    )
+    client = PlatformCloudClient(store, bridge, 'robot-1', 'boot-1')
+    client._request = lambda *_args, **_kwargs: {}
+    client._prepared_command = lambda record: dict(record['payload'])
+    return client, store, queued
+
+
+def test_local_confirm_arms_without_dispatch_and_remote_default_dispatches(tmp_path, monkeypatch):
+    client, store, queued = _command_client(tmp_path, monkeypatch)
+    local = {
+        'commandId': 'command-local', 'requestId': 'request-local',
+        'type': 'START', 'startMode': 'LOCAL_CONFIRM',
+        'taskId': 'task-1', 'taskName': '夜间巡检', 'routeName': '一层路线',
+        'executionId': 'execution-local', 'deploymentId': 'deployment-local',
+        'executorRouteId': 'route-local',
+    }
+
+    client._handle_command(local)
+
+    assert store.command('command-local')['state'] == 'ARMED'
+    assert queued == []
+    assert store.pending_platform_start() == {
+        'taskName': '夜间巡检', 'routeName': '一层路线',
+        'executionId': 'execution-local',
+        'deploymentId': 'deployment-local',
+        'armedAt': store.command('command-local')['result']['armedAt'],
+    }
+    assert store.events(0, 10)[-1]['event'] == 'start_waiting_local_confirmation'
+
+    remote = {
+        'commandId': 'command-remote', 'requestId': 'request-remote',
+        'type': 'START', 'executionId': 'execution-remote',
+        'deploymentId': 'deployment-remote', 'executorRouteId': 'route-remote',
+    }
+    client._handle_command(remote)
+
+    assert store.command('command-remote')['payload']['startMode'] == 'REMOTE_IMMEDIATE'
+    assert len(queued) == 1
+
+
+def test_local_confirm_survives_restart_and_only_queues_once(tmp_path, monkeypatch):
+    client, store, queued = _command_client(tmp_path, monkeypatch)
+    command = {
+        'commandId': 'command-1', 'requestId': 'request-1', 'type': 'START',
+        'startMode': 'LOCAL_CONFIRM', 'executionId': 'execution-1',
+        'deploymentId': 'deployment-1', 'executorRouteId': 'route-1',
+    }
+    client._handle_command(command)
+
+    reopened = DeploymentStore(store.root)
+    assert reopened.pending_platform_start()['executionId'] == 'execution-1'
+
+    client.confirm_local_start()
+    with pytest.raises(ValueError, match='no platform START'):
+        client.confirm_local_start()
+
+    assert len(queued) == 1
+    assert store.command('command-1')['state'] == 'ACKED'
+    assert [event['event'] for event in store.events(0, 10)] == [
+        'start_waiting_local_confirmation', 'local_start_confirmed',
+    ]
+
+
+def test_cancel_and_timeout_clear_armed_start_without_dispatch(tmp_path, monkeypatch):
+    client, store, queued = _command_client(tmp_path, monkeypatch)
+    start = {
+        'commandId': 'start-1', 'requestId': 'start-request-1', 'type': 'START',
+        'startMode': 'LOCAL_CONFIRM', 'executionId': 'execution-1',
+        'deploymentId': 'deployment-1', 'executorRouteId': 'route-1',
+    }
+    client._handle_command(start)
+    client._handle_command({
+        'commandId': 'cancel-1', 'requestId': 'cancel-request-1', 'type': 'CANCEL',
+        'executionId': 'execution-1', 'deploymentId': 'deployment-1',
+    })
+
+    assert queued == []
+    assert store.pending_platform_start() == {}
+    assert store.command('start-1')['state'] == 'REJECTED'
+    assert store.command('cancel-1')['state'] == 'APPLIED'
+    assert store.events(0, 10)[-1]['event'] == 'route_canceled'
+
+    timeout = {
+        **start, 'commandId': 'start-2', 'requestId': 'start-request-2',
+        'executionId': 'execution-2',
+    }
+    client._handle_command(timeout)
+    expired = store.expire_armed_starts(0, 'robot-1', 'boot-1')
+
+    assert expired[0]['error_code'] == 'LOCAL_CONFIRM_TIMEOUT'
+    assert store.command('start-2')['state'] == 'FAILED'
+    assert store.pending_platform_start() == {}
+
+
+def test_unknown_start_mode_is_rejected_before_persistence(tmp_path):
+    store = DeploymentStore(tmp_path / 'platform')
+    with pytest.raises(ValueError) as error:
+        store.receive_cloud_command({
+            'commandId': 'command-1', 'requestId': 'request-1', 'type': 'START',
+            'startMode': 'SOMETHING_ELSE', 'executionId': 'execution-1',
+            'deploymentId': 'deployment-1', 'executorRouteId': 'route-1',
+        })
+    assert error.value.code == 'INVALID_START_MODE'
 
 
 def test_inspection_image_is_persisted_deduplicated_and_removed_after_success(tmp_path, monkeypatch):

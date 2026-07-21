@@ -30,6 +30,7 @@ class UiSignals(QObject):
     bridgeAvailability = pyqtSignal(dict)
     localAppControlResult = pyqtSignal(bool, bool, str)
     cloudControlResult = pyqtSignal(bool, bool, str)
+    platformStartConfirmResult = pyqtSignal(bool, str)
     taskContext = pyqtSignal(dict)
     taskEvent = pyqtSignal(object)
     taskStatus = pyqtSignal(object)
@@ -59,6 +60,7 @@ class InspectionDisplayRosBridge(Node):
             'system_status_topic': '/inspection_ai/system_status',
             'cloud_status_topic': '/mobile_bridge/cloud_status',
             'set_cloud_enabled_service_name': '/mobile_bridge/set_cloud_enabled',
+            'confirm_platform_start_service_name': '/mobile_bridge/confirm_platform_start',
             'local_app_status_topic': '/mobile_bridge/local_app_status',
             'set_local_app_enabled_service_name': '/mobile_bridge/set_local_app_enabled',
             'task_event_topic': '/inspection_ai/task_event',
@@ -131,6 +133,9 @@ class InspectionDisplayRosBridge(Node):
             'capture': self.create_client(Trigger, self._param('capture_voice_service_name')),
         }
         self.cloud_enabled_client = self.create_client(SetBool, self._param('set_cloud_enabled_service_name'))
+        self.confirm_platform_start_client = self.create_client(
+            Trigger, self._param('confirm_platform_start_service_name')
+        )
         self.local_app_enabled_client = self.create_client(SetBool, self._param('set_local_app_enabled_service_name'))
         self.create_timer(1.0, self.publish_bridge_availability)
         self.publish_system_mode(str(self.get_parameter('initial_system_mode').value))
@@ -139,6 +144,9 @@ class InspectionDisplayRosBridge(Node):
         try:
             payload = {
                 'cloudServiceReady': bool(self.cloud_enabled_client.service_is_ready()),
+                'platformStartConfirmServiceReady': bool(
+                    self.confirm_platform_start_client.service_is_ready()
+                ),
                 'localAppServiceReady': bool(self.local_app_enabled_client.service_is_ready()),
                 'cloudStatusPublishers': len(self.get_publishers_info_by_topic(self._param('cloud_status_topic'))),
                 'localAppStatusPublishers': len(self.get_publishers_info_by_topic(self._param('local_app_status_topic'))),
@@ -147,6 +155,7 @@ class InspectionDisplayRosBridge(Node):
         except Exception as exc:
             payload = {
                 'cloudServiceReady': False,
+                'platformStartConfirmServiceReady': False,
                 'localAppServiceReady': False,
                 'cloudStatusPublishers': 0,
                 'localAppStatusPublishers': 0,
@@ -285,6 +294,14 @@ class InspectionDisplayRosBridge(Node):
             '本地 APP 控制请求超时',
         )
 
+    def call_confirm_platform_start(self) -> None:
+        client = self.confirm_platform_start_client
+        if not client.service_is_ready():
+            self.signals.platformStartConfirmResult.emit(False, '平台任务确认服务不可用')
+            return
+        future = client.call_async(Trigger.Request())
+        future.add_done_callback(self._platform_start_confirm_done)
+
     @staticmethod
     def _watch_set_bool(
         future, enabled: bool, signal, done_callback, timeout_message: str
@@ -331,6 +348,15 @@ class InspectionDisplayRosBridge(Node):
             self.signals.voiceServiceResult.emit(name, bool(result.success), str(result.message))
         except Exception as exc:
             self.signals.voiceServiceResult.emit(name, False, str(exc))
+
+    def _platform_start_confirm_done(self, future) -> None:
+        try:
+            result = future.result()
+            self.signals.platformStartConfirmResult.emit(
+                bool(result.success), str(result.message)
+            )
+        except Exception as exc:
+            self.signals.platformStartConfirmResult.emit(False, str(exc))
 
     @staticmethod
     def _publish_json(publisher, payload: Dict[str, Any]) -> None:

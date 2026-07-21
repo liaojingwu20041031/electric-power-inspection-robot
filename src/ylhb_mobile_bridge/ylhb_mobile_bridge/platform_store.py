@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -23,13 +23,32 @@ DELIVERY_FIELDS = {
     "leaseToken", "leaseUntil", "serverTime", "attemptCount",
     "deliveryAttempt", "deliveredAt", "nextHeartbeatSec",
 }
+START_MODE_REMOTE_IMMEDIATE = "REMOTE_IMMEDIATE"
+START_MODE_LOCAL_CONFIRM = "LOCAL_CONFIRM"
+START_MODES = {START_MODE_REMOTE_IMMEDIATE, START_MODE_LOCAL_CONFIRM}
+
+COMMAND_STATE_RECEIVED = "RECEIVED"
+COMMAND_STATE_ACKED = "ACKED"
+COMMAND_STATE_ARMED = "ARMED"
+COMMAND_STATE_DISPATCHED = "DISPATCHED"
+COMMAND_STATE_APPLIED = "APPLIED"
+COMMAND_STATE_REJECTED = "REJECTED"
+COMMAND_STATE_FAILED = "FAILED"
 COMMAND_TRANSITIONS = {
-    "RECEIVED": {"ACKED"},
-    "ACKED": {"DISPATCHED", "REJECTED", "FAILED"},
-    "DISPATCHED": {"APPLIED", "REJECTED", "FAILED"},
-    "APPLIED": set(),
-    "REJECTED": set(),
-    "FAILED": set(),
+    COMMAND_STATE_RECEIVED: {COMMAND_STATE_ACKED},
+    COMMAND_STATE_ACKED: {
+        COMMAND_STATE_ARMED, COMMAND_STATE_DISPATCHED,
+        COMMAND_STATE_REJECTED, COMMAND_STATE_FAILED,
+    },
+    COMMAND_STATE_ARMED: {
+        COMMAND_STATE_ACKED, COMMAND_STATE_REJECTED, COMMAND_STATE_FAILED,
+    },
+    COMMAND_STATE_DISPATCHED: {
+        COMMAND_STATE_APPLIED, COMMAND_STATE_REJECTED, COMMAND_STATE_FAILED,
+    },
+    COMMAND_STATE_APPLIED: set(),
+    COMMAND_STATE_REJECTED: set(),
+    COMMAND_STATE_FAILED: set(),
 }
 
 
@@ -322,6 +341,15 @@ class DeploymentStore:
         if command_type == "START" and (not deployment_id or not str(command.get("executorRouteId") or "")):
             raise PlatformStoreError("INVALID_COMMAND", "START requires deploymentId and executorRouteId")
         business_command = normalize_command_business_payload(command)
+        if command_type == "START":
+            start_mode = str(
+                business_command.get("startMode") or START_MODE_REMOTE_IMMEDIATE
+            ).upper()
+            if start_mode not in START_MODES:
+                raise PlatformStoreError(
+                    "INVALID_START_MODE", f"unsupported startMode: {start_mode}"
+                )
+            business_command["startMode"] = start_mode
         payload = canonical_json(business_command).decode("utf-8")
         with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -334,8 +362,8 @@ class DeploymentStore:
             if duplicate:
                 raise PlatformStoreError("COMMAND_CONFLICT", "requestId belongs to another command", 409)
             stamp = _now()
-            db.execute("INSERT INTO processed_commands(command_id,request_id,execution_id,deployment_id,command_type,payload_json,state,result_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (command_id, request_id, execution_id, deployment_id, command_type, payload, "RECEIVED", "{}", stamp, stamp))
-            return {"command_id": command_id, "request_id": request_id, "execution_id": execution_id, "deployment_id": deployment_id, "command_type": command_type, "payload": business_command, "state": "RECEIVED", "result": {}}
+            db.execute("INSERT INTO processed_commands(command_id,request_id,execution_id,deployment_id,command_type,payload_json,state,result_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (command_id, request_id, execution_id, deployment_id, command_type, payload, COMMAND_STATE_RECEIVED, "{}", stamp, stamp))
+            return {"command_id": command_id, "request_id": request_id, "execution_id": execution_id, "deployment_id": deployment_id, "command_type": command_type, "payload": business_command, "state": COMMAND_STATE_RECEIVED, "result": {}}
 
     @staticmethod
     def _command_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -365,8 +393,185 @@ class DeploymentStore:
 
     def pending_command_count(self) -> int:
         with self._connection() as db:
-            row = db.execute("SELECT COUNT(*) AS count FROM processed_commands WHERE state IN ('RECEIVED','ACKED','DISPATCHED')").fetchone()
+            row = db.execute("SELECT COUNT(*) AS count FROM processed_commands WHERE state IN ('RECEIVED','ACKED','ARMED','DISPATCHED')").fetchone()
         return int(row["count"])
+
+    @staticmethod
+    def _event_from_record(
+        record: Dict[str, Any], event: str, robot_id: str, boot_id: str,
+        **extra: Any,
+    ) -> Dict[str, Any]:
+        return {
+            "schema_version": "1.0", "event": event,
+            "robot_id": robot_id, "boot_id": boot_id,
+            "command_id": record["command_id"],
+            "request_id": record["request_id"],
+            "execution_id": record["execution_id"],
+            "deployment_id": record["deployment_id"],
+            "occurred_at": _now(), **extra,
+        }
+
+    @staticmethod
+    def _insert_event(db: sqlite3.Connection, event: Dict[str, Any]) -> Dict[str, Any]:
+        cursor = db.execute(
+            "INSERT INTO events(event_json, occurred_at) VALUES (?, ?)",
+            (json.dumps(event, ensure_ascii=False), event["occurred_at"]),
+        )
+        return {**event, "sequence": cursor.lastrowid}
+
+    def arm_start(self, command_id: str, robot_id: str, boot_id: str) -> Dict[str, Any]:
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM processed_commands WHERE command_id=?",
+                (command_id,),
+            ).fetchone()
+            if not row:
+                raise PlatformStoreError("COMMAND_NOT_FOUND", "command does not exist", 404)
+            record = self._command_dict(row)
+            if record["command_type"] != "START" or record["state"] != COMMAND_STATE_ACKED:
+                raise PlatformStoreError(
+                    "INVALID_COMMAND_TRANSITION", "only ACKED START can be armed", 409
+                )
+            other = db.execute(
+                "SELECT command_id FROM processed_commands "
+                "WHERE command_type='START' AND state='ARMED' AND command_id<>?",
+                (command_id,),
+            ).fetchone()
+            if other:
+                raise PlatformStoreError(
+                    "LOCAL_CONFIRM_ALREADY_ARMED",
+                    "another platform START is waiting for local confirmation", 409,
+                )
+            armed_at = _now()
+            event = self._insert_event(db, self._event_from_record(
+                record, "start_waiting_local_confirmation", robot_id, boot_id,
+                armed_at=armed_at,
+            ))
+            db.execute(
+                "UPDATE processed_commands SET state=?,result_json=?,updated_at=? "
+                "WHERE command_id=?",
+                (COMMAND_STATE_ARMED, json.dumps({**event, "armedAt": armed_at}, ensure_ascii=False), armed_at, command_id),
+            )
+        return self.command(command_id) or {}
+
+    def armed_start(self, execution_id: str = "") -> Dict[str, Any] | None:
+        query = "SELECT * FROM processed_commands WHERE command_type='START' AND state='ARMED'"
+        params: tuple[Any, ...] = ()
+        if execution_id:
+            query += " AND execution_id=?"
+            params = (execution_id,)
+        query += " ORDER BY created_at"
+        with self._connection() as db:
+            rows = db.execute(query, params).fetchall()
+        if len(rows) > 1:
+            raise PlatformStoreError(
+                "MULTIPLE_ARMED_STARTS", "multiple platform START commands are armed", 409
+            )
+        return self._command_dict(rows[0]) if rows else None
+
+    def pending_platform_start(self) -> Dict[str, Any]:
+        record = self.armed_start()
+        if not record:
+            return {}
+        payload = record["payload"]
+        return {
+            "taskName": str(payload.get("taskName") or payload.get("taskId") or ""),
+            "routeName": str(payload.get("routeName") or payload.get("executorRouteId") or ""),
+            "executionId": record["execution_id"],
+            "deploymentId": record["deployment_id"],
+            "armedAt": str(record["result"].get("armedAt") or ""),
+        }
+
+    def confirm_armed_start(self, robot_id: str, boot_id: str) -> Dict[str, Any]:
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT * FROM processed_commands "
+                "WHERE command_type='START' AND state='ARMED' ORDER BY created_at"
+            ).fetchall()
+            if not rows:
+                raise PlatformStoreError(
+                    "NO_ARMED_PLATFORM_START", "no platform START awaits confirmation", 409
+                )
+            if len(rows) != 1:
+                raise PlatformStoreError(
+                    "MULTIPLE_ARMED_STARTS", "multiple platform START commands are armed", 409
+                )
+            record = self._command_dict(rows[0])
+            event = self._insert_event(db, self._event_from_record(
+                record, "local_start_confirmed", robot_id, boot_id,
+            ))
+            db.execute(
+                "UPDATE processed_commands SET state=?,result_json=?,updated_at=? "
+                "WHERE command_id=? AND state=?",
+                (COMMAND_STATE_ACKED, json.dumps(event, ensure_ascii=False), _now(),
+                 record["command_id"], COMMAND_STATE_ARMED),
+            )
+        return self.command(record["command_id"]) or record
+
+    def cancel_armed_start(
+        self, cancel_record: Dict[str, Any], robot_id: str, boot_id: str,
+    ) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            start_row = db.execute(
+                "SELECT * FROM processed_commands WHERE command_type='START' "
+                "AND state='ARMED' AND execution_id=?",
+                (cancel_record["execution_id"],),
+            ).fetchone()
+            if not start_row:
+                return None
+            start_record = self._command_dict(start_row)
+            event = self._insert_event(db, self._event_from_record(
+                cancel_record, "route_canceled", robot_id, boot_id,
+                canceled_before_local_confirmation=True,
+            ))
+            stamp = _now()
+            db.execute(
+                "UPDATE processed_commands SET state=?,result_json=?,updated_at=? "
+                "WHERE command_id=?",
+                (COMMAND_STATE_REJECTED, json.dumps({
+                    "event": "command_rejected",
+                    "error_code": "CANCELED_BEFORE_LOCAL_CONFIRMATION",
+                    "canceled_by_command_id": cancel_record["command_id"],
+                }, ensure_ascii=False), stamp, start_record["command_id"]),
+            )
+            db.execute(
+                "UPDATE processed_commands SET state=?,result_json=?,updated_at=? "
+                "WHERE command_id=?",
+                (COMMAND_STATE_APPLIED, json.dumps(event, ensure_ascii=False), stamp,
+                 cancel_record["command_id"]),
+            )
+        return event
+
+    def expire_armed_starts(
+        self, timeout_sec: float, robot_id: str, boot_id: str,
+    ) -> List[Dict[str, Any]]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_sec)).isoformat()
+        expired: List[Dict[str, Any]] = []
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT * FROM processed_commands WHERE command_type='START' "
+                "AND state='ARMED' AND updated_at<=? ORDER BY created_at",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                record = self._command_dict(row)
+                event = self._insert_event(db, self._event_from_record(
+                    record, "command_failed", robot_id, boot_id,
+                    error_code="LOCAL_CONFIRM_TIMEOUT",
+                    error_message="local confirmation timed out",
+                ))
+                db.execute(
+                    "UPDATE processed_commands SET state=?,result_json=?,updated_at=? "
+                    "WHERE command_id=?",
+                    (COMMAND_STATE_FAILED, json.dumps(event, ensure_ascii=False),
+                     event["occurred_at"], record["command_id"]),
+                )
+                expired.append(event)
+        return expired
 
     def task_id_for_execution(self, execution_id: str) -> str:
         if not execution_id:
@@ -469,6 +674,27 @@ class DeploymentStore:
                 (time.time(), task_id),
             )
         return self.map_upload(task_id) or {}
+
+    def restart_map_upload(
+        self, previous_task_id: str, record: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        stamp = time.time()
+        with self._connection() as db:
+            db.execute(
+                "UPDATE map_uploads SET task_id=?,idempotency_key=?,"
+                "identity_json=?,yaml_sha256=?,pgm_sha256=?,yaml_path=?,"
+                "pgm_path=?,status='PENDING',retry_count=0,next_retry_at=0,"
+                "map_asset_id='',last_error='',created_at=?,updated_at=? "
+                "WHERE task_id=?",
+                (
+                    record["task_id"], record["idempotency_key"],
+                    json.dumps(record["identity"], sort_keys=True),
+                    record["yaml_sha256"], record["pgm_sha256"],
+                    record["yaml_path"], record["pgm_path"], stamp, stamp,
+                    previous_task_id,
+                ),
+            )
+        return self.map_upload(record["task_id"]) or {}
 
     def restore_map_upload_snapshot(
         self, task_id: str, yaml_path: str, pgm_path: str

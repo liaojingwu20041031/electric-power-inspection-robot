@@ -101,6 +101,9 @@ def main(args: Optional[List[str]] = None) -> None:
     signals.bridgeAvailability.connect(backend.update_bridge_availability)
     signals.localAppControlResult.connect(backend.update_local_app_control_result)
     signals.cloudControlResult.connect(backend.update_cloud_control_result)
+    signals.platformStartConfirmResult.connect(
+        backend.update_platform_start_confirm_result
+    )
     signals.taskContext.connect(backend.update_task_context)
     signals.taskEvent.connect(backend.on_task_event)
     signals.taskStatus.connect(backend.on_task_status)

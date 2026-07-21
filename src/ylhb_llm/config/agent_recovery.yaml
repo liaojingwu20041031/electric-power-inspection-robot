@@ -1,0 +1,21 @@
+recoveries:
+  perception:
+    action_type: restart_managed_process
+    process: perception
+    auto_allowed: true
+    requires_no_active_patrol: true
+    timeout_sec: 25.0
+    cooldown_sec: 60.0
+    max_attempts_per_incident: 1
+    verification: process_running
+
+  mobile_bridge:
+    action_type: restart_managed_process
+    process: mobile_bridge
+    auto_allowed: true
+    requires_no_active_patrol: false
+    requires_supervisor_ownership: true
+    timeout_sec: 20.0
+    cooldown_sec: 60.0
+    max_attempts_per_incident: 1
+    verification: bridge_tcp_ok

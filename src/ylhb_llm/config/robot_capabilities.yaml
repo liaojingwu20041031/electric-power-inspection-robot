@@ -1,4 +1,56 @@
 capabilities:
+  search_robot_help:
+    description: 查询本项目使用手册和运维文档；回答如何使用、如何连接、如何建图、如何巡逻等项目问题时使用
+    risk_level: read_only
+    executor: knowledge
+    side_effect: none
+    requires_confirmation: false
+    timeout_sec: 1.0
+    result_schema: {status: [ok, failed]}
+    argument_schema:
+      properties:
+        query: {type: string}
+      required: [query]
+  get_connection_info:
+    description: 读取机器人当前网络接口、可用APP地址、Mobile Bridge、本地APP服务和云连接状态
+    risk_level: read_only
+    executor: connection
+    side_effect: none
+    requires_confirmation: false
+    timeout_sec: 2.0
+    result_schema: {status: [ok, failed]}
+    argument_schema:
+      properties:
+        target: {type: string, enum: [all, local_app, cloud]}
+      required: []
+  run_self_check:
+    description: 基于实时ROS、Supervisor、底盘、传感器、网络和进程状态执行只读自检
+    risk_level: read_only
+    executor: diagnostic
+    side_effect: none
+    requires_confirmation: false
+    timeout_sec: 3.0
+    result_schema: {status: [ok, warning, failed]}
+    argument_schema:
+      properties:
+        scope: {type: string, enum: [all, connection, base, sensors, navigation, perception, patrol, voice]}
+      required: []
+  recover_component:
+    description: 仅根据本轮新鲜诊断结果恢复配置白名单中的非运动组件；不得用于底盘、CAN、导航、电源和线路故障
+    risk_level: system_control
+    executor: system
+    command: recover_component
+    side_effect: component_recovery
+    requires_confirmation: false
+    preconditions: [no_active_patrol]
+    refresh_summary_after: true
+    requires_fresh_diagnostic: true
+    timeout_sec: 30.0
+    result_schema: {status: [sent, succeeded, failed, rejected, timeout]}
+    argument_schema:
+      properties:
+        component: {type: string}
+      required: [component]
   emergency_stop:
     description: 立即请求系统急停，不依赖模型后续判断
     risk_level: emergency

@@ -87,6 +87,7 @@ class UiBackend(QObject):
     cloudStatusChanged = pyqtSignal()
     localAppControlChanged = pyqtSignal()
     cloudControlChanged = pyqtSignal()
+    platformStartConfirmationChanged = pyqtSignal()
     connectionFreshnessChanged = pyqtSignal()
     logsChanged = pyqtSignal()
     robotModeChanged = pyqtSignal()
@@ -139,6 +140,9 @@ class UiBackend(QObject):
         self._cloud_control_message = ''
         self._cloud_requested_enabled = None
         self._cloud_control_started_at = 0.0
+        self._platform_start_confirmation_pending = False
+        self._platform_start_confirmation_message = ''
+        self._platform_start_confirmation_started_at = 0.0
         self._ui_started_at = self.clock()
         self._last_cloud_status_received_at = 0.0
         self._last_local_app_status_received_at = 0.0
@@ -200,6 +204,19 @@ class UiBackend(QObject):
     @pyqtProperty('QVariantMap', notify=cloudStatusChanged)
     def cloudStatus(self) -> Dict[str, Any]:
         return self.state.cloud_status
+
+    @pyqtProperty('QVariantMap', notify=cloudStatusChanged)
+    def pendingPlatformStart(self) -> Dict[str, Any]:
+        pending = self.state.cloud_status.get('pendingPlatformStart') or {}
+        return dict(pending) if isinstance(pending, dict) else {}
+
+    @pyqtProperty(bool, notify=platformStartConfirmationChanged)
+    def platformStartConfirmationPending(self) -> bool:
+        return self._platform_start_confirmation_pending
+
+    @pyqtProperty(str, notify=platformStartConfirmationChanged)
+    def platformStartConfirmationMessage(self) -> str:
+        return self._platform_start_confirmation_message
 
     @pyqtProperty('QVariantMap', notify=connectionFreshnessChanged)
     def bridgeAvailability(self) -> Dict[str, Any]:
@@ -916,6 +933,13 @@ class UiBackend(QObject):
             self._local_app_requested_enabled = None
             self._local_app_control_message = '控制请求已发送，但未收到状态确认'
             self.localAppControlChanged.emit()
+        if (
+            self._platform_start_confirmation_pending
+            and now - self._platform_start_confirmation_started_at >= 5.0
+        ):
+            self._platform_start_confirmation_pending = False
+            self._platform_start_confirmation_message = '确认请求超时，请检查平台任务状态'
+            self.platformStartConfirmationChanged.emit()
 
     @pyqtSlot(str)
     def sendSystemCommand(self, command: str) -> None:
@@ -1005,6 +1029,29 @@ class UiBackend(QObject):
             profile=self._patrol_start_profile,
         )
         self.addLog('系统命令: start_patrol_mode')
+
+    @pyqtSlot()
+    def confirmPlatformPatrolStart(self) -> None:
+        if self._platform_start_confirmation_pending:
+            return
+        if not self.pendingPlatformStart.get('executionId'):
+            self.addLog('当前没有待确认的平台任务')
+            return
+        self._platform_start_confirmation_pending = True
+        self._platform_start_confirmation_started_at = self.clock()
+        self._platform_start_confirmation_message = '正在确认平台任务…'
+        self.platformStartConfirmationChanged.emit()
+        self.bridge.call_confirm_platform_start()
+
+    def update_platform_start_confirm_result(
+        self, success: bool, message: str
+    ) -> None:
+        self._platform_start_confirmation_pending = False
+        self._platform_start_confirmation_message = (
+            '平台任务已确认，等待巡逻启动' if success else f'确认失败：{message}'
+        )
+        self.platformStartConfirmationChanged.emit()
+        self.addLog(self._platform_start_confirmation_message)
 
     @pyqtSlot()
     def start3dCapture(self) -> None:

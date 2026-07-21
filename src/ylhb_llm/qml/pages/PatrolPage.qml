@@ -263,8 +263,10 @@ ScrollView {
 
                     WarmButton {
                         objectName: "startPatrolButton"
-                        text: backend.patrolStarting ? "启动准备中" : "启动巡逻任务"
-                        enabled: backend.patrolCanStart
+                        text: backend.pendingPlatformStart.executionId
+                            ? "确认启动平台巡检" : "等待平台任务"
+                        enabled: !!backend.pendingPlatformStart.executionId
+                            && !backend.platformStartConfirmationPending
                         Layout.fillWidth: true
                         Layout.preferredHeight: 54
                         font.pixelSize: 16
@@ -477,17 +479,40 @@ ScrollView {
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape
-        title: "启动巡逻任务？"
+        title: "确认启动平台巡检？"
         width: Math.min(root.availableWidth - 64, 560)
-        height: 280
+        height: 300
         anchors.centerIn: parent
-        onAccepted: backend.startPatrolMode()
-        contentItem: Label {
-            text: "即将启动底盘、雷达、导航和巡逻执行器。\n机器人可能开始移动，请确认周围环境安全、急停可用，并且当前路线正确。"
-            color: Theme.text
-            font.pixelSize: 16
-            wrapMode: Text.Wrap
-            padding: 18
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                text: "平台任务：" + (backend.pendingPlatformStart.taskName || "未命名任务")
+                color: Theme.text
+                font.pixelSize: 16
+                font.bold: true
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+            Label {
+                text: "巡检路线：" + (backend.pendingPlatformStart.routeName || "未命名路线")
+                color: Theme.text
+                font.pixelSize: 16
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+            Label {
+                text: "确认后机器人可能开始移动，请确认周围环境安全、急停可用。"
+                color: Theme.warning
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+            Label {
+                visible: backend.platformStartConfirmationMessage.length > 0
+                text: backend.platformStartConfirmationMessage
+                color: Theme.muted
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
         }
         footer: Item {
             implicitHeight: 64
@@ -495,9 +520,17 @@ ScrollView {
                 anchors.fill: parent
                 spacing: 10
                 Item { Layout.fillWidth: true }
-                WarmButton { objectName: "cancelStartPatrolButton"; text: "取消"; Layout.preferredWidth: 120; Layout.preferredHeight: 48; buttonColor: Theme.muted; onClicked: startPatrolDialog.close() }
-                WarmButton { objectName: "confirmStartPatrolButton"; text: "确认启动"; Layout.preferredWidth: 140; Layout.preferredHeight: 48; onClicked: startPatrolDialog.accept() }
+                WarmButton { objectName: "cancelStartPatrolButton"; text: "取消"; enabled: !backend.platformStartConfirmationPending; Layout.preferredWidth: 120; Layout.preferredHeight: 48; buttonColor: Theme.muted; onClicked: startPatrolDialog.close() }
+                WarmButton { objectName: "confirmStartPatrolButton"; text: backend.platformStartConfirmationPending ? "确认中…" : "确认启动"; enabled: !!backend.pendingPlatformStart.executionId && !backend.platformStartConfirmationPending; Layout.preferredWidth: 140; Layout.preferredHeight: 48; onClicked: backend.confirmPlatformPatrolStart() }
             }
+        }
+    }
+
+    Connections {
+        target: backend
+        function onCloudStatusChanged() {
+            if (!backend.pendingPlatformStart.executionId)
+                startPatrolDialog.close()
         }
     }
 

@@ -264,3 +264,95 @@ def test_plain_text_chassis_status_preserves_offline_state():
         node, SimpleNamespace(data='offline heartbeat_age=-1 feedback_age=-1'))
 
     assert node.status_aggregator.get('chassis_status')['state'] == 'offline'
+
+
+def test_status_snapshot_preserves_full_system_status_and_is_mode_aware():
+    aggregator = RobotStatusAggregator(clock=lambda: 10.0)
+    aggregator.update('system_status', {
+        'system_mode': 'ready', 'navigation': 'stopped',
+        'patrol_mode_state': 'idle', 'custom_supervisor_field': {'value': 1},
+    }, now=10.0)
+
+    snapshot = aggregator.snapshot()
+    summary = aggregator.mode_aware_summary()
+
+    assert snapshot['system_status']['custom_supervisor_field'] == {'value': 1}
+    assert snapshot['system_status']['fresh'] is True
+    assert summary['health'] == 'ok'
+
+
+def test_new_status_callbacks_preserve_fault_app_cloud_and_imu():
+    node = make_node()
+
+    InspectionAgentNode.chassis_fault_callback(node, SimpleNamespace(data='undervoltage'))
+    InspectionAgentNode.local_app_status_callback(node, SimpleNamespace(data='{"enabled":false}'))
+    InspectionAgentNode.cloud_status_callback(node, SimpleNamespace(data='{"enabled":true,"connected":false}'))
+    InspectionAgentNode.imu_callback(node, SimpleNamespace())
+
+    assert node.status_aggregator.raw('chassis_fault')['text'] == 'undervoltage'
+    assert node.status_aggregator.raw('local_app_status')['enabled'] is False
+    assert node.status_aggregator.raw('cloud_status')['connected'] is False
+    assert node.status_aggregator.get('imu')['fresh'] is True
+
+
+def test_health_monitor_debounces_issue_and_does_not_auto_recover_by_default():
+    now = [0.0]
+    node = make_node()
+    node.enable_agent_health_monitor = True
+    node.enable_agent_auto_recovery = False
+    node.health_issue_debounce_sec = 5.0
+    node.health_clock = lambda: now[0]
+    node.health_issue_first_seen = {}
+    node.health_published_incidents = set()
+    node.health_status_pub = FakePub()
+    node.diagnostic_event_pub = FakePub()
+    node.system_pub = FakePub()
+    node.diagnostic_engine = SimpleNamespace(run_self_check=lambda _scope: {
+        'diagnostic_id': 'diag1', 'overall': 'warning',
+        'issues': [{'code': 'PERCEPTION_STOPPED', 'component': 'perception', 'recoverable': True, 'recovery_component': 'perception'}],
+    })
+
+    InspectionAgentNode.health_monitor_tick(node)
+    now[0] = 6.0
+    InspectionAgentNode.health_monitor_tick(node)
+    InspectionAgentNode.health_monitor_tick(node)
+
+    assert len(node.diagnostic_event_pub.messages) == 1
+    assert node.system_pub.messages == []
+
+
+def test_health_monitor_auto_recovery_uses_operation_and_high_level_command_once():
+    now = [100.0]
+    node = make_node(now=100.0)
+    node.enable_agent_health_monitor = True
+    node.enable_agent_auto_recovery = True
+    node.health_issue_debounce_sec = 0.0
+    node.health_recovery_cooldown_sec = 60.0
+    node.health_clock = lambda: now[0]
+    node.health_issue_first_seen = {'PERCEPTION_STOPPED:perception': 90.0}
+    node.health_published_incidents = set()
+    node.health_auto_recovered_incidents = set()
+    node.health_last_recovery_at = {}
+    node.health_status_pub = FakePub()
+    node.diagnostic_event_pub = FakePub()
+    node.system_pub = FakePub()
+    node.recovery_catalog = SimpleNamespace(
+        names=lambda: ['perception'],
+        get=lambda _name: {
+            'auto_allowed': True, 'requires_no_active_patrol': True,
+            'cooldown_sec': 60.0, 'timeout_sec': 25.0,
+        },
+    )
+    report = {
+        'diagnostic_id': 'diag1', 'overall': 'warning',
+        'issues': [{'code': 'PERCEPTION_STOPPED', 'component': 'perception', 'recoverable': True, 'recovery_component': 'perception'}],
+    }
+    node.diagnostic_engine = SimpleNamespace(run_self_check=lambda _scope: report)
+
+    InspectionAgentNode.health_monitor_tick(node)
+    InspectionAgentNode.health_monitor_tick(node)
+
+    assert len(node.system_pub.messages) == 1
+    assert node.system_pub.messages[0]['command'] == 'recover_component'
+    assert node.system_pub.messages[0]['diagnostic_id'] == 'diag1'
+    assert len(node.operation_manager.list_active(now=100.0)) == 1

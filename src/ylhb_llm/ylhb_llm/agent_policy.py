@@ -9,6 +9,9 @@ CANCELABLE_PATROL_STATES = ACTIVE_PATROL_STATES | {
 }
 SAFE_MOTIONS = {'前进', '后退', '左转', '右转', '停止'}
 DANGEROUS_TOOLS = {'/cmd_vel', 'cmd_vel', 'nav2_goal', 'delete_map', 'edit_route'}
+FORBIDDEN_RECOVERY_COMPONENTS = {
+    'base', 'chassis', 'can', 'navigation', 'nav2', 'bringup', 'power', 'wiring',
+}
 
 
 @dataclass
@@ -59,6 +62,8 @@ def authorize(
                 recovery_components=recovery_components,
                 state_summary=summary,
             )
+    if tool == 'recover_component':
+        return _authorize_recovery(arguments, state)
     if tool == 'start_patrol_mode':
         return PolicyResult(True, system_command='start_patrol_mode')
     if tool == 'pause_patrol':
@@ -92,6 +97,9 @@ def authorize(
         'describe_route',
         'list_checkpoints',
         'inspect_checkpoint',
+        'search_robot_help',
+        'get_connection_info',
+        'run_self_check',
         'start_route',
         'start_component',
         'stop_component',
@@ -104,6 +112,34 @@ def authorize(
     if tool in {'rotate_relative', 'move_relative'}:
         return PolicyResult(True)
     return PolicyResult(False, '未知工具')
+
+
+def _authorize_recovery(arguments: Dict[str, Any], state: Dict[str, Any]) -> PolicyResult:
+    component = str(arguments.get('component') or '')
+    if component.lower() in FORBIDDEN_RECOVERY_COMPONENTS:
+        return PolicyResult(False, '该组件禁止自动恢复', error_code='recovery_forbidden')
+    patrol_state = str(state.get('patrol_state') or 'unknown')
+    if patrol_state in ACTIVE_PATROL_STATES | {'starting', 'command_sent', 'paused'}:
+        return PolicyResult(False, '活动巡逻期间禁止恢复组件', error_code='active_patrol')
+    active = list(state.get('active_operations') or [])
+    if any(str(item.get('tool_name') or '') in {'rotate_relative', 'move_relative'} for item in active):
+        return PolicyResult(False, '基础运动操作执行期间禁止恢复组件', error_code='active_motion')
+    if any(str(item.get('tool_name') or '') == 'recover_component' for item in active):
+        return PolicyResult(False, '已有恢复操作正在执行', error_code='recovery_in_progress')
+    report = state.get('latest_diagnostic') or {}
+    now = float(state.get('now') or 0.0)
+    generated_at = float(report.get('generated_at') or 0.0)
+    fresh_sec = float(state.get('diagnostic_freshness_sec') or 5.0)
+    if not generated_at or now - generated_at > fresh_sec:
+        return PolicyResult(False, '最近一次诊断已过期', error_code='fresh_diagnostic_required')
+    matching = any(
+        issue.get('recoverable') is True
+        and str(issue.get('recovery_component') or issue.get('component') or '') == component
+        for issue in report.get('issues') or []
+    )
+    if not matching:
+        return PolicyResult(False, '诊断未确认该组件可恢复', error_code='not_recoverable')
+    return PolicyResult(True, system_command='recover_component')
 
 
 def _missing_preconditions(

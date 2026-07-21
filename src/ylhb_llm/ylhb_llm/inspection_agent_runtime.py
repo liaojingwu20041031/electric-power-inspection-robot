@@ -161,7 +161,10 @@ class InspectionAgentRuntime:
         call = context.pop('pending_call')
         result = self._operation_result(operation)
         self._update_component_ledger(context, call, result)
-        if call.name in {'start_component', 'stop_component'}:
+        if (
+            call.name in {'start_component', 'stop_component'}
+            or (self.tool_schemas.get(call.name) or {}).get('refresh_summary_after')
+        ):
             self._inject_robot_summary(context)
         component_status = str((result.get('data') or {}).get('component_status') or '')
         if call.name == 'start_component' and component_status == 'started':
@@ -569,9 +572,14 @@ class InspectionAgentRuntime:
     def _operation_result(operation: Dict[str, Any]) -> Dict[str, Any]:
         state = str(operation.get('state') or 'failed')
         payload = dict(operation.get('result') or {})
-        payload.setdefault('ok', state == 'succeeded')
         component_status = str(payload.pop('result_status', '') or '')
-        payload['status'] = state
+        tool_name = str(operation.get('tool_name') or '')
+        payload['status'] = (
+            component_status
+            if tool_name == 'recover_component' and component_status in {'succeeded', 'failed', 'rejected'}
+            else state
+        )
+        payload['ok'] = payload['status'] == 'succeeded'
         payload.setdefault('message', f'操作终态：{state}')
         data = dict(payload.get('data') or {})
         data.update({
@@ -579,7 +587,7 @@ class InspectionAgentRuntime:
             'operation_state': state,
             'arguments': dict(operation.get('arguments') or {}),
         })
-        if str(operation.get('tool_name') or '') in {'start_component', 'stop_component'}:
+        if tool_name in {'start_component', 'stop_component'}:
             data['component_status'] = component_status or state
         payload['data'] = data
         return payload
@@ -875,7 +883,15 @@ class InspectionAgentRuntime:
     ) -> Dict[str, Any]:
         context = self.state.policy_context()
         if self.tools.status_aggregator is not None:
-            context['robot_summary'] = self.tools.status_aggregator.summary()
+            context['robot_summary'] = self.tools.status_aggregator.mode_aware_summary()
+        if self.tools.diagnostic_engine is not None:
+            context['latest_diagnostic'] = dict(
+                getattr(self.tools.diagnostic_engine, 'last_report', {}) or {})
+            context['now'] = time.time()
+            context['diagnostic_freshness_sec'] = float(
+                getattr(self.tools.diagnostic_engine, 'diagnostic_freshness_sec', 5.0))
+        if self.tools.operation_manager is not None:
+            context['active_operations'] = self.tools.operation_manager.list_active()
         if run_context is not None:
             context['started_components'] = list(run_context.get('started_components') or [])
         return context
@@ -884,7 +900,7 @@ class InspectionAgentRuntime:
         aggregator = self.tools.status_aggregator
         if aggregator is None:
             return
-        summary = aggregator.summary()
+        summary = aggregator.mode_aware_summary()
         self.messages.append({
             'role': 'system',
             'content': 'INTERNAL_FRESH_ROBOT_SUMMARY 仅供推理，用户可见状态必须用自然简体中文概括：' + json.dumps(

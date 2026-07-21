@@ -1,10 +1,12 @@
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 from std_msgs.msg import String
 
 from .agent_schema import tool_result
+from .agent_policy import ACTIVE_PATROL_STATES, FORBIDDEN_RECOVERY_COMPONENTS
 
 SYSTEM_TOOLS = {
     'start_patrol_mode', 'start_route', 'go_to_checkpoint',
@@ -54,6 +56,9 @@ class AgentTools:
         operation_manager=None,
         status_aggregator=None,
         voice_session_pub=None,
+        knowledge_index=None,
+        diagnostic_engine=None,
+        recovery_catalog=None,
     ) -> None:
         self.node = node
         self.state = state
@@ -67,19 +72,40 @@ class AgentTools:
         self.operation_manager = operation_manager
         self.status_aggregator = status_aggregator
         self.voice_session_pub = voice_session_pub
+        self.knowledge_index = knowledge_index
+        self.diagnostic_engine = diagnostic_engine
+        self.recovery_catalog = recovery_catalog
         self.tool_schemas = dict(tool_schemas or {})
         self.registry = ToolRegistry()
         self._register_tools(self.tool_schemas)
 
     def _register_tools(self, tool_schemas: Dict[str, Any]) -> None:
+        handlers = {
+            'system': self._execute_system,
+            'base_skill': self._execute_base_skill,
+            'voice_session': self._execute_voice_session,
+            'knowledge': self._execute_knowledge,
+            'connection': self._execute_connection,
+            'diagnostic': self._execute_diagnostic,
+            'local': self._execute_local,
+            'route_read': self._execute_local,
+        }
+        for name, schema in tool_schemas.items():
+            handler = handlers.get(str(schema.get('executor') or ''))
+            if handler is not None:
+                self.registry.register(ToolDefinition(name, schema, handler))
         for name in SYSTEM_TOOLS | COMPONENT_TOOLS:
-            self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_system))
+            if self.registry.get(name) is None:
+                self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_system))
         for name in BASE_SKILL_TOOLS:
-            self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_base_skill))
+            if self.registry.get(name) is None:
+                self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_base_skill))
         for name in VOICE_SESSION_TOOLS:
-            self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_voice_session))
+            if self.registry.get(name) is None:
+                self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_voice_session))
         for name in {'get_robot_summary', 'get_system_status', 'get_patrol_status', 'get_voice_status', 'generate_local_status_reply', 'list_routes', 'describe_route', 'list_checkpoints', 'inspect_checkpoint'}:
-            self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_local))
+            if self.registry.get(name) is None:
+                self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_local))
 
     def execute(self, decision: Dict[str, Any], policy) -> Dict[str, Any]:
         tool_call = decision['tool_call']
@@ -163,6 +189,40 @@ class AgentTools:
 
     def _execute_system(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
         name = str(decision['tool_call']['name'])
+        if name == 'recover_component':
+            component = str(args.get('component') or '')
+            if component.lower() in FORBIDDEN_RECOVERY_COMPONENTS:
+                return tool_result(name, False, 'rejected', '该组件禁止自动恢复', error_code='recovery_forbidden')
+            if self.recovery_catalog is None or component not in self.recovery_catalog.names():
+                return tool_result(name, False, 'rejected', '组件不在恢复白名单', error_code='recovery_not_allowed')
+            recovery = self.recovery_catalog.get(component)
+            patrol_state = str(
+                getattr(self.state, 'patrol_state', lambda: 'unknown')()
+                if callable(getattr(self.state, 'patrol_state', None))
+                else getattr(self.state, 'patrol_status', {}).get('state', 'unknown')
+            )
+            if recovery.get('requires_no_active_patrol') and patrol_state in ACTIVE_PATROL_STATES | {'starting', 'command_sent', 'paused'}:
+                return tool_result(name, False, 'rejected', '活动巡逻期间禁止恢复该组件', error_code='active_patrol')
+            if self.operation_manager is not None and any(
+                item.get('tool_name') in {'rotate_relative', 'move_relative', 'recover_component'}
+                and item.get('operation_id') != decision.get('operation_id')
+                for item in self.operation_manager.list_active()
+            ):
+                return tool_result(name, False, 'rejected', '存在运动或恢复操作，拒绝并发恢复', error_code='operation_conflict')
+            report = getattr(self.diagnostic_engine, 'last_report', {}) if self.diagnostic_engine else {}
+            engine_clock = getattr(self.diagnostic_engine, 'clock', None)
+            now = engine_clock() if callable(engine_clock) else float(report.get('generated_at') or time.time())
+            if now - float(report.get('generated_at') or 0.0) > float(
+                getattr(self.diagnostic_engine, 'diagnostic_freshness_sec', 5.0)):
+                return tool_result(name, False, 'rejected', '最近一次诊断已过期', error_code='fresh_diagnostic_required')
+            matching = any(
+                issue.get('recoverable') is True
+                and str(issue.get('recovery_component') or issue.get('component') or '') == component
+                for issue in report.get('issues') or []
+            )
+            if not matching:
+                return tool_result(name, False, 'rejected', '缺少本轮可恢复诊断证据', error_code='fresh_diagnostic_required')
+            args = {**args, 'diagnostic_id': str(report.get('diagnostic_id') or '')}
         if name in COMPONENT_TOOLS:
             component = str(args.get('component') or '')
             command = f'{"start" if name == "start_component" else "stop"}_{component}'
@@ -180,11 +240,33 @@ class AgentTools:
         payload = {'schema_version': '1.0', 'source': 'inspection_agent', **self._correlation_fields(decision)}
         payload.update({
             key: value for key, value in args.items()
-            if key not in {'command', 'component'}
+            if key != 'command' and (key != 'component' or name == 'recover_component')
         })
         payload['command'] = command
         self.publish_json(self.system_pub, payload)
         return tool_result(name, True, 'sent', f'已发送系统命令: {command}', {'command': command})
+
+    def _execute_knowledge(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(decision['tool_call']['name'])
+        if self.knowledge_index is None:
+            return tool_result(name, False, 'failed', '项目文档索引不可用')
+        results = self.knowledge_index.search(str(args.get('query') or ''))
+        return tool_result(name, True, 'ok', '已查询项目文档', {'results': results})
+
+    def _execute_connection(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(decision['tool_call']['name'])
+        if self.diagnostic_engine is None:
+            return tool_result(name, False, 'failed', '连接状态提供器不可用')
+        data = self.diagnostic_engine.get_connection_info(str(args.get('target') or 'all'))
+        return tool_result(name, True, 'ok', '已读取实时连接信息', data)
+
+    def _execute_diagnostic(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(decision['tool_call']['name'])
+        if self.diagnostic_engine is None:
+            return tool_result(name, False, 'failed', '机器人诊断引擎不可用')
+        data = self.diagnostic_engine.run_self_check(str(args.get('scope') or 'all'))
+        status = str(data.get('overall') or 'failed')
+        return tool_result(name, status != 'failed', status, '只读自检完成', data)
 
     def _execute_base_skill(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
         if self.base_skill_pub is None:
@@ -223,7 +305,9 @@ class AgentTools:
         if name == 'get_robot_summary':
             if self.status_aggregator is None:
                 return tool_result(name, False, 'failed', 'robot status aggregator unavailable')
-            return tool_result(name, True, 'ok', '机器人状态摘要', self.status_aggregator.summary())
+            summarize = getattr(
+                self.status_aggregator, 'mode_aware_summary', self.status_aggregator.summary)
+            return tool_result(name, True, 'ok', '机器人状态摘要', summarize())
         if self.route_toolpack and name == 'list_routes':
             return tool_result(name, True, 'ok', 'routes', {'routes': self.route_toolpack.list_routes()})
         if self.route_toolpack and name == 'describe_route':

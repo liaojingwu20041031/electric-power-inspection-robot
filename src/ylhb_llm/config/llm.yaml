@@ -45,6 +45,18 @@ inspection_agent_node:
     patrol_route_path: auto
     route_file_path: auto  # deprecated alias; patrol_route_path takes precedence
     robot_capabilities_file: robot_capabilities.yaml
+    knowledge_globs:
+      - README.md
+      - docs/**/*.md
+      - src/电力巡检机器人使用与调试手册.md
+    diagnostics_config_file: agent_diagnostics.yaml
+    recovery_config_file: agent_recovery.yaml
+    mobile_bridge_port: 8000
+    enable_agent_health_monitor: true
+    enable_agent_auto_recovery: false
+    health_monitor_interval_sec: 2.0
+    health_issue_debounce_sec: 5.0
+    health_recovery_cooldown_sec: 60.0
     max_agent_steps: 12
     max_side_effect_tools_per_turn: 4
     max_identical_tool_calls: 2
@@ -138,6 +150,7 @@ system_supervisor_node:
     tts_voice: Serena
     tts_language_type: Chinese
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    recovery_config_file: agent_recovery.yaml
 
 voice_input_node:
   ros__parameters:
@@ -177,8 +190,8 @@ voice_session_node:
     kws_joiner: ~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx
     kws_tokens: ~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/tokens.txt
     kws_keywords: ~/.local/share/ylhb/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/keywords.txt
-    kws_keywords_score: 1.3
-    kws_keywords_threshold: 0.25
+    kws_keywords_score: 1.5
+    kws_keywords_threshold: 0.20
     agent_response_timeout_sec: 30.0
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     asr_model: qwen3-asr-flash

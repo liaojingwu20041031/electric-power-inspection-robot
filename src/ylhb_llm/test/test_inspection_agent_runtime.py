@@ -272,6 +272,35 @@ def test_repeated_status_queries_are_allowed_while_state_is_changing():
     assert result['assistant_text'] == '状态查询完成。'
 
 
+def test_operation_feedback_refreshes_summary_when_schema_requests_it():
+    qwen = FakeQwen(final_response('恢复结果已确认。'))
+    runtime, _pubs = make_runtime(qwen)
+    runtime.tool_schemas['recover_component'] = {
+        'properties': {'component': {'type': 'string'}}, 'required': ['component'],
+        'side_effect': 'component_recovery', 'refresh_summary_after': True,
+    }
+    runtime.pending_turn = {
+        'pending_operation_id': 'op1',
+        'pending_call': SimpleNamespace(id='call1', name='recover_component', arguments={'component': 'perception'}),
+        'request': {'text': '恢复感知'}, 'run_id': 'run1', 'request_id': 'req1',
+        'tool_results': [], 'decision': {}, 'side_effect_tools': 1,
+        'previous_call_key': '', 'identical_call_count': 0, 'steps_used': 1,
+        'required_retry_used': False, 'force_tool_once': False, 'started_components': [],
+        'progress_announced': False, 'preparation_seen': False,
+        'target_tool': 'recover_component', 'terminal_side_effect_tools': [],
+    }
+
+    runtime.resume_turn({
+        'operation_id': 'op1', 'tool_name': 'recover_component', 'state': 'succeeded',
+        'arguments': {'component': 'perception'}, 'result': {'message': '恢复成功'},
+    })
+
+    assert any(
+        str(message.get('content') or '').startswith('INTERNAL_FRESH_ROBOT_SUMMARY')
+        for message in runtime.messages
+    )
+
+
 def test_runtime_forwards_run_and_tool_call_id_to_operation_manager():
     qwen = FakeQwen([
         tool_response('rotate_relative', {'angle_deg': 10}, call_id='call_rotate_1'),

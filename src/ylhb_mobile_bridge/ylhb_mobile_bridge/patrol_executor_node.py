@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from .patrol_route_store import (
@@ -718,7 +719,7 @@ class PatrolExecutorNode(Node):
             "run_id": context.get("active_control_run_id", "") if control_active else context.get("run_id", ""),
             "operation_id": context.get("active_control_operation_id", "") if control_active else context.get("operation_id", ""),
             "tool_call_id": context.get("active_control_tool_call_id", "") if control_active else context.get("tool_call_id", ""),
-            "occurred_at": time.time(),
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def _publish_text_command(self, text: str) -> None:

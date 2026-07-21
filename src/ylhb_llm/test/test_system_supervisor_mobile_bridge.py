@@ -2,6 +2,7 @@ import json
 import re
 import shlex
 import threading
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -1515,3 +1516,79 @@ def test_patrol_start_failure_keeps_agent_operation_correlation():
         'go_to_checkpoint', False, '巡逻启动失败: navigation failed')
     assert snapshots[0][1]['operation_id'] == 'op_1'
     assert snapshots[0][1]['state'] == 'failed'
+
+
+def recovery_node(component='perception'):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    process = FakeProcess(running=False)
+    process.last_error = ''
+    process.last_started_at = 0.0
+    node.processes = {component: process}
+    node.recovery_catalog = SimpleNamespace(
+        names=lambda: [component],
+        get=lambda name: {
+            'process': name, 'cooldown_sec': 60.0,
+            'requires_no_active_patrol': name == 'perception',
+            'requires_supervisor_ownership': name == 'mobile_bridge',
+            'verification': 'bridge_tcp_ok' if name == 'mobile_bridge' else 'process_running',
+        },
+    )
+    node.recovery_last_attempt_at = {}
+    node.recovery_incidents = set()
+    node.patrol_mode_state = 'idle'
+    node.mobile_bridge_owner = 'supervisor'
+    node.stop_process = Mock()
+    node.start_process = Mock(return_value=True)
+    node.set_result = Mock()
+    node.publish_component_operation_feedback = Mock()
+    return node, process
+
+
+def test_perception_recovery_restarts_managed_process_and_publishes_true_terminal():
+    node, process = recovery_node()
+    process.is_running = Mock(return_value=True)
+
+    node.recover_component('perception', {
+        'operation_id': 'op1', 'run_id': 'run1', 'tool_call_id': 'call1',
+        'diagnostic_id': 'diag1',
+    })
+
+    node.stop_process.assert_called_once_with('perception', report=False)
+    node.start_process.assert_called_once_with('perception')
+    node.publish_component_operation_feedback.assert_called_once_with(
+        {'run_id': 'run1', 'operation_id': 'op1', 'tool_call_id': 'call1'},
+        True, 'succeeded')
+
+
+def test_mobile_bridge_recovery_rejects_external_systemd_owner():
+    node, _process = recovery_node('mobile_bridge')
+    node.mobile_bridge_owner = 'systemd'
+
+    node.recover_component('mobile_bridge', {'operation_id': 'op1'})
+
+    node.start_process.assert_not_called()
+    assert 'systemd' in node.set_result.call_args.args[2]
+    assert node.publish_component_operation_feedback.call_args.args[1:] == (False, 'rejected')
+
+
+def test_mobile_bridge_recovery_requires_tcp_verification(monkeypatch):
+    node, process = recovery_node('mobile_bridge')
+    process.is_running = Mock(return_value=True)
+    monkeypatch.setattr(system_supervisor_node, 'mobile_bridge_tcp_status', lambda *_args, **_kwargs: 'tcp_error')
+
+    node.recover_component('mobile_bridge', {'operation_id': 'op1', 'diagnostic_id': 'diag1'})
+
+    assert node.publish_component_operation_feedback.call_args.args[1:] == (False, 'failed')
+
+
+def test_same_diagnostic_recovery_is_blocked_by_cooldown(monkeypatch):
+    node, process = recovery_node()
+    process.is_running = Mock(return_value=True)
+    monkeypatch.setattr(system_supervisor_node.time, 'monotonic', lambda: 100.0)
+    payload = {'operation_id': 'op1', 'diagnostic_id': 'diag1'}
+
+    node.recover_component('perception', payload)
+    node.recover_component('perception', {**payload, 'operation_id': 'op2'})
+
+    assert node.start_process.call_count == 1
+    assert node.publish_component_operation_feedback.call_args.args[1:] == (False, 'rejected')

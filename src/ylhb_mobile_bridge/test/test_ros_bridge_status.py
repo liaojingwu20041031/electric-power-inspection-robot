@@ -775,6 +775,23 @@ def test_cloud_toggle_publishes_status_immediately():
     assert len(bridge._cloud_status_pub.messages) == 1
 
 
+def test_platform_start_confirmation_service_uses_cloud_client_queue():
+    bridge = make_bridge()
+    confirmed = []
+    published = []
+    bridge.cloud_client = SimpleNamespace(
+        confirm_local_start=lambda: confirmed.append(True)
+    )
+    bridge.publish_cloud_status_now = lambda: published.append(True)
+    response = SimpleNamespace(success=False, message='')
+
+    bridge._confirm_platform_start(SimpleNamespace(), response)
+
+    assert response.success is True
+    assert confirmed == [True]
+    assert published == [True]
+
+
 def test_invalid_cloud_queue_item_is_rejected_with_event():
     bridge = make_velocity_bridge()
     bridge._cloud_command_queue = queue.Queue()
@@ -815,15 +832,41 @@ def test_patrol_event_keeps_its_own_command_context():
         "active_request_id": "wrong-request", "active_command_id": "wrong-command",
     }
     event = {
-        "event": "route_paused", "execution_id": "execution-1", "deployment_id": "deployment-1",
+        "event": "route_paused", "robot_id": "event-robot",
+        "execution_id": "execution-1", "deployment_id": "deployment-1",
         "request_id": "request-1", "command_id": "command-1",
+        "occurred_at": "2026-07-21T00:00:00+00:00",
     }
 
     bridge._on_patrol_event(SimpleNamespace(data=json.dumps(event)))
 
     saved = bridge.platform_store.events[-1]
-    assert (saved["execution_id"], saved["request_id"], saved["command_id"]) == ("execution-1", "request-1", "command-1")
+    assert (
+        saved["robot_id"], saved["execution_id"], saved["deployment_id"],
+        saved["request_id"], saved["command_id"], saved["occurred_at"],
+    ) == (
+        "event-robot", "execution-1", "deployment-1",
+        "request-1", "command-1", "2026-07-21T00:00:00+00:00",
+    )
     assert bridge.platform_store.states[-1][1] == "APPLIED"
+
+
+def test_patrol_event_missing_identity_is_not_filled_from_global_context():
+    bridge = make_bridge()
+    bridge.platform_store = FakePlatformStore()
+    bridge._platform_context = {
+        "active_execution_id": "wrong-execution",
+        "active_deployment_id": "wrong-deployment",
+        "active_request_id": "wrong-request",
+        "active_command_id": "wrong-command",
+    }
+
+    bridge._on_patrol_event(SimpleNamespace(data=json.dumps({
+        "event": "route_started", "robot_id": "robot-1",
+        "execution_id": "execution-1",
+    })))
+
+    assert bridge.platform_store.events == []
 
 
 def test_debug_status_topics_include_all_four():

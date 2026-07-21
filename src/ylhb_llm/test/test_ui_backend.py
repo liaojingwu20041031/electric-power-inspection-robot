@@ -28,6 +28,7 @@ class FakeBridge:
         self.agent_requests = []
         self.cloud_enabled_requests = []
         self.local_app_enabled_requests = []
+        self.platform_start_confirm_requests = 0
 
     def publish_system_command(self, command, **extra):
         self.system_commands.append((command, extra))
@@ -55,6 +56,9 @@ class FakeBridge:
 
     def call_local_app_enabled(self, enabled):
         self.local_app_enabled_requests.append(bool(enabled))
+
+    def call_confirm_platform_start(self):
+        self.platform_start_confirm_requests += 1
 
 
 def make_backend(clock, **kwargs):
@@ -233,6 +237,24 @@ def test_start_patrol_mode_sends_system_command_to_supervisor():
     backend.startPatrolMode()
 
     assert backend.bridge.system_commands == [('start_patrol_mode', {'profile': 'inspection'})]
+
+
+def test_platform_patrol_confirmation_uses_trigger_without_task_identity_arguments():
+    backend = make_backend(lambda: 100.0)
+    backend.update_cloud_status({
+        'pendingPlatformStart': {
+            'taskName': '夜间巡检', 'routeName': '一层路线',
+            'executionId': 'execution-1', 'deploymentId': 'deployment-1',
+            'armedAt': '2026-07-21T00:00:00+00:00',
+        }
+    })
+
+    backend.confirmPlatformPatrolStart()
+    backend.confirmPlatformPatrolStart()
+
+    assert backend.platformStartConfirmationPending is True
+    assert backend.bridge.platform_start_confirm_requests == 1
+    assert backend.bridge.system_commands == []
     assert backend.bridge.patrol_commands == []
 
 

@@ -11,6 +11,14 @@ class RobotStatusAggregator:
         self.default_max_age_sec = float(default_max_age_sec)
         self.clock = clock
         self._observations: Dict[str, Dict[str, Any]] = {}
+        self.expected_components: Dict[str, tuple[str, ...]] = {}
+
+    def configure_expected_components(self, expected: Dict[str, Any]) -> None:
+        self.expected_components = {
+            str(mode).lower(): tuple(str(name) for name in names)
+            for mode, names in (expected or {}).items()
+            if isinstance(names, (list, tuple))
+        }
 
     def update(
         self,
@@ -42,6 +50,27 @@ class RobotStatusAggregator:
             'fresh': fresh,
         }
 
+    def raw(self, source: str) -> Dict[str, Any]:
+        observation = self._observations.get(source)
+        return dict(observation['payload']) if observation else {}
+
+    def snapshot(self, now: float | None = None) -> Dict[str, Dict[str, Any]]:
+        return {source: self.get(source, now) for source in self._observations}
+
+    def mode_aware_summary(self, now: float | None = None) -> Dict[str, Any]:
+        summary = self.summary(now)
+        system = self.get('system_status', now)
+        mode = str(
+            system.get('system_mode') or system.get('mode')
+            or system.get('patrol_mode_state') or 'unknown'
+        ).lower()
+        expected = self.expected_components.get(mode, ())
+        unhealthy = not system.get('fresh') or any(
+            system.get(name) not in {'running', 'embedded'} for name in expected
+        )
+        summary['health'] = 'warning' if unhealthy else 'ok'
+        return summary
+
     def summary(self, now: float | None = None) -> Dict[str, Any]:
         system = self.get('system_status', now)
         patrol = self.get('patrol_status', now)
@@ -51,7 +80,7 @@ class RobotStatusAggregator:
         chassis['state'] = str(chassis.get('state') or '').split(maxsplit=1)[0] or 'unknown'
         return {
             'robot_mode': system.get('mode') or system.get('system_mode') or 'unknown',
-            'health': 'warning' if any(not item.get('fresh') for item in (system, patrol, pose, base)) else 'ok',
+            'health': 'warning' if not system.get('fresh') else 'ok',
             'pose': {key: pose.get(key) for key in ('x', 'y', 'yaw', 'fresh')},
             'navigation': {'state': system.get('navigation_state', 'unknown'), 'profile': system.get('navigation_profile', 'unknown')},
             'patrol': {'state': patrol.get('state', 'unknown'), 'target': patrol.get('target_id', ''), 'progress': patrol.get('progress', '')},

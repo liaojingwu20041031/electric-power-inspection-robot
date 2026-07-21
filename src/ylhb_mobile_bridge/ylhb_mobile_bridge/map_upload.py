@@ -202,24 +202,43 @@ class MapUploadWorker:
             pgm_sha = pgm_hash.hexdigest()
             identity = normalized_map_identity(yaml_bytes, pgm_sha)
             identity_sha = content_identity_sha256(identity)
+            upload_record = {
+                "task_id": task_id,
+                "idempotency_key": str(uuid.uuid4()),
+                "content_identity_sha256": identity_sha,
+                "identity": identity,
+                "yaml_sha256": hashlib.sha256(yaml_bytes).hexdigest(),
+                "pgm_sha256": pgm_sha,
+                "yaml_path": str(target_dir / yaml_path.name),
+                "pgm_path": str(target_dir / pgm_path.name),
+            }
             existing = self.store.map_upload_by_identity(identity_sha)
             if existing:
-                if existing["status"] == "FAILED_FINAL":
-                    existing_yaml = Path(existing.get("yaml_path", "")) if existing.get("yaml_path") else None
-                    existing_pgm = Path(existing.get("pgm_path", "")) if existing.get("pgm_path") else None
-                    if not existing_yaml or not existing_pgm or not existing_yaml.is_file() or not existing_pgm.is_file():
-                        target_dir = self.snapshot_root / existing["task_id"]
-                        shutil.rmtree(target_dir, ignore_errors=True)
-                        os.replace(temp_dir, target_dir)
-                        self.store.restore_map_upload_snapshot(
-                            existing["task_id"],
-                            str(target_dir / yaml_path.name),
-                            str(target_dir / pgm_path.name),
-                        )
-                    else:
-                        shutil.rmtree(temp_dir, ignore_errors=True)
-                    existing = self.store.requeue_map_upload(existing["task_id"])
-                elif existing["status"] == "FAILED_RETRYABLE":
+                if existing["status"] in {"FAILED_FINAL", "SUCCEEDED"}:
+                    previous_task_id = existing["task_id"]
+                    previous_dir = (
+                        Path(existing["yaml_path"]).parent
+                        if existing.get("yaml_path") else None
+                    )
+                    os.replace(temp_dir, target_dir)
+                    existing = self.store.restart_map_upload(
+                        existing["task_id"], upload_record
+                    )
+                    LOG.info(
+                        "map upload restarted previous_task_id=%s task_id=%s identity=%s",
+                        previous_task_id, task_id, identity_sha[:12],
+                    )
+                    if previous_dir and previous_dir != target_dir:
+                        try:
+                            previous_dir.relative_to(self.snapshot_root)
+                        except ValueError:
+                            pass
+                        else:
+                            shutil.rmtree(previous_dir, ignore_errors=True)
+                    self._wake.set()
+                    self.cleanup_snapshots()
+                    return self._response(existing, True)
+                if existing["status"] == "FAILED_RETRYABLE":
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     existing = self.store.requeue_map_upload(existing["task_id"])
                 else:
@@ -229,16 +248,7 @@ class MapUploadWorker:
                 return self._response(existing, False)
 
             os.replace(temp_dir, target_dir)
-            record = self.store.create_map_upload({
-                "task_id": task_id,
-                "idempotency_key": str(uuid.uuid4()),
-                "content_identity_sha256": identity_sha,
-                "identity": identity,
-                "yaml_sha256": hashlib.sha256(yaml_bytes).hexdigest(),
-                "pgm_sha256": pgm_sha,
-                "yaml_path": str(target_dir / yaml_path.name),
-                "pgm_path": str(target_dir / pgm_path.name),
-            })
+            record = self.store.create_map_upload(upload_record)
         except Exception:
             shutil.rmtree(temp_dir, ignore_errors=True)
             if target_dir.exists() and self.store.map_upload(task_id) is None:
@@ -274,6 +284,11 @@ class MapUploadWorker:
             self.store.finish_map_upload(
                 record["task_id"], "SUCCEEDED", map_asset_id=map_asset_id
             )
+            LOG.info(
+                "map upload succeeded task_id=%s map_asset_id=%s identity=%s",
+                record["task_id"], map_asset_id,
+                record["content_identity_sha256"][:12],
+            )
         except MapUploadError as exc:
             if exc.retryable:
                 retry_count = int(record.get("retry_count", 0)) + 1
@@ -284,9 +299,17 @@ class MapUploadWorker:
                     record["task_id"], "FAILED_RETRYABLE",
                     error=str(exc), next_retry_at=time.time() + delay,
                 )
+                LOG.warning(
+                    "map upload retry scheduled task_id=%s delay_sec=%.1f error=%s",
+                    record["task_id"], delay, exc,
+                )
             else:
                 self.store.finish_map_upload(
                     record["task_id"], "FAILED_FINAL", error=str(exc)
+                )
+                LOG.error(
+                    "map upload failed permanently task_id=%s error=%s",
+                    record["task_id"], exc,
                 )
         except Exception as exc:
             delay = min(self.retry_max, self.retry_base * (2 ** min(int(record.get("retry_count", 0)), 10)))
@@ -295,7 +318,10 @@ class MapUploadWorker:
                 error=f"upload failed: {type(exc).__name__}",
                 next_retry_at=time.time() + delay,
             )
-            LOG.warning("map upload failed: %s", type(exc).__name__)
+            LOG.warning(
+                "map upload retry scheduled task_id=%s delay_sec=%.1f error=%s",
+                record["task_id"], delay, type(exc).__name__,
+            )
         finally:
             self.current_task_id = ""
             self.cleanup_snapshots()

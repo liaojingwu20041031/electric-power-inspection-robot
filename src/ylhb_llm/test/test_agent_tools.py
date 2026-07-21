@@ -199,3 +199,68 @@ def test_get_robot_summary_reuses_status_aggregator():
 
     assert result['ok'] is True
     assert result['data']['robot_mode'] == 'ready'
+
+
+def test_read_only_operational_tools_use_injected_local_dependencies():
+    knowledge = SimpleNamespace(search=lambda query: [{'path': 'README.md', 'title': '使用', 'content': query}])
+    diagnostics = SimpleNamespace(
+        get_connection_info=lambda target='all': {'target': target},
+        run_self_check=lambda scope='all': {'overall': 'ok', 'scope': scope},
+    )
+    tools = AgentTools(
+        SimpleNamespace(), SimpleNamespace(system_status={}, patrol_status={}, voice_status={}),
+        FakePub(), FakePub(), FakePub(), FakePub(),
+        tool_schemas={
+            'search_robot_help': {'executor': 'knowledge', 'risk_level': 'read_only'},
+            'get_connection_info': {'executor': 'connection', 'risk_level': 'read_only'},
+            'run_self_check': {'executor': 'diagnostic', 'risk_level': 'read_only'},
+        },
+        knowledge_index=knowledge,
+        diagnostic_engine=diagnostics,
+    )
+
+    help_result = tools.execute(
+        {'tool_call': {'name': 'search_robot_help', 'arguments': {'query': 'APP'}}},
+        authorize({'tool_call': {'name': 'search_robot_help', 'arguments': {'query': 'APP'}}}, {}, tools.tool_schemas),
+    )
+    connection = tools.execute(
+        {'tool_call': {'name': 'get_connection_info', 'arguments': {'target': 'local_app'}}},
+        authorize({'tool_call': {'name': 'get_connection_info', 'arguments': {'target': 'local_app'}}}, {}, tools.tool_schemas),
+    )
+    diagnostic = tools.execute(
+        {'tool_call': {'name': 'run_self_check', 'arguments': {'scope': 'base'}}},
+        authorize({'tool_call': {'name': 'run_self_check', 'arguments': {'scope': 'base'}}}, {}, tools.tool_schemas),
+    )
+
+    assert help_result['data']['results'][0]['path'] == 'README.md'
+    assert connection['data']['target'] == 'local_app'
+    assert diagnostic['data']['scope'] == 'base'
+
+
+def test_recover_component_uses_supervisor_operation_not_direct_process_control():
+    system_pub = FakePub()
+    manager = AgentOperationManager(clock=lambda: 10.0)
+    catalog = SimpleNamespace(names=lambda: ['perception'], get=lambda name: {'process': name})
+    diagnostic = SimpleNamespace(last_report={
+        'diagnostic_id': 'diag_1', 'generated_at': 10.0,
+        'issues': [{'component': 'perception', 'recoverable': True, 'recovery_component': 'perception'}],
+    })
+    tools = AgentTools(
+        SimpleNamespace(), SimpleNamespace(system_status={}, patrol_status={}, voice_status={}),
+        system_pub, FakePub(), FakePub(), FakePub(), operation_manager=manager,
+        recovery_catalog=catalog, diagnostic_engine=diagnostic,
+        tool_schemas={'recover_component': {
+            'executor': 'system', 'command': 'recover_component',
+            'side_effect': 'component_recovery', 'timeout_sec': 30.0,
+        }},
+    )
+    decision = {
+        'decision_id': 'd1', 'run_id': 'run1', 'tool_call_id': 'call1',
+        'tool_call': {'name': 'recover_component', 'arguments': {'component': 'perception'}},
+    }
+
+    result = tools.execute(decision, SimpleNamespace(allowed=True))
+
+    assert result['status'] == 'sent'
+    assert system_pub.messages[0]['command'] == 'recover_component'
+    assert system_pub.messages[0]['component'] == 'perception'

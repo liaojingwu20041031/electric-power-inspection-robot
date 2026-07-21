@@ -21,7 +21,7 @@ from rclpy.qos import (
 )
 from sensor_msgs.msg import CompressedImage, Imu, LaserScan
 from std_msgs.msg import String
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 
 from .map_snapshot import (
     occupancy_grid_metadata,
@@ -151,6 +151,9 @@ class MobileRosBridge(Node):
         self.robot_id = str(self.get_parameter('robot_id').value)
         self.cloud_status_topic = str(self.get_parameter('cloud_status_topic').value)
         self.set_cloud_enabled_service_name = str(self.get_parameter('set_cloud_enabled_service_name').value)
+        self.confirm_platform_start_service_name = str(
+            self.get_parameter('confirm_platform_start_service_name').value
+        )
         self.local_app_status_topic = str(self.get_parameter('local_app_status_topic').value)
         self.set_local_app_enabled_service_name = str(self.get_parameter('set_local_app_enabled_service_name').value)
         self.host = str(self.get_parameter('host').value)
@@ -221,6 +224,10 @@ class MobileRosBridge(Node):
         self._cloud_status_pub = self.create_publisher(String, self.cloud_status_topic, initial_pose_qos_profile())
         self._local_app_status_pub = self.create_publisher(String, self.local_app_status_topic, initial_pose_qos_profile())
         self.create_service(SetBool, self.set_cloud_enabled_service_name, self._set_cloud_enabled)
+        self.create_service(
+            Trigger, self.confirm_platform_start_service_name,
+            self._confirm_platform_start,
+        )
         self.create_service(SetBool, self.set_local_app_enabled_service_name, self._set_local_app_enabled)
         self.create_subscription(
             Odometry,
@@ -290,6 +297,7 @@ class MobileRosBridge(Node):
         )
         self.create_timer(0.2, self._drain_cloud_commands)
         self.create_timer(0.5, self._refresh_cloud_snapshot)
+        self.create_timer(1.0, self._expire_local_confirmations)
 
     def _declare_parameters(self) -> None:
         defaults = {
@@ -326,6 +334,7 @@ class MobileRosBridge(Node):
             'platform_storage_dir': '~/.local/share/ylhb/platform',
             'cloud_status_topic': '/mobile_bridge/cloud_status',
             'set_cloud_enabled_service_name': '/mobile_bridge/set_cloud_enabled',
+            'confirm_platform_start_service_name': '/mobile_bridge/confirm_platform_start',
             'local_app_status_topic': '/mobile_bridge/local_app_status',
             'set_local_app_enabled_service_name': '/mobile_bridge/set_local_app_enabled',
             'max_linear_speed': 0.30,
@@ -417,12 +426,16 @@ class MobileRosBridge(Node):
         existing = store.command(command_id)
         if existing and existing.get('state') in {'APPLIED', 'REJECTED', 'FAILED'}:
             return
-        saved = store.append_event({
+        event = {
             **result,
             'schema_version': '1.0',
             'robot_id': getattr(self, 'platform_robot_id', getattr(self, 'robot_id', '')),
             'boot_id': getattr(self, 'platform_boot_id', ''),
-        })
+        }
+        if not self._has_platform_event_identity(event):
+            self._warn_rejected_platform_event(event)
+            return
+        saved = store.append_event(event)
         store.set_command_state(command_id, 'REJECTED' if result['event'] == 'command_rejected' else 'FAILED', saved)
 
     def _on_patrol_status(self, msg: String) -> None:
@@ -435,22 +448,11 @@ class MobileRosBridge(Node):
         self._handle_inspection_patrol_event(event)
         if not event or not getattr(self, 'platform_store', None):
             return
-        context = self._platform_context
-        execution_id = str(event.get('execution_id') or context.get('active_execution_id') or '')
-        if not execution_id:
+        if not self._has_platform_event_identity(event):
+            self._warn_rejected_platform_event(event)
             return
-        command_id = str(event.get('command_id') if 'command_id' in event else context.get('active_command_id') or '')
-        if not command_id and event.get('event') in {'route_paused', 'route_resumed', 'manual_takeover', 'route_canceled', 'command_rejected', 'command_failed'}:
-            return
-        saved = self.platform_store.append_event({
-            **event, 'schema_version': '1.0',
-            'robot_id': getattr(self, 'platform_robot_id', getattr(self, 'robot_id', '')),
-            'boot_id': getattr(self, 'platform_boot_id', ''),
-            'execution_id': execution_id,
-            'deployment_id': str(event.get('deployment_id') or context.get('active_deployment_id') or ''),
-            'request_id': str(event.get('request_id') if 'request_id' in event else context.get('active_request_id') or ''),
-            'command_id': command_id,
-        })
+        saved = self.platform_store.append_event(dict(event))
+        command_id = str(saved['command_id'])
         if command_id:
             state = {
                 'route_started': 'APPLIED', 'route_paused': 'APPLIED',
@@ -470,6 +472,21 @@ class MobileRosBridge(Node):
                         'error_message': str(saved.get('reason') or saved.get('error') or 'route failed'),
                     })
                     self.platform_store.set_command_state(command_id, 'FAILED', failed)
+
+    @staticmethod
+    def _has_platform_event_identity(event: dict) -> bool:
+        return all(str(event.get(key) or '').strip() for key in (
+            'robot_id', 'execution_id', 'deployment_id', 'request_id', 'command_id',
+        ))
+
+    def _warn_rejected_platform_event(self, event: dict) -> None:
+        try:
+            self.get_logger().warning(
+                '拒绝上传缺少任务身份的平台事件: event=%s' %
+                str(event.get('event') or '')
+            )
+        except Exception:
+            pass
 
     def _recover_platform_task_context(self, status: dict) -> None:
         execution_id = str(status.get('execution_id') or '')
@@ -1009,6 +1026,36 @@ class MobileRosBridge(Node):
                 self.platform_store.set_command_state(command_id, 'DISPATCHED')
             except Exception as exc:
                 self._record_cloud_queue_result(command, 'FAILED', 'command_failed', 'DISPATCH_PERSIST_FAILED', str(exc))
+
+    def _confirm_platform_start(self, _request, response):
+        if not self.cloud_client:
+            response.success = False
+            response.message = 'cloud client is not ready'
+            return response
+        try:
+            self.cloud_client.confirm_local_start()
+            response.success = True
+            response.message = 'platform START confirmed'
+        except Exception as exc:
+            response.success = False
+            response.message = str(exc)
+        self.publish_cloud_status_now()
+        return response
+
+    def _expire_local_confirmations(self) -> None:
+        client = getattr(self, 'cloud_client', None)
+        if not client:
+            return
+        try:
+            if client.expire_local_confirmations():
+                self.publish_cloud_status_now()
+        except Exception as exc:
+            try:
+                self.get_logger().warning(
+                    f'local platform confirmation expiry failed: {type(exc).__name__}'
+                )
+            except Exception:
+                pass
 
     def _refresh_cloud_snapshot(self) -> None:
         status = self.robot_status()

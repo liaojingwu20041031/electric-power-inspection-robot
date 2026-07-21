@@ -94,3 +94,14 @@ ros2 node list --no-daemon
 python3 -m pytest src/ylhb_llm/test/test_inspection_agent_spec.py src/ylhb_llm/test/test_inspection_agent_runtime.py src/ylhb_llm/test/test_agent_chat_schema.py -q
 python3 -m pytest src/ylhb_llm/test/test_inspection_agent_node.py src/ylhb_llm/test/test_agent_schema.py src/ylhb_llm/test/test_agent_policy.py src/ylhb_llm/test/test_agent_tools.py src/ylhb_llm/test/test_ui_backend.py src/ylhb_llm/test/test_qml_navigation.py -q
 ```
+
+## 智能运维助手升级（2026-07-20）
+
+保留 `InspectionAgentRuntime`、`AgentOperationManager`、策略授权和现有 ROS 通信协议，新增四个受控工具：
+
+- `search_robot_help`：只读取工作区白名单 Markdown，返回相对来源路径。
+- `get_connection_info`：复用 `NetworkStatusProvider`，读取实时接口、APP 地址、Bridge、本地 APP 和云状态。
+- `run_self_check`：用确定性规则区分观测证据、可能原因、人工动作和可恢复性，不调用 LLM。
+- `recover_component`：只向 Supervisor 发布白名单组件恢复命令，并等待真实 Operation 终态。
+
+恢复配置位于 `config/agent_recovery.yaml`，首版仅允许 `perception` 和 Supervisor 管理的 `mobile_bridge`。底盘、CAN、Nav2、bringup、电源和线路故障禁止自动恢复。健康监控发布 `/inspection_ai/health_status` 与 `/inspection_ai/diagnostic_event`，默认开启只读监控、关闭自动恢复。

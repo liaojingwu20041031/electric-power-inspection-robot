@@ -34,3 +34,16 @@ def test_auto_route_catalog_records_resolved_file_and_exports_closed_schemas():
     assert catalog.route_file_path == str(ROUTE_PATH)
     assert schemas['start_route']['properties']['route_id']['enum'] == ['route_patrol_001']
     assert all(schema['additionalProperties'] is False for schema in schemas.values())
+
+
+def test_skill_toolpack_forwards_refresh_summary_flag(tmp_path):
+    path = tmp_path / 'capabilities.yaml'
+    path.write_text(
+        'capabilities:\n  recover_component:\n    refresh_summary_after: true\n    requires_fresh_diagnostic: true\n',
+        encoding='utf-8',
+    )
+
+    schema = SkillToolPack.from_file(str(path), {}).tool_schemas()['recover_component']
+
+    assert schema['refresh_summary_after'] is True
+    assert schema['requires_fresh_diagnostic'] is True

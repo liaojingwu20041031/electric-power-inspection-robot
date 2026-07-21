@@ -12,7 +12,13 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from .platform_store import PlatformStoreError
+from .platform_store import (
+    COMMAND_STATE_ACKED,
+    COMMAND_STATE_ARMED,
+    START_MODE_LOCAL_CONFIRM,
+    START_MODE_REMOTE_IMMEDIATE,
+    PlatformStoreError,
+)
 
 
 LOG = logging.getLogger(__name__)
@@ -56,6 +62,10 @@ class PlatformCloudClient:
         self.idle_heartbeat = float(os.environ.get("YLHB_CLOUD_IDLE_HEARTBEAT_SEC", "3"))
         self.active_heartbeat = float(os.environ.get("YLHB_CLOUD_ACTIVE_HEARTBEAT_SEC", "1"))
         self.max_backoff = float(os.environ.get("YLHB_CLOUD_MAX_BACKOFF_SEC", "30"))
+        self.local_confirm_timeout = max(
+            1.0,
+            float(os.environ.get("YLHB_CLOUD_LOCAL_CONFIRM_TIMEOUT_SEC", "1800")),
+        )
         self.software_version = os.environ.get("YLHB_SOFTWARE_VERSION", "unknown")
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -134,6 +144,7 @@ class PlatformCloudClient:
             "latestLocalEventSequence": self.store.latest_event_sequence(),
             "activeExecutionId": context.get("active_execution_id") or "",
             "activeDeploymentId": context.get("active_deployment_id") or "",
+            "pendingPlatformStart": self.store.pending_platform_start(),
             "networkMode": "system-routing",
             "cloudEgress": cloud_egress,
             "alternateCloudRoutes": list(
@@ -205,6 +216,18 @@ class PlatformCloudClient:
         events = self.store.events(cursor, 100)
         if not events:
             return
+        required_identity = (
+            "robot_id", "execution_id", "deployment_id", "request_id", "command_id",
+        )
+        invalid = next((event for event in events if any(
+            not str(event.get(key) or "").strip() for key in required_identity
+        )), None)
+        if invalid:
+            LOG.error(
+                "refusing platform event upload with incomplete identity: sequence=%s event=%s",
+                invalid.get("sequence"), invalid.get("event"),
+            )
+            return
         reply = self._request("POST", "/robot-api/v1/events/batch", {"robotId": self.robot_id, "events": events})
         accepted = int(reply.get("acceptedThroughSequence", cursor))
         self.store.set_cloud_state("last_uploaded_sequence", str(max(0, accepted)))
@@ -231,19 +254,24 @@ class PlatformCloudClient:
         pgm = self._request("GET", f"/robot-api/v1/deployments/{deployment_id}/pgm", binary=True)
         return self.store.install(deployment_id, manifest, route, yaml_bytes, pgm)
 
-    def _enqueue(self, record: Dict[str, Any]) -> None:
+    def _prepared_command(self, record: Dict[str, Any]) -> Dict[str, Any]:
         command = record["payload"]
         if record["command_type"] == "START":
             deployment = self.store.deployment(record["deployment_id"])
             if not deployment:
                 deployment = self._download_deployment(record["deployment_id"])
             command = {**command, "routePath": deployment["routePath"], "mapYamlPath": deployment["mapYamlPath"]}
+        return command
+
+    def _enqueue(self, record: Dict[str, Any]) -> None:
+        command = self._prepared_command(record)
         self.bridge.enqueue_cloud_command(command)
 
     def _record_failure(self, record: Dict[str, Any], state: str, event: str, exc: Exception) -> None:
         code = str(getattr(exc, "code", "COMMAND_FAILED" if state == "FAILED" else "COMMAND_REJECTED"))
         result = {
             "event": event,
+            "robot_id": self.robot_id, "boot_id": self.boot_id,
             "command_id": record["command_id"], "request_id": record["request_id"],
             "execution_id": record["execution_id"], "deployment_id": record["deployment_id"],
             "error_code": code, "error_message": str(exc),
@@ -253,18 +281,32 @@ class PlatformCloudClient:
 
     def _handle_command(self, command: Dict[str, Any]) -> None:
         record = self.store.receive_cloud_command(command)
-        if record["state"] in {"APPLIED", "REJECTED", "FAILED", "DISPATCHED"}:
+        if record["state"] in {"APPLIED", "REJECTED", "FAILED", "DISPATCHED", COMMAND_STATE_ARMED}:
             return
         if record["state"] == "RECEIVED":
             self._request("POST", f"/robot-api/v1/commands/{record['command_id']}/ack", {
                 "robotId": self.robot_id, "leaseToken": command.get("leaseToken", ""),
                 "status": "RECEIVED", "executionId": record["execution_id"],
             })
-            self.store.set_command_state(record["command_id"], "ACKED")
+            self.store.set_command_state(record["command_id"], COMMAND_STATE_ACKED)
             record = self.store.command(record["command_id"]) or record
         try:
             if record["command_type"] == "START" and self.bridge.cloud_status_snapshot().get("state") in ACTIVE_STATES:
                 raise PlatformStoreError("ROBOT_BUSY", "robot is busy", 409)
+            if record["command_type"] == "CANCEL":
+                canceled = self.store.cancel_armed_start(
+                    record, self.robot_id, self.boot_id
+                )
+                if canceled:
+                    self.store.set_cloud_state("last_received_command_id", record["command_id"])
+                    return
+            if record["command_type"] == "START" and str(
+                record["payload"].get("startMode") or START_MODE_REMOTE_IMMEDIATE
+            ) == START_MODE_LOCAL_CONFIRM:
+                self._prepared_command(record)
+                self.store.arm_start(record["command_id"], self.robot_id, self.boot_id)
+                self.store.set_cloud_state("last_received_command_id", record["command_id"])
+                return
             self._enqueue(record)
             self.store.set_cloud_state("last_received_command_id", record["command_id"])
         except PlatformStoreError as exc:
@@ -330,9 +372,20 @@ class PlatformCloudClient:
                 self._record_failure(record, "REJECTED", "command_rejected", PlatformStoreError("RECOVERY_INCOMPATIBLE_STATE", f"cannot recover {record['command_type']} while {patrol_state}"))
         return True
 
+    def confirm_local_start(self) -> Dict[str, Any]:
+        record = self.store.confirm_armed_start(self.robot_id, self.boot_id)
+        self._enqueue(record)
+        return record
+
+    def expire_local_confirmations(self) -> int:
+        return len(self.store.expire_armed_starts(
+            self.local_confirm_timeout, self.robot_id, self.boot_id
+        ))
+
     def _record_recovered_result(self, record: Dict[str, Any], state: str, event: str) -> None:
         result = {
             "event": event, "recovered": True,
+            "robot_id": self.robot_id, "boot_id": self.boot_id,
             "command_id": record["command_id"], "request_id": record["request_id"],
             "execution_id": record["execution_id"], "deployment_id": record["deployment_id"],
         }

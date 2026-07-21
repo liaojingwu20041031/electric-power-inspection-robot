@@ -1,5 +1,6 @@
 import copy
 import json
+from datetime import datetime
 from pathlib import Path
 
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
@@ -901,6 +902,26 @@ def test_duplicate_start_request_only_republishes_acknowledgement():
     assert node.platform_context['run_id'] == 'run_1'
     assert node.platform_context['tool_call_id'] == 'call_1'
     assert node.platform_context['operation_id'] == 'op_1'
+
+
+def test_platform_event_time_is_iso_utc(monkeypatch):
+    monkeypatch.setenv('YLHB_ROBOT_ID', 'robot-1')
+    node = PatrolExecutorNode.__new__(PatrolExecutorNode)
+    node.platform_boot_id = 'boot-1'
+    node.resolved_route_file_path = '/tmp/route.json'
+    node.platform_context = {
+        'execution_id': 'execution-1', 'deployment_id': 'deployment-1',
+        'start_request_id': 'request-1', 'start_command_id': 'command-1',
+        'active_control_request_id': '', 'active_control_command_id': '',
+        'run_id': '', 'operation_id': '', 'tool_call_id': '',
+        'active_control_run_id': '', 'active_control_operation_id': '',
+        'active_control_tool_call_id': '',
+    }
+
+    occurred_at = node._platform_fields()['occurred_at']
+
+    parsed = datetime.fromisoformat(occurred_at)
+    assert parsed.utcoffset().total_seconds() == 0
 
 
 def test_auto_start_waits_for_initial_pose_sequence_completion():
