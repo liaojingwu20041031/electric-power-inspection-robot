@@ -230,6 +230,10 @@ voice_output_node:
   ros__parameters:
     say_text_topic: /inspection_ai/say_text
     voice_status_topic: /inspection_ai/voice_status
+    patrol_event_topic: /patrol/event
+    patrol_voice_enabled: true
+    patrol_voice_config_file: patrol_voice.yaml
+    patrol_voice_inventory_dir: ~/.local/share/ylhb/patrol_voice
     enabled: false
     tts_enabled: false
     audio_device: default

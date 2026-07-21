@@ -6,12 +6,25 @@ import threading
 import time
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
 
 from ylhb_interfaces.msg import SayText, VoiceStatus
 
+from .patrol_voice import PatrolVoice, VoiceRequest
 from .qwen_client import QwenClient, QwenClientError
 from .voice_stability import safe_wav_duration_sec
+
+
+def patrol_event_qos() -> QoSProfile:
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=10,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+    )
 
 
 class VoiceOutputNode(Node):
@@ -19,6 +32,13 @@ class VoiceOutputNode(Node):
         super().__init__('voice_output_node')
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
         self.declare_parameter('voice_status_topic', '/inspection_ai/voice_status')
+        self.declare_parameter('patrol_event_topic', '/patrol/event')
+        self.declare_parameter('patrol_voice_enabled', True)
+        package_share = get_package_share_directory('ylhb_llm')
+        self.declare_parameter(
+            'patrol_voice_config_file', os.path.join(package_share, 'config', 'patrol_voice.yaml'))
+        self.declare_parameter(
+            'patrol_voice_inventory_dir', '~/.local/share/ylhb/patrol_voice')
         self.declare_parameter('enabled', False)
         self.declare_parameter('tts_enabled', False)
         self.declare_parameter('audio_device', 'default')
@@ -51,7 +71,7 @@ class VoiceOutputNode(Node):
         self.interrupt_current_playback = bool(
             self.get_parameter('interrupt_current_playback').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
-        self.queue: 'queue.PriorityQueue[tuple[int, float, SayText]]' = queue.PriorityQueue()
+        self.queue: 'queue.PriorityQueue[tuple[int, float, VoiceRequest]]' = queue.PriorityQueue()
         self._queued_say_keys: set[tuple[str, str]] = set()
         self.stop_event = threading.Event()
         self.current_task_id = ''
@@ -65,6 +85,26 @@ class VoiceOutputNode(Node):
             VoiceStatus, self.get_parameter('voice_status_topic').value, 10)
         self.create_subscription(
             SayText, self.get_parameter('say_text_topic').value, self.say_callback, 10)
+        self.patrol_voice = None
+        if bool(self.get_parameter('patrol_voice_enabled').value):
+            config_file = str(self.get_parameter('patrol_voice_config_file').value)
+            if not os.path.isabs(config_file):
+                config_file = os.path.join(package_share, 'config', config_file)
+            try:
+                self.patrol_voice = PatrolVoice.from_file(
+                    config_file,
+                    os.path.join(package_share, 'assets', 'audio'),
+                    os.path.expanduser(str(
+                        self.get_parameter('patrol_voice_inventory_dir').value)),
+                )
+                self.create_subscription(
+                    String,
+                    self.get_parameter('patrol_event_topic').value,
+                    self.patrol_event_callback,
+                    patrol_event_qos(),
+                )
+            except Exception as exc:
+                self.get_logger().warn(f'巡逻语音配置不可用，已禁用巡逻播报：{exc}')
 
         self.worker = threading.Thread(target=self.play_loop, daemon=True)
         self.worker.start()
@@ -75,49 +115,82 @@ class VoiceOutputNode(Node):
         )
 
     def say_callback(self, msg: SayText) -> None:
-        if msg.interrupt:
+        self.enqueue_request(VoiceRequest(
+            task_id=str(msg.task_id),
+            text=str(msg.text),
+            priority=int(msg.priority),
+            interrupt=bool(msg.interrupt),
+        ))
+
+    def patrol_event_callback(self, msg: String) -> None:
+        try:
+            request = self.patrol_voice.request_for_json(msg.data) if self.patrol_voice else None
+            if request is not None:
+                self.enqueue_request(request)
+        except Exception as exc:
+            self.get_logger().warn(f'忽略无效巡逻语音事件：{exc}')
+
+    def enqueue_request(self, request: VoiceRequest) -> None:
+        if request.interrupt:
             self.clear_queue()
             self.interrupt_playback()
-        text = msg.text.strip()
-        key = (str(msg.task_id), text)
+        text = request.text.strip()
+        key = (request.task_id, text)
         if key in self._queued_say_keys:
             return
         self._queued_say_keys.add(key)
-        self.queue.put((-int(msg.priority), time.time(), msg))
+        self.queue.put((-request.priority, time.time(), request))
 
     def play_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
-                _priority, _ts, msg = self.queue.get(timeout=0.2)
+                _priority, _ts, request = self.queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            self._queued_say_keys.discard((str(msg.task_id), msg.text.strip()))
+            self._queued_say_keys.discard((request.task_id, request.text.strip()))
             try:
-                text = msg.text.strip()
+                text = request.text.strip()
                 if text:
-                    self.get_logger().info(f'播报请求[{msg.task_id}]：{text}')
-                if self.enabled and self.tts_enabled and text:
-                    if self.should_split_tts(msg.task_id, text):
-                        segments = self.split_tts_segments(text, self.tts_segment_max_chars)
-                    else:
-                        segments = [text]
-                    generation = self.playback_generation
-                    for segment in segments:
-                        if (
-                            self.stop_event.is_set()
-                            or generation != self.playback_generation
-                        ):
-                            break
-                        self.speak(segment, msg.task_id)
+                    self.get_logger().info(f'播报请求[{request.task_id}]：{text}')
+                self.play_request(request)
             finally:
                 self.current_task_id = ''
                 self.publish_status_once()
                 self.queue.task_done()
 
-    def speak(self, text: str, task_id: str) -> None:
+    def play_request(self, request: VoiceRequest) -> None:
+        if not self.enabled:
+            return
+        if request.audio_path:
+            if os.path.isfile(request.audio_path):
+                self.play_audio_file(request.audio_path, request.task_id, False)
+                return
+            if request.inventory_path and os.path.isfile(request.inventory_path):
+                self.play_audio_file(request.inventory_path, request.task_id, False)
+                return
+            self.get_logger().warn(
+                f'本地巡逻语音不存在，回退 TTS：task_id={request.task_id}, '
+                f'path={request.audio_path}')
+        text = request.text.strip()
+        if not self.tts_enabled or not text:
+            self.get_logger().warn(f'TTS 不可用，丢弃播报：task_id={request.task_id}')
+            return
+        segments = (
+            self.split_tts_segments(text, self.tts_segment_max_chars)
+            if self.should_split_tts(request.task_id, text)
+            else [text]
+        )
+        generation = self.playback_generation
+        for segment in segments:
+            if self.stop_event.is_set() or generation != self.playback_generation:
+                break
+            self.speak(segment, request.task_id, request.inventory_path)
+
+    def speak(self, text: str, task_id: str, inventory_path: str = '') -> None:
         self.current_task_id = task_id
         self.publish_status_once()
         audio_path = ''
+        delete_after = True
         try:
             if not self.qwen.available():
                 self.get_logger().warn('DASHSCOPE_API_KEY 未设置，跳过 TTS 播放。')
@@ -148,32 +221,21 @@ class VoiceOutputNode(Node):
             if not audio:
                 self.get_logger().warn(f'TTS 未返回音频：task_id={task_id}')
                 return
-            with tempfile.NamedTemporaryFile(prefix='ylhb_tts_', suffix='.wav', delete=False) as f:
-                f.write(audio)
-                audio_path = f.name
+            if inventory_path:
+                try:
+                    audio_path = self.save_audio_inventory(audio, inventory_path)
+                    delete_after = False
+                    self.get_logger().info(f'巡逻语音已加入本地库存：{audio_path}')
+                except OSError as exc:
+                    self.get_logger().warn(f'巡逻语音库存写入失败，改用临时文件：{exc}')
+            if not audio_path:
+                with tempfile.NamedTemporaryFile(
+                    prefix='ylhb_tts_', suffix='.wav', delete=False
+                ) as f:
+                    f.write(audio)
+                    audio_path = f.name
             time.sleep(0.25)
-
-            cmd = ['aplay', '-q']
-            if self.audio_device and self.audio_device != 'default':
-                cmd.extend(['-D', self.audio_device])
-            cmd.append(audio_path)
-            duration = safe_wav_duration_sec(audio_path)
-            play_timeout = min(45.0, max(8.0, duration + 5.0))
-            self.get_logger().info(
-                f'音频播放开始：task_id={task_id}, device={self.audio_device}, '
-                f'duration={duration:.2f}s, timeout={play_timeout:.2f}s, cmd={" ".join(cmd)}'
-            )
-            proc = subprocess.Popen(cmd)
-            with self.playback_lock:
-                self.current_playback = proc
-            returncode = proc.wait(timeout=play_timeout)
-            if returncode != 0 and returncode != -15:
-                self.get_logger().warn(
-                    f'音频播放失败：task_id={task_id}, aplay_exit={returncode}, '
-                    f'device={self.audio_device}'
-                )
-            elif returncode == 0:
-                self.get_logger().info(f'音频播放完成：task_id={task_id}')
+            self.play_audio_file(audio_path, task_id, delete_after)
         except QwenClientError as exc:
             self.get_logger().warn(f'TTS 合成失败：task_id={task_id}, error={exc}')
         except subprocess.TimeoutExpired:
@@ -187,11 +249,76 @@ class VoiceOutputNode(Node):
                     self.current_playback = None
             self.current_task_id = ''
             self.publish_status_once()
-            if audio_path:
+            if audio_path and delete_after:
                 try:
                     os.unlink(audio_path)
                 except OSError:
                     pass
+
+    def save_audio_inventory(self, audio: bytes, inventory_path: str) -> str:
+        directory = os.path.dirname(inventory_path)
+        os.makedirs(directory, exist_ok=True)
+        temporary_path = ''
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix='.ylhb_patrol_', suffix='.wav', dir=directory, delete=False
+            ) as stream:
+                stream.write(audio)
+                temporary_path = stream.name
+            os.replace(temporary_path, inventory_path)
+            return inventory_path
+        except OSError:
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
+            raise
+
+    def play_audio_file(self, audio_path: str, task_id: str, delete_after: bool) -> None:
+        self.current_task_id = task_id
+        self.publish_status_once()
+        try:
+            proc, play_timeout, _duration = self._start_audio_process(audio_path, task_id)
+            with self.playback_lock:
+                self.current_playback = proc
+            returncode = proc.wait(timeout=play_timeout)
+            if returncode not in (0, -15):
+                self.get_logger().warn(
+                    f'音频播放失败：task_id={task_id}, aplay_exit={returncode}, '
+                    f'device={self.audio_device}')
+            elif returncode == 0:
+                self.get_logger().info(f'音频播放完成：task_id={task_id}')
+        except subprocess.TimeoutExpired:
+            self.terminate_current_playback()
+            self.get_logger().warn(f'音频播放超时：task_id={task_id}, path={audio_path}')
+        except Exception as exc:
+            self.get_logger().warn(f'音频播放异常：task_id={task_id}, error={exc}')
+        finally:
+            with self.playback_lock:
+                if self.current_playback is not None and self.current_playback.poll() is not None:
+                    self.current_playback = None
+            self.current_task_id = ''
+            self.publish_status_once()
+            if delete_after:
+                try:
+                    os.unlink(audio_path)
+                except OSError:
+                    pass
+
+    def _start_audio_process(
+        self, audio_path: str, task_id: str
+    ) -> tuple[subprocess.Popen, float, float]:
+        cmd = ['aplay', '-q']
+        if self.audio_device and self.audio_device != 'default':
+            cmd.extend(['-D', self.audio_device])
+        cmd.append(audio_path)
+        duration = safe_wav_duration_sec(audio_path)
+        play_timeout = min(45.0, max(8.0, duration + 5.0))
+        self.get_logger().info(
+            f'音频播放开始：task_id={task_id}, device={self.audio_device}, '
+            f'duration={duration:.2f}s, timeout={play_timeout:.2f}s, cmd={" ".join(cmd)}')
+        return subprocess.Popen(cmd), play_timeout, duration
 
     def should_split_tts(self, task_id: str, text: str) -> bool:
         if task_id.startswith('assistant_chat_'):

@@ -1,0 +1,73 @@
+version: 1
+enabled: true
+
+announcements:
+  route_started:
+    enabled: true
+    text: "巡逻检测任务已启动，机器人即将沿预定路线行驶，请周围人员注意避让。"
+    audio_file: "patrol_route_started.wav"
+    priority: 40
+    interrupt: false
+
+  target_reached:
+    enabled: true
+    text: "已到达{target_name}，即将开始巡检，请勿触碰机器人及周边设备。"
+    audio_file: ""
+    priority: 60
+    interrupt: false
+
+  return_home_started:
+    enabled: true
+    text: "本轮巡检点检测完成，机器人正在返回起点，请注意避让。"
+    audio_file: "patrol_return_home.wav"
+    priority: 40
+    interrupt: false
+
+  return_home_after_failure:
+    enabled: true
+    text: "巡检路线执行异常，机器人正在返回起点，请勿靠近或阻挡机器人。"
+    audio_file: "patrol_abnormal_return.wav"
+    priority: 85
+    interrupt: true
+
+  route_finished:
+    enabled: true
+    text: "巡逻检测任务已完成，机器人已返回起点。"
+    audio_file: "patrol_route_finished.wav"
+    priority: 50
+    interrupt: false
+
+  route_failed:
+    enabled: true
+    text: "巡逻检测任务异常终止，请工作人员检查机器人状态。"
+    audio_file: "patrol_route_failed.wav"
+    priority: 95
+    interrupt: true
+
+  route_paused:
+    enabled: true
+    text: "巡逻检测任务已暂停。"
+    audio_file: "patrol_route_paused.wav"
+    priority: 70
+    interrupt: true
+
+  route_resumed:
+    enabled: true
+    text: "巡逻检测任务已恢复。"
+    audio_file: "patrol_route_resumed.wav"
+    priority: 60
+    interrupt: false
+
+  route_canceled:
+    enabled: true
+    text: "巡逻检测任务已取消。"
+    audio_file: "patrol_route_canceled.wav"
+    priority: 85
+    interrupt: true
+
+  manual_takeover:
+    enabled: true
+    text: "机器人已切换为人工接管，请注意操作安全。"
+    audio_file: "patrol_manual_takeover.wav"
+    priority: 95
+    interrupt: true

@@ -20,6 +20,7 @@ if 'ylhb_interfaces.msg' not in sys.modules:
 
 from ylhb_llm.inspection_task_node import InspectionTaskNode
 from ylhb_llm.voice_output_node import VoiceOutputNode
+from ylhb_llm.patrol_voice import VoiceRequest
 from ylhb_llm.voice_stability import (
     normalize_voice_text,
     safe_wav_duration_sec,
@@ -113,6 +114,99 @@ class VoiceStabilityTest(unittest.TestCase):
         self.assertEqual(node.current_task_id, '')
         self.assertEqual(node.statuses[0], 'assistant_chat_1')
         self.assertEqual(node.statuses[-1], '')
+
+    def _playback_node(self):
+        node = VoiceOutputNode.__new__(VoiceOutputNode)
+        node.enabled = True
+        node.tts_enabled = True
+        node.split_long_tts = True
+        node.preserve_long_task_tts_single_request = True
+        node.tts_segment_max_chars = 70
+        node.audio_device = 'default'
+        node.stop_event = threading.Event()
+        node.playback_generation = 0
+        node.current_task_id = ''
+        node.playback_lock = threading.Lock()
+        node.current_playback = None
+        node.statuses = []
+        node.publish_status_once = lambda: node.statuses.append(node.current_task_id)
+        node.get_logger = lambda: SimpleNamespace(info=lambda _msg: None, warn=lambda _msg: None)
+        return node
+
+    def test_existing_local_wav_does_not_call_qwen(self):
+        node = self._playback_node()
+        node.qwen = Mock()
+        node.play_audio_file = Mock()
+        with tempfile.NamedTemporaryFile(suffix='.wav') as wav:
+            request = VoiceRequest('patrol:1', '固定播报', 40, False, wav.name)
+            node.play_request(request)
+
+        node.qwen.assert_not_called()
+        node.play_audio_file.assert_called_once_with(wav.name, 'patrol:1', False)
+
+    def test_missing_local_wav_falls_back_to_tts(self):
+        node = self._playback_node()
+        node.speak = Mock()
+
+        node.play_request(VoiceRequest(
+            'patrol:2', '回退播报', 40, False,
+            '/missing.wav', '/inventory/patrol.wav'))
+
+        node.speak.assert_called_once_with(
+            '回退播报', 'patrol:2', '/inventory/patrol.wav')
+
+    def test_missing_fixed_wav_is_synthesized_into_inventory(self):
+        node = self._playback_node()
+        node.tts_model = 'tts'
+        node.tts_voice = 'Serena'
+        node.tts_language_type = 'Chinese'
+        node.request_timeout_sec = 1.0
+        node.enable_tts_cache = False
+        node.tts_cache = {}
+        node.play_audio_file = Mock()
+        node.qwen = SimpleNamespace(
+            available=lambda: True,
+            synthesize_speech_bytes=lambda **_kwargs: b'generated wav',
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            inventory_path = os.path.join(directory, 'patrol_route_started.wav')
+
+            node.speak('固定播报', 'patrol:fixed', inventory_path)
+
+            with open(inventory_path, 'rb') as stream:
+                self.assertEqual(stream.read(), b'generated wav')
+            node.play_audio_file.assert_called_once_with(
+                inventory_path, 'patrol:fixed', False)
+
+    def test_audio_file_delete_policy_and_busy_status(self):
+        node = self._playback_node()
+        proc = Mock()
+        proc.wait.return_value = 0
+        proc.poll.return_value = 0
+        node._start_audio_process = Mock(return_value=(proc, 8.0, 1.0))
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav:
+            local_path = wav.name
+        node.play_audio_file(local_path, 'patrol:3', False)
+        self.assertTrue(os.path.exists(local_path))
+        self.assertEqual(node.statuses[0], 'patrol:3')
+        self.assertEqual(node.statuses[-1], '')
+        os.unlink(local_path)
+
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav:
+            temporary_path = wav.name
+        node.play_audio_file(temporary_path, 'tts:1', True)
+        self.assertFalse(os.path.exists(temporary_path))
+
+    def test_interrupt_terminates_current_playback(self):
+        node = self._playback_node()
+        node.interrupt_current_playback = True
+        node.playback_generation = 0
+        node.terminate_current_playback = Mock()
+
+        node.interrupt_playback()
+
+        self.assertEqual(node.playback_generation, 1)
+        node.terminate_current_playback.assert_called_once()
 
 
 if __name__ == '__main__':
