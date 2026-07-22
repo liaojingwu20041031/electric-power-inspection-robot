@@ -3,14 +3,13 @@ import QtQuick.Controls 2.12
 import QtQuick.Layouts 1.12
 import ".."
 
-Rectangle {
+Item {
     property string title: ""
     property string value: "-"
     property color statusColor: Theme.muted
     implicitHeight: 104
-    radius: 8
-    color: Theme.surface
-    border.color: Theme.border
+    Rectangle { x: 0; y: 2; width: parent.width; height: parent.height; radius: Theme.cardRadius; color: "#100F5C8A" }
+    Rectangle { anchors.fill: parent; radius: Theme.cardRadius; color: Theme.surface; border.color: Theme.border }
 
     RowLayout {
         anchors.fill: parent

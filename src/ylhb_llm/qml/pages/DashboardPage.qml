@@ -10,8 +10,8 @@ ScrollView {
 
     ColumnLayout {
         width: parent.width
-        spacing: 18
-        anchors.margins: 22
+        spacing: 12
+        anchors.margins: Theme.pageMargin
 
         Label {
             text: "系统总览"

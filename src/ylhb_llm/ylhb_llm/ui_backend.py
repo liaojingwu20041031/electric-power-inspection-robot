@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from PyQt5.QtCore import QObject, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QGuiApplication
 
 from .route_preview import build_patrol_tasks, generate_route_preview
 from .ui_models import UiState
@@ -436,6 +437,16 @@ class UiBackend(QObject):
     def mapping3dResult(self) -> Dict[str, Any]:
         return self.state.mapping3d_result
 
+    @pyqtProperty('QVariantMap', notify=mapping3dStatusChanged)
+    def sceneUploadStatuses(self) -> Dict[str, Any]:
+        statuses = self.state.system_status.get('scene_uploads_by_session') or {}
+        return statuses if isinstance(statuses, dict) else {}
+
+    @pyqtSlot(str, result='QVariantMap')
+    def sceneUploadStatus(self, session_id: str) -> Dict[str, Any]:
+        status = self.sceneUploadStatuses.get(str(session_id or '')) or {}
+        return status if isinstance(status, dict) else {}
+
     @pyqtProperty(str, notify=mapping3dStatusChanged)
     def mapping3dStateText(self) -> str:
         status = self.state.mapping3d_status
@@ -463,7 +474,7 @@ class UiBackend(QObject):
     @pyqtProperty(str, notify=mapping3dStatusChanged)
     def latestSvoFile(self) -> str:
         latest = self.state.system_status.get('latest_3d_capture') or {}
-        return str(
+        return self._existing_local_file(
             latest.get('svo_file')
             or self.state.mapping3d_status.get('svo_file')
             or ''
@@ -472,11 +483,16 @@ class UiBackend(QObject):
     @pyqtProperty(str, notify=mapping3dStatusChanged)
     def latestModelFile(self) -> str:
         latest = self.state.system_status.get('latest_3d_reconstruct') or {}
-        return str(
+        return self._existing_local_file(
             latest.get('output_file')
             or self.state.mapping3d_result.get('output_file')
             or ''
         )
+
+    @staticmethod
+    def _existing_local_file(value: Any) -> str:
+        path = str(value or '').strip()
+        return path if path and Path(path).expanduser().is_file() else ''
 
     @pyqtProperty(bool, notify=mapping3dStatusChanged)
     def mapping3dCanStartCapture(self) -> bool:
@@ -1105,6 +1121,27 @@ class UiBackend(QObject):
         }.get(str(profile or '').strip(), 'reconstruct_latest_3d_map')
         self.bridge.publish_system_command(command, session_id=str(session_id or ''))
 
+    @pyqtSlot(str)
+    def enqueueSceneUpload(self, session_id: str) -> None:
+        value = str(session_id or '').strip()
+        if value:
+            self.bridge.publish_system_command(
+                'enqueue_scene_upload', session_id=value)
+
+    @pyqtSlot(str)
+    def retrySceneUpload(self, task_id: str) -> None:
+        value = str(task_id or '').strip()
+        if value:
+            self.bridge.publish_system_command(
+                'retry_scene_upload', task_id=value)
+
+    @pyqtSlot(str)
+    def copySceneAssetId(self, asset_id: str) -> None:
+        value = str(asset_id or '').strip()
+        if value:
+            QGuiApplication.clipboard().setText(value)
+            self.addLog('平台资产 ID 已复制')
+
     def _is_debounced(self, command: str) -> bool:
         cooldowns = {
             'start_patrol_mode': 0.8,
@@ -1335,11 +1372,17 @@ class UiBackend(QObject):
             self.state.patrol_status = {'state': 'idle'}
             self.patrolStatusChanged.emit()
         latest_mapping3d = payload.get('latest_mapping3d_status')
-        if isinstance(latest_mapping3d, dict) and latest_mapping3d:
+        if isinstance(latest_mapping3d, dict):
+            status_file = str(latest_mapping3d.get('svo_file') or '').strip()
+            if status_file and not Path(status_file).expanduser().is_file():
+                latest_mapping3d = {}
             self.state.mapping3d_status = latest_mapping3d
             self.mapping3dStatusChanged.emit()
         latest_mapping3d_result = payload.get('latest_mapping3d_result')
-        if isinstance(latest_mapping3d_result, dict) and latest_mapping3d_result:
+        if isinstance(latest_mapping3d_result, dict):
+            result_file = str(latest_mapping3d_result.get('output_file') or '').strip()
+            if result_file and not Path(result_file).expanduser().is_file():
+                latest_mapping3d_result = {}
             self.state.mapping3d_result = latest_mapping3d_result
             self.mapping3dStatusChanged.emit()
         self.systemStatusChanged.emit()

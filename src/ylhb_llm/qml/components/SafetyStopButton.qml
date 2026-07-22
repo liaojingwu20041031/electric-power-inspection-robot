@@ -9,7 +9,7 @@ Button {
     font.pixelSize: 17
     font.bold: true
     background: Rectangle {
-        radius: 6
+        radius: Theme.cardRadius
         color: Theme.danger
     }
     contentItem: Text {

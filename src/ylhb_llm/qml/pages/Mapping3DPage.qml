@@ -11,15 +11,58 @@ ScrollView {
     property var latestCapture: backend.systemStatus.latest_3d_capture || ({})
     property var latestReconstruct: backend.systemStatus.latest_3d_reconstruct || ({})
     property var mapping3d_assets: backend.systemStatus.mapping3d_assets || ({})
+    property var latestReconstructAsset: assetList("reconstructs").length > 0
+        ? assetList("reconstructs")[0] : ({})
+    property var latestReconstructUpload: backend.sceneUploadStatuses[latestReconstructAsset.session_id] || ({})
     function assetList(kind) {
         var group = root.mapping3d_assets || ({})
         return group[kind] || []
     }
+    function uploadText(status) {
+        return ({
+            "PENDING": "等待上传",
+            "UPLOADING": "正在上传",
+            "FAILED_RETRYABLE": "网络异常，等待重试",
+            "CREDENTIAL_BLOCKED": "凭据异常",
+            "FAILED_FINAL": "上传失败",
+            "SUCCEEDED": "已上传，待平台审核"
+        })[status] || "未创建上传任务"
+    }
+    function uploadColor(status) {
+        if (status === "SUCCEEDED") return Theme.success
+        if (status === "PENDING" || status === "UPLOADING") return Theme.warning
+        if (status === "FAILED_RETRYABLE") return Theme.warning
+        if (status === "FAILED_FINAL" || status === "CREDENTIAL_BLOCKED") return Theme.danger
+        return Theme.muted
+    }
+    function uploadSoftColor(status) {
+        if (status === "SUCCEEDED") return Theme.successSoft
+        if (status === "FAILED_FINAL" || status === "CREDENTIAL_BLOCKED") return Theme.dangerSoft
+        if (status === "PENDING" || status === "UPLOADING" || status === "FAILED_RETRYABLE") return Theme.warningSoft
+        return Theme.surfaceAlt
+    }
+    function formatBytes(value) {
+        var bytes = Number(value || 0)
+        if (bytes <= 0) return "大小未知"
+        if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + " GB"
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + " MB"
+        if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB"
+        return bytes + " B"
+    }
+    function uploadActionText(status) {
+        if (status === "FAILED_FINAL") return "重新上传"
+        if (status === "CREDENTIAL_BLOCKED") return "凭据修复后重试"
+        return "上传到平台"
+    }
+    function uploadIsActive(status) {
+        return status === "PENDING" || status === "UPLOADING"
+            || status === "FAILED_RETRYABLE" || status === "CREDENTIAL_BLOCKED"
+    }
 
     ColumnLayout {
         width: parent.width
-        anchors.margins: 22
-        spacing: 16
+        anchors.margins: Theme.pageMargin
+        spacing: 12
 
         Label { text: "三维建模"; color: Theme.text; font.pixelSize: 26; font.bold: true }
 
@@ -94,24 +137,228 @@ ScrollView {
                     }
                 }
 
-                Label { text: "重建模型记录"; color: Theme.text; font.pixelSize: 16; font.bold: true }
-                Repeater {
-                    model: root.assetList("reconstructs").slice(0, 10)
-                    delegate: RowLayout {
-                        required property var modelData
-                        Layout.fillWidth: true
-                        spacing: 8
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        text: "重建模型记录"
+                        color: Theme.text
+                        font.pixelSize: 16
+                        font.bold: true
+                    }
+                    Item { Layout.fillWidth: true }
+                    Rectangle {
+                        implicitWidth: reconstructCountLabel.implicitWidth + 18
+                        implicitHeight: 28
+                        radius: 14
+                        color: Theme.primarySoft
+                        Label {
+                            id: reconstructCountLabel
+                            anchors.centerIn: parent
+                            text: root.assetList("reconstructs").length + " 个模型"
+                            color: Theme.primary
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
+                    }
+                }
+                Rectangle {
+                    visible: root.assetList("reconstructs").length === 0
+                    Layout.fillWidth: true
+                    implicitHeight: 118
+                    radius: Theme.cardRadius
+                    color: Theme.surfaceAlt
+                    border.color: Theme.border
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        width: Math.min(parent.width - 32, 520)
+                        spacing: 6
+                        Label {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: "暂无可上传的三维模型"
+                            color: Theme.text
+                            font.pixelSize: 16
+                            font.bold: true
+                        }
                         Label {
                             Layout.fillWidth: true
-                            text: (modelData.display_name || modelData.session_id) + " / " + modelData.session_id
-                                + " / " + (modelData.export_point_count || 0) + " 点"
-                            color: Theme.text
+                            text: "完成一次离线重建后，模型上传状态、失败原因和平台资产 ID 会显示在这里。"
+                            color: Theme.muted
+                            font.pixelSize: 13
+                            horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.Wrap
                         }
-                        Label { text: modelData.state || "ready"; color: Theme.stateColor(modelData.state || "ready") }
-                        Button { text: "最新"; onClicked: backend.setLatest3dReconstruct(modelData.session_id) }
-                        Button { text: "重命名"; onClicked: backend.rename3dAsset("reconstruct", modelData.session_id, (modelData.display_name || modelData.session_id) + "*") }
-                        Button { text: "删除"; onClicked: backend.delete3dAsset("reconstruct", modelData.session_id) }
+                    }
+                }
+                Repeater {
+                    model: root.assetList("reconstructs").slice(0, 10)
+                    delegate: Rectangle {
+                        required property var modelData
+                        property var upload: backend.sceneUploadStatuses[modelData.session_id] || ({})
+                        Layout.fillWidth: true
+                        implicitHeight: reconstructCardColumn.implicitHeight + 28
+                        radius: Theme.cardRadius
+                        color: Theme.surface
+                        border.color: Theme.border
+
+                        ColumnLayout {
+                            id: reconstructCardColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 14
+                            spacing: 10
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 3
+                                    Label {
+                                        text: modelData.display_name || modelData.session_id
+                                        color: Theme.text
+                                        font.pixelSize: 16
+                                        font.bold: true
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                    }
+                                    Label {
+                                        text: modelData.session_id + "  ·  "
+                                            + (modelData.export_point_count || 0) + " 点  ·  "
+                                            + root.formatBytes(modelData.file_size_bytes)
+                                        color: Theme.muted
+                                        font.pixelSize: 12
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                    }
+                                }
+                                Rectangle {
+                                    implicitWidth: reconstructStateLabel.implicitWidth + 18
+                                    implicitHeight: 28
+                                    radius: 14
+                                    color: Theme.surfaceAlt
+                                    Label {
+                                        id: reconstructStateLabel
+                                        anchors.centerIn: parent
+                                        text: modelData.state === "succeeded" ? "重建成功" : (modelData.state || "未知")
+                                        color: Theme.stateColor(modelData.state || "ready")
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: uploadColumn.implicitHeight + 20
+                                radius: Theme.cardRadius
+                                color: root.uploadSoftColor(upload.status)
+                                border.color: root.uploadColor(upload.status)
+
+                                ColumnLayout {
+                                    id: uploadColumn
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: 10
+                                    spacing: 7
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        Rectangle {
+                                            width: 9
+                                            height: 9
+                                            radius: 5
+                                            color: root.uploadColor(upload.status)
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 1
+                                            Label {
+                                                text: "平台上传"
+                                                color: Theme.text
+                                                font.pixelSize: 13
+                                                font.bold: true
+                                            }
+                                            Label {
+                                                text: root.uploadText(upload.status)
+                                                color: root.uploadColor(upload.status)
+                                                font.pixelSize: 12
+                                            }
+                                        }
+                                        Label {
+                                            visible: upload.retryCount > 0
+                                            text: "已重试 " + upload.retryCount + " 次"
+                                            color: Theme.muted
+                                            font.pixelSize: 11
+                                        }
+                                    }
+                                    Label {
+                                        visible: Boolean(upload.lastError) && upload.lastError.length > 0
+                                        text: "失败原因：" + upload.lastError
+                                        color: Theme.danger
+                                        font.pixelSize: 12
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                    }
+                                    RowLayout {
+                                        visible: Boolean(upload.sceneAssetId) && upload.sceneAssetId.length > 0
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        Label {
+                                            text: "平台资产 ID"
+                                            color: Theme.muted
+                                            font.pixelSize: 12
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: upload.sceneAssetId || ""
+                                            color: Theme.text
+                                            font.pixelSize: 12
+                                            font.family: "monospace"
+                                            elide: Text.ElideMiddle
+                                        }
+                                        Button {
+                                            text: "复制 ID"
+                                            onClicked: backend.copySceneAssetId(upload.sceneAssetId)
+                                        }
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                WarmButton {
+                                    visible: !upload.status || upload.status === "FAILED_FINAL"
+                                        || upload.status === "CREDENTIAL_BLOCKED"
+                                    Layout.preferredWidth: 180
+                                    text: root.uploadActionText(upload.status)
+                                    enabled: modelData.state === "succeeded"
+                                        && Boolean(modelData.output_file)
+                                        && Number(modelData.file_size_bytes || 0) > 0
+                                        && (!upload.status || (Boolean(upload.taskId) && upload.taskId.length > 0))
+                                    onClicked: upload.status
+                                        ? backend.retrySceneUpload(upload.taskId)
+                                        : backend.enqueueSceneUpload(modelData.session_id)
+                                }
+                                WarmButton {
+                                    visible: upload.status === "FAILED_RETRYABLE"
+                                    Layout.preferredWidth: 180
+                                    text: "立即重试"
+                                    enabled: Boolean(upload.taskId) && upload.taskId.length > 0
+                                    onClicked: backend.retrySceneUpload(upload.taskId)
+                                }
+                                Item { Layout.fillWidth: true }
+                                Button { text: "设为最新"; onClicked: backend.setLatest3dReconstruct(modelData.session_id) }
+                                Button { text: "重命名"; onClicked: backend.rename3dAsset("reconstruct", modelData.session_id, (modelData.display_name || modelData.session_id) + "*") }
+                                Button {
+                                    text: "删除"
+                                    enabled: !root.uploadIsActive(upload.status)
+                                    onClicked: backend.delete3dAsset("reconstruct", modelData.session_id)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -167,11 +414,12 @@ ScrollView {
         Label { text: "离线重建"; color: Theme.text; font.pixelSize: 20; font.bold: true }
         Rectangle {
             Layout.fillWidth: true
-            implicitHeight: 178
+            implicitHeight: reconstructActions.implicitHeight + 32
             radius: 8
             color: Theme.surface
             border.color: Theme.border
             ColumnLayout {
+                id: reconstructActions
                 anchors.fill: parent
                 anchors.margins: 16
                 spacing: 10
@@ -189,6 +437,54 @@ ScrollView {
                         buttonColor: Theme.primary
                         Layout.fillWidth: true
                         onClicked: backend.reconstructLatest3dMap("quality_plus")
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 72
+                    radius: Theme.cardRadius
+                    color: Theme.primarySoft
+                    border.color: Theme.border
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 10
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Label {
+                                text: "平台上传"
+                                color: Theme.text
+                                font.pixelSize: 13
+                                font.bold: true
+                            }
+                            Label {
+                                text: root.latestReconstructAsset.session_id
+                                    ? root.uploadText(root.latestReconstructUpload.status)
+                                    : "完成重建后可手动上传最新模型"
+                                color: root.latestReconstructAsset.session_id
+                                    ? root.uploadColor(root.latestReconstructUpload.status)
+                                    : Theme.muted
+                                font.pixelSize: 12
+                            }
+                        }
+                        WarmButton {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            text: root.latestReconstructUpload.status === "FAILED_RETRYABLE"
+                                ? "立即重试"
+                                : root.uploadActionText(root.latestReconstructUpload.status)
+                            enabled: Boolean(root.latestReconstructAsset.session_id)
+                                && root.latestReconstructAsset.state === "succeeded"
+                                && Boolean(root.latestReconstructAsset.output_file)
+                                && Number(root.latestReconstructAsset.file_size_bytes || 0) > 0
+                                && root.latestReconstructUpload.status !== "PENDING"
+                                && root.latestReconstructUpload.status !== "UPLOADING"
+                                && root.latestReconstructUpload.status !== "SUCCEEDED"
+                            onClicked: root.latestReconstructUpload.status
+                                ? backend.retrySceneUpload(root.latestReconstructUpload.taskId)
+                                : backend.enqueueSceneUpload(root.latestReconstructAsset.session_id)
+                        }
                     }
                 }
                 Label {

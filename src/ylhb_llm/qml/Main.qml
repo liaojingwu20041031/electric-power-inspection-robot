@@ -12,8 +12,18 @@ ApplicationWindow {
     height: 800
     minimumWidth: 960
     minimumHeight: 640
-    title: "电力巡检机器人操控台"
+    title: "电力巡检机器人"
     color: Theme.background
+    palette.window: Theme.background
+    palette.windowText: Theme.text
+    palette.base: Theme.surface
+    palette.alternateBase: Theme.surfaceAlt
+    palette.text: Theme.text
+    palette.button: Theme.surfaceAlt
+    palette.buttonText: Theme.primary
+    palette.highlight: Theme.primary
+    palette.highlightedText: Theme.surface
+    palette.mid: Theme.border
 
     property int currentPage: 1
     property var pageSources: [
@@ -34,17 +44,26 @@ ApplicationWindow {
         }
     }
 
-    Image {
-        anchors.fill: parent
-        source: backend.uiReady ? backend.assetPath("背景图2 (1).png") : ""
-        fillMode: Image.PreserveAspectCrop
-        cache: true
-        opacity: 0.28
+    Rectangle {
+        width: 420
+        height: 420
+        radius: 210
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.rightMargin: -130
+        anchors.topMargin: -170
+        color: "#2467C5F8"
     }
 
     Rectangle {
-        anchors.fill: parent
-        color: "#EFFFFFFF"
+        width: 340
+        height: 340
+        radius: 170
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 80
+        anchors.bottomMargin: -220
+        color: "#183B8EF3"
     }
 
     Item {
@@ -65,12 +84,12 @@ ApplicationWindow {
                 objectName: "sidebar"
                 Layout.preferredWidth: 210
                 Layout.fillHeight: true
-                color: "#F8FFFFFF"
+                color: "#F7FFFFFF"
                 border.color: Theme.border
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 16
+                    anchors.margins: Theme.pageMargin
                     spacing: 8
 
                     RowLayout {
@@ -95,7 +114,7 @@ ApplicationWindow {
                     }
 
                     Repeater {
-                        model: ["连接与服务", "巡逻模式", "三维建模", "本机状态", "语音与 AI", "日志"]
+                        model: ["连接与服务", "巡检任务", "三维建模", "本机状态", "AI 助手", "日志"]
                         delegate: Button {
                             required property int index
                             required property string modelData
@@ -106,8 +125,8 @@ ApplicationWindow {
                             flat: true
                             font.pixelSize: 15
                             background: Rectangle {
-                                radius: 6
-                                color: window.currentPage === index ? Theme.border : "transparent"
+                                radius: Theme.cardRadius
+                                color: window.currentPage === index ? Theme.primarySoft : "transparent"
                             }
                             contentItem: Text {
                                 text: parent.text
@@ -126,11 +145,11 @@ ApplicationWindow {
                         objectName: "closeConsoleButton"
                         Layout.fillWidth: true
                         Layout.preferredHeight: Theme.minimumTouchHeight
-                        text: backend.shutdownPending ? "正在关闭…" : "关闭操控台"
+                        text: backend.shutdownPending ? "正在关闭…" : "退出应用"
                         font.pixelSize: 15
                         font.bold: true
                         background: Rectangle {
-                            radius: 8
+                            radius: Theme.cardRadius
                             color: Theme.dangerSoft
                             border.color: Theme.danger
                         }
@@ -182,10 +201,10 @@ ApplicationWindow {
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape
-        title: "关闭操控台？"
+        title: "退出应用？"
         contentItem: Label {
             width: shutdownDialog.availableWidth
-            text: "关闭后将停止本次操控台、Agent、语音、系统监督，以及由系统监督管理的巡逻、导航、感知和底盘进程。\n\n由systemd管理的Mobile Bridge将继续运行。\n\n确认关闭？"
+            text: "退出后将停止本次应用、AI 助手、语音、系统监督，以及由系统监督管理的巡逻、导航、感知和底盘进程。\n\n由 systemd 管理的 Mobile Bridge 将继续运行。\n\n确认退出？"
             color: Theme.text
             font.pixelSize: 16
             wrapMode: Text.Wrap

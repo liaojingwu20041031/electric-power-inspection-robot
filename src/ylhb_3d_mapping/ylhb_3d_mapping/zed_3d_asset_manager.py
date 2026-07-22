@@ -88,6 +88,20 @@ def _write_index(root: str, entries: List[Dict[str, Any]]) -> None:
     _write_json(_root(root) / 'index.json', entries)
 
 
+def _asset_file_exists(asset: Dict[str, Any]) -> bool:
+    file_path = asset.get('output_file') if asset.get('type') == 'reconstruct' else asset.get('svo_file')
+    return bool(file_path and Path(str(file_path)).is_file())
+
+
+def _sync_latest(root: str, entries: List[Dict[str, Any]]) -> None:
+    latest_path = _root(root) / 'latest.json'
+    current = _read_json(latest_path)
+    valid = [entry for entry in entries if _asset_file_exists(entry)]
+    valid_sessions = {entry['session_id'] for entry in valid}
+    if not isinstance(current, dict) or current.get('session_id') not in valid_sessions:
+        _write_json(latest_path, valid[0] if valid else {})
+
+
 def list_assets(root: str, asset_type: str = '') -> List[Dict[str, Any]]:
     base = _root(root)
     entries = []
@@ -98,6 +112,7 @@ def list_assets(root: str, asset_type: str = '') -> List[Dict[str, Any]]:
             except ValueError:
                 pass
     _write_index(str(base), entries)
+    _sync_latest(str(base), entries)
     return entries
 
 

@@ -32,6 +32,7 @@ def test_asset_manager_lists_renames_trashes_and_sets_latest(tmp_path):
     trashed = assets.delete_asset(str(svo), 'capture_1')
     assert Path(trashed['trash_dir']).exists()
     assert not (svo / 'capture_1').exists()
+    assert json.loads((svo / 'latest.json').read_text()) == {}
 
 
 def test_asset_manager_rejects_path_traversal(tmp_path):

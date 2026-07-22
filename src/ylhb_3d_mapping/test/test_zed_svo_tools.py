@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -270,8 +271,21 @@ def test_reconstruct_uses_svo_offline_mode_and_profile(tmp_path):
     assert metadata['parameters']['spatial_mapping_max_memory_mb'] == 1024
     assert metadata['export_point_count'] == 2
     assert metadata['output_file'].endswith('pointcloud.ply')
+    assert metadata['schema_version'] == '1.1'
+    assert metadata['asset_kind'] == 'POINT_CLOUD'
+    assert metadata['format'] == 'PLY'
+    assert metadata['coordinate_system'] == 'RIGHT_HANDED_Z_UP'
+    assert metadata['unit'] == 'METER'
+    assert metadata['file_size_bytes'] == 3
+    assert metadata['file_size_bytes'] > 0
+    assert metadata['model_sha256'] == hashlib.sha256(b'ply').hexdigest()
+    assert metadata['scene_frame'] == 'zed_3d_map'
+    assert metadata['reference_frame'] == 'map'
+    assert metadata['scene_to_reference_transform'] is None
     latest = json.loads((tmp_path / 'latest.json').read_text(encoding='utf-8'))
     assert latest['output_file'] == metadata['output_file']
+    assert latest['model_sha256'] == metadata['model_sha256']
+    assert latest['coordinate_system'] == metadata['coordinate_system']
 
 
 def test_reconstruct_resolves_latest_default_and_session(tmp_path):

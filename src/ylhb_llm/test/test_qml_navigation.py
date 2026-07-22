@@ -108,7 +108,6 @@ def test_bridge_page_separates_local_and_cloud_controls():
     assert "signals.bridgeAvailability.connect(backend.update_bridge_availability)" in node
     assert "cloudDisplayState" in qml
     assert "cloudRequestedEnabled" in qml
-    assert "Math.min(parent.width - 40, 1540)" in qml
     assert "property real uiScale" in qml
     assert "visible: false" in qml.split("id: diagnosticBody", 1)[1]
     assert "coreUnavailable" not in qml
@@ -607,7 +606,6 @@ def test_patrol_page_prioritizes_route_map_and_responsive_workspace():
     assert 'objectName: "patrolPage"' in qml
     assert 'property bool wideLayout: root.availableWidth >= 1200' in qml
     assert 'property real contentMaxWidth: 1540' in qml
-    assert 'width: Math.min(root.availableWidth - 40, root.contentMaxWidth)' in qml
     assert 'columns: 12' in qml
     assert 'Layout.columnSpan: root.wideLayout ? 8 : 12' in qml
     assert 'Layout.columnSpan: root.wideLayout ? 4 : 12' in qml

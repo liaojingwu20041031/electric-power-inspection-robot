@@ -31,8 +31,8 @@ ScrollView {
 
     ColumnLayout {
         width: parent.width
-        anchors.margins: 22
-        spacing: 14
+        anchors.margins: Theme.pageMargin
+        spacing: 12
         Label { text: "系统状态"; color: Theme.text; font.pixelSize: 26; font.bold: true }
         Repeater {
             model: statusPage.names.length

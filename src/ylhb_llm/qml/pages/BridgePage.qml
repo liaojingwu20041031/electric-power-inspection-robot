@@ -79,14 +79,14 @@ ScrollView {
 
     Item {
         width: root.width
-        height: content.height + 44
+        height: content.height + Theme.pageMargin * 2
 
         ColumnLayout {
             id: content
-            width: Math.min(parent.width - 40, 1540)
-            x: Math.max(20, (parent.width - width) / 2)
-            y: 22
-            spacing: 18 * root.uiScale
+            width: Math.min(parent.width - Theme.pageMargin * 2, 1540)
+            x: Math.max(Theme.pageMargin, (parent.width - width) / 2)
+            y: Theme.pageMargin
+            spacing: 12 * root.uiScale
 
             Label {
                 text: "连接与服务"
@@ -105,8 +105,8 @@ ScrollView {
             GridLayout {
                 Layout.fillWidth: true
                 columns: content.width >= 960 ? 2 : 1
-                columnSpacing: 16
-                rowSpacing: 16
+                columnSpacing: 12
+                rowSpacing: 12
 
                 ConnectionCard {
                     Layout.fillWidth: true
@@ -373,7 +373,7 @@ ScrollView {
                 implicitWidth: 320
                 implicitHeight: 1
                 Layout.preferredHeight: coreColumn.implicitHeight + 40
-                radius: 16
+                radius: Theme.cardRadius
                 color: Theme.surface
                 border.color: Theme.border
                 ColumnLayout {
@@ -461,7 +461,7 @@ ScrollView {
                 implicitWidth: 320
                 implicitHeight: 1
                 Layout.preferredHeight: diagnosticColumn.implicitHeight + 32
-                radius: 16
+                radius: Theme.cardRadius
                 color: Theme.surface
                 border.color: Theme.border
                 ColumnLayout {
@@ -481,7 +481,7 @@ ScrollView {
                         id: diagnosticBody
                         Layout.fillWidth: true
                         visible: false
-                        spacing: 14
+                        spacing: 12
                         Label { text: "本地 APP 诊断"; color: Theme.text; font.bold: true }
                         Label {
                             Layout.fillWidth: true

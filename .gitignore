@@ -6,6 +6,7 @@ log/
 # Local agent and editor state
 .codex
 .agents/
+.superpowers/
 .vscode/
 .idea/
 *.swp

@@ -15,6 +15,7 @@ from ylhb_mobile_bridge.map_upload import (
     content_identity_sha256,
     normalized_map_identity,
 )
+from ylhb_mobile_bridge.scene_upload import SceneUploadError, SceneUploadWorker
 from ylhb_mobile_bridge.patrol_route_store import (
     validate_route_file,
     validate_route_map_binding,
@@ -100,6 +101,22 @@ def make_client(monkeypatch):
             'platformContext': {},
             'mapPose': None,
             'odomPose': None,
+            'gnssFix': {
+                'valid': True,
+                'stale': False,
+                'frame': 'gps_link',
+                'latitude': 31.1234567,
+                'longitude': 121.1234567,
+                'altitude': 12.4,
+                'quality': 4,
+                'fixType': 'RTK_FIXED',
+                'satellites': 18,
+                'hdop': 0.7,
+                'differentialAge': 0.4,
+                'baseStationId': '1001',
+                'ageSec': 0.2,
+                'observedAt': '2026-07-21T10:30:00.123Z',
+            },
             'health': {'ok': True},
         },
     )
@@ -142,6 +159,22 @@ def test_heartbeat_payload_does_not_include_local_network_diagnostics(monkeypatc
         'latestLocalEventSequence': 7,
         'mapPose': None,
         'odomPose': None,
+        'gnssFix': {
+            'valid': True,
+            'stale': False,
+            'frame': 'gps_link',
+            'latitude': 31.1234567,
+            'longitude': 121.1234567,
+            'altitude': 12.4,
+            'quality': 4,
+            'fixType': 'RTK_FIXED',
+            'satellites': 18,
+            'hdop': 0.7,
+            'differentialAge': 0.4,
+            'baseStationId': '1001',
+            'ageSec': 0.2,
+            'observedAt': '2026-07-21T10:30:00.123Z',
+        },
         'capabilities': {
             'remoteImmediateStart': True,
             'localConfirmStart': True,
@@ -253,6 +286,123 @@ def test_map_upload_identity_snapshot_and_persistent_states(tmp_path, monkeypatc
             yaml_path,
             Path(store.map_upload(uploaded_again['task_id'])['pgm_path']),
         )
+
+
+def _scene_upload(tmp_path, monkeypatch, session_id='reconstruct-1'):
+    root = tmp_path / 'runs' / '3d_reconstruct'
+    run = root / session_id
+    run.mkdir(parents=True)
+    model = run / 'pointcloud.ply'
+    metadata_path = run / 'metadata.json'
+    model.write_bytes(b'ply\nmodel-data')
+    metadata = {
+        'state': 'succeeded', 'asset_kind': 'POINT_CLOUD', 'format': 'PLY',
+        'session_id': session_id, 'source_capture_session_id': 'capture-1',
+        'output_file': str(model),
+        'model_sha256': hashlib.sha256(model.read_bytes()).hexdigest(),
+        'coordinate_system': 'RIGHT_HANDED_Z_UP', 'unit': 'METER',
+        'export_point_count': 3, 'created_at': 1.0, 'finished_at': 2.0,
+    }
+    metadata_path.write_text(json.dumps(metadata), encoding='utf-8')
+    monkeypatch.setenv('YLHB_SCENE_UPLOAD_ALLOWED_ROOT', str(root))
+    monkeypatch.setenv('YLHB_CLOUD_BASE_URL', 'https://cloud.example')
+    monkeypatch.setenv('YLHB_CLOUD_ROBOT_TOKEN', 'secret')
+    store = DeploymentStore(tmp_path / 'platform')
+    return SceneUploadWorker(store, 'robot-1'), store, model, metadata_path, metadata
+
+
+def test_scene_upload_snapshot_deduplication_and_retry_intent(tmp_path, monkeypatch):
+    worker, store, model, metadata_path, metadata = _scene_upload(tmp_path, monkeypatch)
+
+    created = worker.enqueue(model, metadata_path)
+    duplicate = worker.enqueue(model, metadata_path)
+    record = store.scene_upload(created['task_id'])
+
+    assert created['task_created'] is True
+    assert duplicate['task_created'] is False
+    assert duplicate['task_id'] == created['task_id']
+    assert DeploymentStore(store.root).scene_upload(created['task_id'])['status'] == 'PENDING'
+    snapshot = Path(record['model_path'])
+    assert snapshot.read_bytes() == b'ply\nmodel-data'
+
+    key = record['idempotency_key']
+    store.finish_scene_upload(
+        record['task_id'], 'FAILED_RETRYABLE', error='network',
+        next_retry_at=time.time() + 60,
+    )
+    duplicate_during_backoff = worker.enqueue(model, metadata_path)
+    still_waiting = store.scene_upload(record['task_id'])
+    assert duplicate_during_backoff['status'] == 'FAILED_RETRYABLE'
+    assert still_waiting['next_retry_at'] > time.time()
+    immediate = worker.retry(record['task_id'])
+    assert immediate['task_id'] == record['task_id']
+    assert store.scene_upload(record['task_id'])['idempotency_key'] == key
+
+    store.finish_scene_upload(record['task_id'], 'FAILED_FINAL', error='rejected')
+    replacement = worker.retry(record['task_id'])
+    replacement_record = store.scene_upload(replacement['task_id'])
+    assert replacement['task_created'] is True
+    assert replacement['task_id'] != record['task_id']
+    assert replacement_record['idempotency_key'] != key
+    assert replacement_record['supersedes_task_id'] == record['task_id']
+
+    model.write_bytes(b'ply\nchanged-model')
+    metadata['model_sha256'] = hashlib.sha256(model.read_bytes()).hexdigest()
+    metadata_path.write_text(json.dumps(metadata), encoding='utf-8')
+    assert snapshot.read_bytes() == b'ply\nmodel-data'
+    with pytest.raises(ValueError, match='different model hash'):
+        worker.enqueue(model, metadata_path)
+
+    temporary = worker.snapshot_root / '.scene-upload-interrupted'
+    orphan = worker.snapshot_root / 'orphan-task'
+    temporary.mkdir()
+    orphan.mkdir()
+    SceneUploadWorker(store, 'robot-1')
+    assert not temporary.exists()
+    assert not orphan.exists()
+    assert Path(replacement_record['model_path']).is_file()
+
+
+def test_scene_upload_credential_failure_is_not_retried(tmp_path, monkeypatch):
+    worker, store, model, metadata_path, _metadata = _scene_upload(
+        tmp_path, monkeypatch, 'reconstruct-401'
+    )
+    created = worker.enqueue(model, metadata_path)
+    record = store.scene_upload(created['task_id'])
+    monkeypatch.setattr(worker, '_upload', lambda _record: (_ for _ in ()).throw(
+        SceneUploadError(
+            'platform HTTP 401', retryable=False, credential_blocked=True
+        )
+    ))
+
+    worker._process(record)
+
+    failed = store.scene_upload(created['task_id'])
+    assert failed['status'] == 'CREDENTIAL_BLOCKED'
+    assert failed['next_retry_at'] == 0
+    assert failed['idempotency_key'] == record['idempotency_key']
+
+    retried = worker.retry(created['task_id'])
+    assert retried['task_id'] == created['task_id']
+    assert retried['status'] == 'PENDING'
+    assert store.scene_upload(created['task_id'])['idempotency_key'] == record['idempotency_key']
+
+    _unused, token_store, token_model, token_metadata, _unused_metadata = _scene_upload(
+        tmp_path, monkeypatch, 'reconstruct-missing-token'
+    )
+    monkeypatch.delenv('YLHB_CLOUD_ROBOT_TOKEN')
+    token_worker = SceneUploadWorker(token_store, 'robot-1')
+    token_blocked = token_worker.enqueue(token_model, token_metadata)
+    assert token_blocked['status'] == 'CREDENTIAL_BLOCKED'
+
+    _unused, ca_store, ca_model, ca_metadata, _unused_metadata = _scene_upload(
+        tmp_path, monkeypatch, 'reconstruct-bad-ca'
+    )
+    monkeypatch.setenv('YLHB_CLOUD_CA_FILE', str(tmp_path / 'missing-ca.pem'))
+    ca_worker = SceneUploadWorker(ca_store, 'robot-1')
+    ca_blocked = ca_worker.enqueue(ca_model, ca_metadata)
+    assert ca_blocked['status'] == 'FAILED_FINAL'
+    assert 'CA file is invalid' in ca_blocked['last_error']
 
 
 def test_start_command_task_id_can_be_restored_without_changing_start_contract(tmp_path):

@@ -289,6 +289,7 @@ class PlatformCloudClient:
             "lastReceivedCommandId": self.store.cloud_state("last_received_command_id", "") or None,
             "latestLocalEventSequence": self.store.latest_event_sequence(),
             "mapPose": snapshot.get("mapPose"), "odomPose": snapshot.get("odomPose"),
+            "gnssFix": snapshot.get("gnssFix"),
             "capabilities": {
                 "remoteImmediateStart": True,
                 "localConfirmStart": True,

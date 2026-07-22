@@ -144,6 +144,9 @@ def make_bridge(
     bridge.scan_topic = "/scan"
     bridge.map_topic = "/map"
     bridge.imu_topic = "/imu/data"
+    bridge.gps_fix_topic = "/gps/fix"
+    bridge.gps_status_topic = "/gps/rtk_status"
+    bridge.gps_stale_timeout_sec = 3.0
     bridge.zlac_status_topic = "/zlac8015d/status"
     bridge.zlac_fault_topic = "/zlac8015d/fault"
     bridge.system_mode_topic = "/inspection_ai/system_mode"
@@ -155,6 +158,15 @@ def make_bridge(
     bridge._last_scan_time = None
     bridge._last_map_time = None
     bridge._last_imu_time = None
+    bridge._last_gps_receive_monotonic = None
+    bridge._gps_observed_at = None
+    bridge._gps_fix = None
+    bridge._gps_quality = 0
+    bridge._gps_fix_type = 'NO_FIX'
+    bridge._gps_satellites = None
+    bridge._gps_hdop = None
+    bridge._gps_differential_age = None
+    bridge._gps_base_station_id = ''
     bridge._latest_map = None
     bridge._pose = None
     bridge._map_pose = None
@@ -418,6 +430,66 @@ def test_robot_status_includes_system_mode():
     assert "pose" in status
     assert "velocity" in status
     assert "timestamp" in status
+
+
+def test_gnss_callbacks_build_v3_snapshot_and_detect_stale(monkeypatch):
+    bridge = make_bridge()
+    monotonic = [100.0]
+    monkeypatch.setattr(
+        'ylhb_mobile_bridge.ros_bridge.time.monotonic',
+        lambda: monotonic[0],
+    )
+    bridge._on_gps_fix(SimpleNamespace(
+        header=SimpleNamespace(
+            frame_id='gps_link',
+            stamp=SimpleNamespace(sec=1_753_091_800, nanosec=123_000_000),
+        ),
+        latitude=31.1234567,
+        longitude=121.1234567,
+        altitude=12.4,
+        status=SimpleNamespace(status=0),
+    ))
+    bridge._on_gps_status(SimpleNamespace(status=[SimpleNamespace(values=[
+        SimpleNamespace(key='quality', value='4'),
+        SimpleNamespace(key='satellites', value='18'),
+        SimpleNamespace(key='hdop', value='0.7'),
+        SimpleNamespace(key='differential_age', value='0.4'),
+        SimpleNamespace(key='base_station_id', value='1001'),
+    ])]))
+
+    snapshot = bridge._gnss_fix_snapshot()
+    assert snapshot['valid'] is True
+    assert snapshot['fixType'] == 'RTK_FIXED'
+    assert snapshot['satellites'] == 18
+    assert snapshot['observedAt'].endswith('Z')
+
+    monotonic[0] = 104.0
+    assert bridge._gnss_fix_snapshot()['stale'] is True
+    assert bridge._gnss_fix_snapshot()['valid'] is False
+
+
+def test_gnss_fix_rejects_non_finite_coordinates(monkeypatch):
+    bridge = make_bridge()
+    monkeypatch.setattr(
+        'ylhb_mobile_bridge.ros_bridge.time.monotonic',
+        lambda: 100.0,
+    )
+    bridge._on_gps_fix(SimpleNamespace(
+        header=SimpleNamespace(
+            frame_id='gps_link',
+            stamp=SimpleNamespace(sec=0, nanosec=0),
+        ),
+        latitude=float('nan'),
+        longitude=float('inf'),
+        altitude=float('nan'),
+        status=SimpleNamespace(status=-1),
+    ))
+
+    snapshot = bridge._gnss_fix_snapshot()
+    assert snapshot['valid'] is False
+    assert snapshot['latitude'] is None
+    assert snapshot['longitude'] is None
+    assert snapshot['altitude'] is None
 
 
 def test_robot_status_includes_optional_network_snapshot():
@@ -887,7 +959,7 @@ def test_patrol_event_missing_task_identity_is_not_filled_from_global_context(
     assert bridge.platform_store.events == []
 
 
-def test_debug_status_topics_include_all_four():
+def test_debug_status_topics_include_sensor_inputs():
     bridge = make_bridge(
         topic_names_and_types={
             "/cmd_vel": [],
@@ -903,6 +975,8 @@ def test_debug_status_topics_include_all_four():
         "/scan": True,
         "/map": False,
         "/imu/data": True,
+        "/gps/fix": False,
+        "/gps/rtk_status": False,
     }
 
 
@@ -1013,3 +1087,49 @@ def test_zlac_status_online_when_data_empty():
     bridge = make_bridge()
     bridge._on_zlac_status(SimpleNamespace(data=""))
     assert bridge._zlac_status == "online"
+
+
+def test_scene_upload_status_uses_public_fields_and_redacts_credentials(monkeypatch):
+    bridge = make_bridge()
+    monkeypatch.setenv('YLHB_CLOUD_ROBOT_TOKEN', 'secret-token')
+    monkeypatch.setenv('YLHB_CLOUD_BASE_URL', 'https://cloud.example')
+
+    status = bridge._scene_status_payload({
+        'task_id': 'task-1',
+        'source_reconstruct_session_id': 'reconstruct-1',
+        'status': 'FAILED_RETRYABLE',
+        'retry_count': 2,
+        'last_error': 'secret-token at https://cloud.example failed',
+    })
+
+    assert status == {
+        'schemaVersion': '1.0',
+        'taskId': 'task-1',
+        'sourceSessionId': 'reconstruct-1',
+        'status': 'FAILED_RETRYABLE',
+        'retryCount': 2,
+        'nextRetryAt': 0,
+        'sceneAssetId': '',
+        'lastError': '[redacted] at [redacted] failed',
+    }
+
+
+def test_scene_upload_command_rejects_parent_session_before_reading(tmp_path):
+    bridge = make_bridge()
+    bridge.scene_upload_allowed_root = tmp_path / 'allowed'
+    bridge.scene_upload_allowed_root.mkdir()
+    bridge.scene_upload_worker = SimpleNamespace(
+        enqueue=lambda *_args: pytest.fail('enqueue must not be called'))
+    bridge._scene_upload_status_pub = FakePublisher()
+    bridge._scene_upload_status_keys = {}
+    (tmp_path / 'metadata.json').write_text('{}', encoding='utf-8')
+
+    bridge._on_scene_upload_command(SimpleNamespace(data=json.dumps({
+        'schemaVersion': '1.0',
+        'action': 'enqueue',
+        'sessionId': '..',
+    })))
+
+    status = json.loads(bridge._scene_upload_status_pub.messages[-1].data)
+    assert status['status'] == 'FAILED_FINAL'
+    assert status['lastError'] == 'invalid scene session id'

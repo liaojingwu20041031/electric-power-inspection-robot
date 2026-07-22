@@ -479,8 +479,10 @@ def test_patrol_readiness_properties_follow_system_status():
     assert backend.patrolControlsEnabled is True
 
 
-def test_mapping3d_status_properties_follow_direct_and_system_status():
+def test_mapping3d_status_properties_follow_direct_and_system_status(tmp_path):
     backend = make_backend(lambda: 100.0)
+    model_file = tmp_path / 'map.ply'
+    model_file.write_bytes(b'ply')
 
     backend.update_mapping3d_status({
         'state': 'recording',
@@ -495,16 +497,28 @@ def test_mapping3d_status_properties_follow_direct_and_system_status():
         'latest_mapping3d_status': {
             'state': 'succeeded',
             'message': 'exported',
-            'output_file': '/tmp/map.ply',
+            'output_file': str(model_file),
         },
-        'latest_mapping3d_result': {'output_file': '/tmp/map.ply'},
+        'latest_mapping3d_result': {'output_file': str(model_file)},
     })
     assert backend.mapping3dStatus['state'] == 'succeeded'
-    assert backend.mapping3dResult['output_file'] == '/tmp/map.ply'
+    assert backend.mapping3dResult['output_file'] == str(model_file)
+
+    model_file.unlink()
+    backend.update_system_status({
+        'latest_mapping3d_status': {},
+        'latest_mapping3d_result': {'output_file': str(model_file)},
+    })
+    assert backend.mapping3dStatus == {}
+    assert backend.mapping3dResult == {}
 
 
-def test_mapping3d_latest_files_and_controls_follow_system_status():
+def test_mapping3d_latest_files_and_controls_follow_system_status(tmp_path):
     backend = make_backend(lambda: 100.0)
+    svo_file = tmp_path / 'capture.svo2'
+    model_file = tmp_path / 'pointcloud.ply'
+    svo_file.write_bytes(b'svo')
+    model_file.write_bytes(b'ply')
 
     backend.update_system_status({
         '3d_capture': 'stopped',
@@ -519,16 +533,22 @@ def test_mapping3d_latest_files_and_controls_follow_system_status():
     backend.update_system_status({
         '3d_capture': 'running',
         '3d_reconstruct': 'stopped',
-        'latest_3d_capture': {'svo_file': '/tmp/capture.svo2', 'svo_frame_count': 12},
-        'latest_3d_reconstruct': {'output_file': '/tmp/pointcloud.ply'},
+        'latest_3d_capture': {'svo_file': str(svo_file), 'svo_frame_count': 12},
+        'latest_3d_reconstruct': {'output_file': str(model_file)},
     })
 
-    assert backend.latestSvoFile == '/tmp/capture.svo2'
-    assert backend.latestModelFile == '/tmp/pointcloud.ply'
+    assert backend.latestSvoFile == str(svo_file)
+    assert backend.latestModelFile == str(model_file)
     assert backend.mapping3dCanStartCapture is False
     assert backend.mapping3dCanStopCapture is True
     assert backend.mapping3dCanReconstruct is True
     assert '12 帧' in backend.mapping3dCaptureText
+
+    svo_file.unlink()
+    model_file.unlink()
+    assert backend.latestSvoFile == ''
+    assert backend.latestModelFile == ''
+    assert backend.mapping3dCanReconstruct is False
 
 
 def test_mapping3d_slots_publish_supervisor_commands():

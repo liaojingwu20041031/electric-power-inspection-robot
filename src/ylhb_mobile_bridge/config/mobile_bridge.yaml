@@ -8,6 +8,9 @@ mobile_bridge:
     scan_topic: "/scan"
     map_topic: "/map"
     imu_topic: "/imu/data"
+    gps_fix_topic: "/gps/fix"
+    gps_status_topic: "/gps/rtk_status"
+    gps_stale_timeout_sec: 3.0
     amcl_pose_topic: "/amcl_pose"
     zlac_status_topic: "/zlac8015d/status"
     zlac_fault_topic: "/zlac8015d/fault"
@@ -35,6 +38,10 @@ mobile_bridge:
     set_cloud_enabled_service_name: "/mobile_bridge/set_cloud_enabled"
     local_app_status_topic: "/mobile_bridge/local_app_status"
     set_local_app_enabled_service_name: "/mobile_bridge/set_local_app_enabled"
+    scene_asset_ready_topic: "/inspection_ai/scene_asset_ready"
+    scene_upload_command_topic: "/inspection_ai/scene_upload_command"
+    scene_upload_status_topic: "/inspection_ai/scene_upload_status"
+    scene_upload_allowed_root: "/home/nvidia/ros2_DL/runs/3d_reconstruct"
     # Cloud pull configuration is environment-only: YLHB_CLOUD_*; never put tokens here.
     max_linear_speed: 0.30
     max_angular_speed: 0.55

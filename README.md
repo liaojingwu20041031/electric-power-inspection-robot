@@ -1,172 +1,250 @@
 <div align="center">
 
+<img src="记录照片/机器人卡通形象LOGO.png" width="230" alt="电力巡检机器人项目 Logo">
+
+<sub><b>ELECTRIC POWER INSPECTION ROBOT</b></sub>
+
 # 电力巡检机器人 ROS 2 一体化平台
 
-> 面向电力设施巡检的 Jetson + ROS 2 移动机器人：从硬件接入、建图导航到路线巡逻、感知、智能任务与本体操控台的一体化研发工作空间。
+### 自主巡逻 · 视觉感知 · 三维建模 · AI 任务 · 云端协同
+
+面向电力设施巡检的 Jetson 实机工作空间，将硬件驱动、SLAM/Nav2、路线巡逻、ZED 3D、TensorRT、AI Agent、本体 QML 操控台与 Mobile Bridge 连接成一套可部署、可调试、可扩展的机器人系统。
 
 <p>
-  <img alt="ROS 2 Humble" src="https://img.shields.io/badge/ROS%202-Humble-22314E?logo=ros&logoColor=white">
+  <img alt="ROS 2 Humble" src="https://img.shields.io/badge/ROS%202-Humble-2764A5?logo=ros&logoColor=white">
   <img alt="Ubuntu 22.04" src="https://img.shields.io/badge/Ubuntu-22.04-E95420?logo=ubuntu&logoColor=white">
   <img alt="Jetson Orin Nano" src="https://img.shields.io/badge/Jetson-Orin%20Nano%20Super-76B900?logo=nvidia&logoColor=white">
-  <img alt="Nav2" src="https://img.shields.io/badge/Navigation-Nav2-2563EB">
-  <img alt="CANopen" src="https://img.shields.io/badge/Drive-CANopen-0F766E">
+  <img alt="Navigation2" src="https://img.shields.io/badge/Navigation-Nav2-3182CE">
+  <img alt="ZED 2i" src="https://img.shields.io/badge/3D-ZED%202i-19A7CE">
   <img alt="TensorRT" src="https://img.shields.io/badge/Inference-TensorRT-76B900?logo=nvidia&logoColor=white">
-  <a href="https://github.com/liaojingwu20041031/mini-agent-core"><img alt="mini-agent-core" src="https://img.shields.io/badge/Agent-mini--agent--core-7C3AED"></a>
-  <img alt="React Native" src="https://img.shields.io/badge/APP-Expo%20React%20Native-000020?logo=expo&logoColor=white">
+  <img alt="QML" src="https://img.shields.io/badge/Console-Qt%20QML-41CD52?logo=qt&logoColor=white">
+  <img alt="CANopen" src="https://img.shields.io/badge/Drive-CANopen-0F766E">
 </p>
 
-<img src="记录照片/MVIMG_20260708_160027..jpg" width="94%" alt="电力巡检机器人实机整机展示">
-
-<sub>Jetson Orin Nano Super · ZLAC8015D · RPLidar · HiPNUC IMU · WTRTK980 RTK · ZED 2i</sub>
-
-[查看实机与能力](#能力快照) · [部署到 Jetson](#快速开始) · [扩展与调试](#开发者导航) · [完整中文手册](src/电力巡检机器人使用与调试手册.md)
+[项目亮点](#项目亮点) · [系统架构](#系统架构) · [3D 建模与平台上传](#3d-建模与平台上传) · [快速开始](#快速开始) · [开发者导航](#开发者导航) · [完整中文手册](src/电力巡检机器人使用与调试手册.md)
 
 </div>
 
 ---
 
-## 能力快照
+## 项目亮点
 
-| 已具备 | 已验证 / 可复现 | 后续业务接线 |
-|---|---|---|
-| ROS 2 硬件接入、路线巡逻、ZED/TensorRT、QML 操控台、Mobile Bridge | 构建、地图/路线校验、按现场安全流程执行的实机验收入口 | Spring Bridge、Web/小程序正式业务接线、检查点检测服务、告警与报告 |
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h3>🧭 自主巡检闭环</h3>
+      <p>SLAM Toolbox 建图、AMCL 定位、Nav2 导航、本地路线巡逻、暂停/继续/取消、循环与返航。</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>👁️ 视觉与空间感知</h3>
+      <p>ZED 2i 图像和深度、YOLO/TensorRT 推理、目标深度定位、SVO 采集与 PLY 点云重建。</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>☁️ 三维资产可靠上传</h3>
+      <p>重建完成自动触发，也可从 QML 手动上传；SQLite、不可变快照、SHA-256、幂等键和弱网重试保证任务可恢复。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <h3>🤖 受控 AI Agent</h3>
+      <p>AgentSpec、ToolPack、schema 与 policy 双层约束。大模型只做任务级决策，不直接开放底盘速度或 Nav2 goal。</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🖥️ 本体友好蓝操控台</h3>
+      <p>QML 集成状态、巡逻、控制、建图、3D、语音与平台连接页面，统一触控尺寸、状态颜色和信息层级。</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>📡 本地与云端协同</h3>
+      <p>Mobile Bridge 提供 HTTP/WebSocket 与公网 heartbeat，回传系统健康、地图位姿和 GNSS/RTK 新鲜度信息。</p>
+    </td>
+  </tr>
+</table>
 
-| 从这里开始 | 适合谁 | 入口 |
-|---|---|---|
-| 项目展示 | 答辩、评审、访客 | [实机展示](#实机展示) · [项目亮点](#项目亮点) · [系统架构](#系统架构) |
-| Jetson 部署 | 现场部署、台架联调 | [快速开始](#快速开始) · [安全与交付边界](#安全与交付边界) |
-| 开发扩展 | ROS 2 开发者、模块维护者 | [开发者导航](#开发者导航) · [完整中文手册](src/电力巡检机器人使用与调试手册.md) · [专项文档](#专项文档) |
+### 已贯通的工程链路
+
+```text
+硬件接入 → TF / 里程计 / 传感器 → SLAM / AMCL / Nav2 → 路线巡逻
+                                      ↓
+ZED 图像 / 深度 → TensorRT 感知 → 检查任务 → 事件与状态回传
+                                      ↓
+SVO 现场采集 → 离线 PLY 重建 → 本地快照 → HTTPS 上传 → 平台资产 ID
+```
 
 ## 实机展示
 
 <p align="center">
-  <img src="记录照片/MVIMG_20260708_160033..jpg" width="92%" alt="电力巡检机器人侧视实机">
+  <img src="记录照片/MVIMG_20260708_160027..jpg" width="94%" alt="电力巡检机器人实机整机展示">
+</p>
+
+<p align="center">
+  <sub>Jetson Orin Nano Super · ZLAC8015D · PEAK PCAN-USB · RPLidar · HiPNUC IMU · WTRTK980 RTK · ZED 2i</sub>
 </p>
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <img src="记录照片/MVIMG_20260708_160040..jpg" width="100%" alt="电力巡检机器人正视实机">
+      <img src="记录照片/MVIMG_20260708_160033..jpg" width="100%" alt="电力巡检机器人侧视实机">
     </td>
     <td width="50%" align="center">
-      <img src="记录照片/底盘.png" width="100%" alt="机器人移动底盘结构">
+      <img src="记录照片/MVIMG_20260708_160040..jpg" width="100%" alt="电力巡检机器人正视实机">
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="记录照片/D59D5CF0BDD4633978F520A59D475B4B.png" width="100%" alt="机器人 CAD 结构展示">
+      <img src="记录照片/底盘.png" width="100%" alt="机器人移动底盘结构">
     </td>
     <td width="50%" align="center">
-      <img src="记录照片/23B6CF8AAC715B70C368A7C031887BE1.png" width="100%" alt="机器人操控与研发记录">
+      <img src="记录照片/D59D5CF0BDD4633978F520A59D475B4B.png" width="100%" alt="机器人 CAD 结构展示">
     </td>
   </tr>
 </table>
 
-## 项目亮点
-
-| 方向 | 已集成能力 |
-|---|---|
-| 实机硬件集成 | Jetson Orin Nano Super、ZLAC8015D V4、PEAK PCAN-USB、RPLidar、HiPNUC IMU、WTRTK980 RTK 和 ZED 2i 的统一 ROS 2 工作空间 |
-| Nav2 巡逻闭环 | SLAM Toolbox 建图、AMCL 定位、Nav2 单点导航、本地路线巡逻、暂停/继续/取消、返航和到点任务触发 |
-| ZED 双阶段 3D 建模 | 现场录制 SVO，离线重建 PLY 点云或 OBJ 网格；输出用于巡检展示和复盘，不混入 Nav2 二维地图 |
-| TensorRT 感知入口 | ZED 图像与深度、YOLO/TensorRT 推理、目标深度定位和 `/perception/*` 输出链路 |
-| AI Agent 任务层 | 自研 `mini-agent-core` 轻量 Agent 思路，使用 AgentSpec、ToolPack、OpenAI-compatible tool calling 和 schema/policy 双层约束；只暴露受控高层工具，不直接开放 `/cmd_vel` 或 Nav2 goal |
-| 本体 UI 与移动端联调 | QML 巡逻/三维/状态/语音页面，HTTP/WebSocket mobile bridge，Expo React Native 调试 APP；UI 退出有意关闭完整 inspection 栈，避免后台节点残留 |
-| 平台连接基础设施 | Robot/Mobile Bridge 已具备公网 heartbeat、部署配置和协议文档；Spring Bridge 与 Web/小程序正式业务接线仍为后续工作 |
-
-## AI Agent 轻量核心
-
-本项目不是把大模型直接接到底盘或 Nav2，而是在 `ylhb_llm` 内实现了本地化的
-mini-agent-core 风格运行时。UI 和语音请求进入 `InspectionAgentRuntime` 后，
-运行时根据 `InspectionAgentSpecBuilder` 生成任务能力描述，LLM 只产出任务级
-tool calling，例如状态查询、巡逻控制、受控系统命令和基础运动技能。
-
-LLM 决策不会直接落到 ROS 2 控制接口。`agent_schema.validate_decision()` 先校验
-工具名、参数类型和数值范围，`agent_policy.authorize()` 再按工具风险等级、急停状态
-和禁止能力做二次约束。通过校验后，执行才交给 ROS2 ToolPack、system supervisor、
-patrol executor 或 base motion skill。这样 Agent 层负责意图解析和任务编排，底盘、
-导航、巡逻、急停等安全边界仍留在机器人本地控制链路中。
-
 ## 系统架构
 
 ```mermaid
-flowchart LR
-    APP[移动端 APP] -->|HTTP / WebSocket| BRIDGE[mobile bridge]
-    QML[本体 inspection UI] --> SYS[system supervisor]
-    VOICE[语音 / 文本] --> TASK[任务层]
-    AGENT["mini-agent-core 风格 Agent Runtime"] --> SPEC[AgentSpec / schema]
-    SPEC --> POLICY[policy authorize]
-    POLICY --> TOOLS[ROS2 ToolPack / 安全工具集]
+flowchart TB
+    subgraph UX[交互与任务层]
+        QML[本体 QML 操控台]
+        APP[移动端 APP]
+        VOICE[语音 / 文本]
+        AGENT[受控 AI Agent Runtime]
+    end
 
+    subgraph CORE[机器人编排层]
+        SYS[System Supervisor]
+        BRIDGE[Mobile Bridge]
+        PATROL[Patrol Executor]
+        POLICY[Schema / Policy / ToolPack]
+    end
+
+    subgraph NAVIGATION[移动与导航]
+        NAV[Nav2]
+        SLAM[SLAM Toolbox / AMCL]
+        EKF[robot_localization EKF]
+        BASE[ZLAC8015D CANopen 底盘]
+    end
+
+    subgraph SENSING[传感与感知]
+        LIDAR[RPLidar]
+        IMU[HiPNUC IMU]
+        RTK[WTRTK980 RTK]
+        ZED[ZED 2i]
+        TRT[YOLO / TensorRT / 深度定位]
+    end
+
+    subgraph SCENE[三维资产链路]
+        SVO[SVO2 现场采集]
+        PLY[PLY 离线重建]
+        READY[scene_asset_ready]
+        UPLOAD[SceneUploadWorker]
+        STORE[(SQLite + 上传快照)]
+    end
+
+    CLOUD[机器人云平台 API]
+
+    QML --> SYS
+    APP -->|HTTP / WebSocket| BRIDGE
+    VOICE --> AGENT --> POLICY
+    POLICY --> SYS
+    POLICY --> PATROL
     BRIDGE --> SYS
-    BRIDGE --> PATROL[patrol executor]
-    SYS --> BRINGUP[bringup / navigation / zed / perception / 3D]
-    SYS --> PATROL
-    TASK --> AGENT
-    TOOLS --> PATROL
-    TOOLS --> SYS
-    TOOLS --> SKILL[base motion skill]
-
-    PATROL -->|NavigateToPose| NAV[Nav2]
-    SKILL --> CMD[/cmd_vel/]
-    NAV --> CMD
-    CMD --> BASE[ZLAC8015D 底盘]
-    BASE --> ODOM[轮速里程计]
-
-    LIDAR[RPLidar] --> SLAM[SLAM Toolbox / AMCL]
-    IMU[HiPNUC IMU] --> EKF[robot_localization EKF]
-    ODOM --> EKF
-    SLAM --> NAV
-    EKF --> NAV
-    RTK[WTRTK980 RTK] --> GPS["/gps/fix / /gps/nmea_sentence / /gps/rtk_status"]
-
-    ZED[ZED 2i] --> PERCEPTION[YOLO / TensorRT / 深度定位]
-    ZED --> CAPTURE[3D capture]
-    CAPTURE --> RECON[3D reconstruct]
-    PERCEPTION --> TASK
-    RECON --> ASSET[PLY / OBJ / 预览点云]
+    SYS --> PATROL -->|NavigateToPose| NAV --> BASE
+    LIDAR --> SLAM --> NAV
+    IMU --> EKF --> NAV
+    BASE --> EKF
+    RTK --> BRIDGE
+    ZED --> TRT --> SYS
+    ZED --> SVO --> PLY --> READY --> BRIDGE
+    BRIDGE --> UPLOAD <--> STORE
+    UPLOAD -->|HTTPS multipart| CLOUD
+    BRIDGE -->|heartbeat / 状态| CLOUD
 ```
 
-图中是功能数据关系，不表示所有节点必须同时启动。实机启动组合以
-[重点使用与调试文档](src/电力巡检机器人使用与调试手册.md) 为准。
-Agent 层只做任务级决策，ROS 2 侧执行仍通过受控 ToolPack、巡逻执行器和基础运动技能完成。
+图中表示功能关系，不要求所有节点同时启动。Agent 只调度受控工具；底盘、导航、巡逻和急停边界仍由机器人本地 ROS 2 链路负责。
 
 核心 TF 链：
 
 ```text
-map -> odom -> base_footprint -> base_link -> laser_link
-                         `-----> imu_link
-                         `-----> gps_link
+map → odom → base_footprint → base_link → laser_link
+                              ├────────→ imu_link
+                              └────────→ gps_link
 ```
 
-## 项目目录
+## 3D 建模与平台上传
 
-| 类型 | 路径 | 用途 |
-|---|---|---|
-| 根目录资源 | `scripts/` | Jetson 安装、构建、启动、CAN、PCAN 和实机诊断入口 |
-| 根目录资源 | `maps/` | Nav2 地图 `my_map.*` 与本地巡逻路线 `route_patrol_*.json` |
-| 根目录资源 | `runs/` | 3D 采集、离线重建、日志和现场运行产物 |
-| 根目录资源 | `docs/`、`官方通信协议/`、`CAD/`、`记录照片/` | 调试文档、硬件协议、机械模型和展示素材 |
-| ROS 包 | `src/ylhb_base` | 底盘、URDF/TF、EKF、RTK NMEA、SLAM、AMCL、Nav2 和重定位 |
-| ROS 包 | `src/ylhb_mobile_bridge` | HTTP/WebSocket 调试桥接、本地 Nav2 巡逻执行器、路线文件校验 |
-| ROS 包 | `src/ylhb_llm` | AI/语音任务层、mini-agent-core 风格 Agent Runtime、schema/policy 安全约束、system supervisor、本体 QML UI |
-| ROS 包 | `src/ylhb_perception` | ZED 图像、YOLO/TensorRT、深度目标定位 |
-| ROS 包 | `src/ylhb_3d_mapping` | ZED SVO 采集、PLY/OBJ 重建和点云预览发布 |
-| ROS 包 | `src/ylhb_interfaces`、`src/hipnuc_imu`、`src/rplidar_ros-ros2`、`src/zed-ros2-wrapper` | 自定义消息、IMU 驱动、雷达驱动和 ZED 官方 wrapper |
+三维链路采用“现场轻采集、离线重建、后台上传”，避免实时建模和大文件传输占用导航控制资源。
 
-## 开发者导航
+```mermaid
+flowchart LR
+    CAPTURE[capture.svo2] --> RECON[ZED 离线重建]
+    RECON --> MODEL[pointcloud.ply]
+    RECON --> META[metadata.json]
+    MODEL --> CHECK{state=succeeded\n文件与哈希有效}
+    META --> CHECK
+    CHECK -->|自动事件或 UI 手动上传| QUEUE[持久化上传任务]
+    QUEUE --> SNAPSHOT[不可变快照]
+    SNAPSHOT --> HTTPS[单线程流式 HTTPS]
+    HTTPS --> ASSET[sceneAssetId]
+```
 
-| 要改什么 | 首先查看 | 说明 |
-|---|---|---|
-| 底盘、TF、定位、Nav2 | `src/ylhb_base` | 底盘后端、URDF、EKF、SLAM、AMCL、导航配置 |
-| 路线与外部接口 | `src/ylhb_mobile_bridge`、`maps/route_patrol_*.json` | 本地巡逻执行器、路线校验、HTTP/WebSocket 与 Cloud Link |
-| Agent、语音与本体 UI | `src/ylhb_llm` | 任务编排、system supervisor、QML 控制台与 UI 生命周期 |
-| 视觉与三维 | `src/ylhb_perception`、`src/ylhb_3d_mapping` | ZED、TensorRT 检测、深度定位、SVO/PLY/OBJ 工作流 |
-| 安全、协议与现场手册 | [`docs/`](docs/) · [`src/电力巡检机器人使用与调试手册.md`](src/电力巡检机器人使用与调试手册.md) | 路线安全、平台协议、云连接、硬件与现场操作说明 |
+### 产物与触发方式
+
+```text
+runs/3d_capture/capture_<timestamp>/capture.svo2
+runs/3d_reconstruct/reconstruct_<timestamp>/pointcloud.ply
+runs/3d_reconstruct/reconstruct_<timestamp>/metadata.json
+```
+
+- **自动触发：** 重建成功且 PLY、metadata 均存在后，Supervisor 发布 `/inspection_ai/scene_asset_ready`，Mobile Bridge 校验事件并创建上传任务。
+- **手动触发：** 在本体 UI 的“三维建模”页面点击“上传到平台”；QML 只提交受控 session ID，不接受任意文件路径。
+- **手动重试：** 网络失败或凭据修复后可立即重试；同一任务继续复用原 `Idempotency-Key`。
+
+### 机器人端可靠性
+
+| 能力 | 当前实现 |
+|---|---|
+| 产物校验 | PLY 扩展名、允许目录、最终文件大小、metadata 状态、SHA-256 与 session 身份 |
+| 任务持久化 | `scene_uploads` SQLite 表，WAL、事务状态更新，进程重启后继续处理 |
+| 上传快照 | 上传前分块复制到独立目录，原子发布；源模型删除或改名不影响已排队任务 |
+| 幂等与去重 | `source_reconstruct_session_id + model_sha256` 去重；HTTP 重试不更换幂等键 |
+| 网络传输 | HTTPS 证书校验、1 MB 分块 multipart、独立连接/读取超时，不将整个 PLY 读入内存 |
+| 弱网恢复 | 指数退避、0%–20% 随机抖动、`Retry-After`、单线程 Worker |
+| 磁盘管理 | 活跃任务快照不清理；成功快照按保留时间、数量和总配额回收 |
+| 状态回传 | `PENDING`、`UPLOADING`、`FAILED_RETRYABLE`、`CREDENTIAL_BLOCKED`、`FAILED_FINAL`、`SUCCEEDED` |
+
+成功后 UI 显示平台 `sceneAssetId` 和“已上传，待平台审核”。机器人端不会把上传成功误写成“平台已启用”。本地 SVO/PLY 被删除后，资产索引与 UI 会同步清理，不继续展示失效文件。
+
+> **边界说明：** PLY 使用 `RIGHT_HANDED_Z_UP`、单位 `METER`，当前不保证与 ROS `map` frame 对齐。三维模型不会写入 `maps/my_map.yaml`，不参与 Nav2 二维地图加载，也不会替换当前导航地图。
+
+平台上传依赖以下受保护配置：
+
+```text
+YLHB_CLOUD_BASE_URL
+YLHB_CLOUD_ROBOT_TOKEN
+YLHB_CLOUD_CA_FILE
+YLHB_ROBOT_ID
+YLHB_SCENE_UPLOAD_ENABLED
+YLHB_SCENE_UPLOAD_ALLOWED_ROOT
+```
+
+详细流程见 [ZED 3D 双阶段建模流程](docs/三维建图工作流程.md)。平台侧需提供 `POST /robot-api/v1/scene-assets`、机器人 Token 和合法 TLS 证书；Web 审核页面不属于本仓库的硬件端实现。
+
+## 核心模块
+
+| 模块 | 主要职责 |
+|---|---|
+| `src/ylhb_base` | ZLAC8015D 底盘、URDF/TF、EKF、RTK NMEA、SLAM、AMCL、Nav2 与重定位 |
+| `src/ylhb_mobile_bridge` | HTTP/WebSocket、本地巡逻执行器、云 heartbeat、GNSS 状态与 3D 资产上传 Worker |
+| `src/ylhb_llm` | AI/语音任务层、Agent Runtime、schema/policy、System Supervisor 与本体 QML UI |
+| `src/ylhb_perception` | ZED 图像、YOLO/TensorRT、深度目标定位 |
+| `src/ylhb_3d_mapping` | SVO2 采集、PLY 点云重建、metadata、资产索引和点云预览 |
+| `src/ylhb_interfaces` | 项目自定义 ROS 2 消息与服务接口 |
+| `scripts` | Jetson 安装、构建、启动、CAN、PCAN 和实机诊断入口 |
+| `maps` / `runs` | 二维地图与路线；三维采集、重建和运行产物 |
 
 ## 快速开始
 
-运行环境为 Ubuntu 22.04、ROS 2 Humble 和 Jetson Orin Nano Super。推荐工作空间路径为 `~/ros2_DL`。
+运行环境：Ubuntu 22.04、ROS 2 Humble、Jetson Orin Nano Super。
 
 ```bash
 git clone https://github.com/liaojingwu20041031/electric-power-inspection-robot.git ~/ros2_DL
@@ -190,24 +268,19 @@ source install/setup.bash
 ip -details link show can1
 ```
 
-常用运行入口：
+### 常用运行入口
 
-> ⚠️ 以下 `bringup`、`navigation`、`inspection` 等入口可能使机器人进入可执行状态。请由现场操作员确认急停、场地和设备状态后执行；不要将静态构建或文档检查视为实机通过。
+> ⚠️ `bringup`、`mapping`、`navigation` 和 `inspection` 可能使机器人进入可执行状态。必须由现场操作员确认急停、驱动轮、周围人员和场地安全后运行。
 
 ```bash
-# 底盘、IMU、雷达、robot_state_publisher 与 EKF
+# 底盘、IMU、雷达、TF 与 EKF
 ./scripts/run_on_jetson.sh bringup
 
-# 在线建图
+# SLAM 在线建图
 ./scripts/run_on_jetson.sh mapping
 
 # 使用 maps/my_map.yaml 定位与导航
 ./scripts/run_on_jetson.sh navigation
-
-# 本地巡逻执行器
-ros2 launch ylhb_mobile_bridge patrol_executor.launch.py \
-  auto_start:=false \
-  publish_initial_pose_on_startup:=true
 
 # ZED 2i 与 TensorRT 感知
 ./scripts/run_on_jetson.sh zed
@@ -215,138 +288,94 @@ ros2 launch ylhb_mobile_bridge patrol_executor.launch.py \
 
 # ZED 双阶段 3D 建模
 ./scripts/run_on_jetson.sh zed_3d_capture duration_sec:=30
-./scripts/run_on_jetson.sh zed_3d_reconstruct input:=runs/3d_capture/capture_<timestamp>/capture.svo2
+./scripts/run_on_jetson.sh zed_3d_reconstruct \
+  input:=runs/3d_capture/capture_<timestamp>/capture.svo2
 
-# 本体巡检 UI、任务管理与语音交互
+# 本体 UI、任务管理、巡逻与语音交互
 ./scripts/run_on_jetson.sh inspection
 ```
 
-移动端调试桥接：
+Mobile Bridge 默认监听 `0.0.0.0:8000`。局域网调试方式见 [Mobile Bridge APP 调试接口](docs/移动端桥接调试接口.md)，公网部署见 [Jetson 云平台连接运维](docs/云平台连接运维.md)。
 
-```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 launch ylhb_mobile_bridge mobile_bridge.launch.py
-```
+## 本体操控台
 
-服务默认监听 `0.0.0.0:8000`。手机与 Jetson 需在同一可信局域网，APP 地址设为
-`http://<Jetson_IP>:8000`，并关闭 `Mock Mode`。接口见
-[Mobile Bridge APP 调试接口](docs/移动端桥接调试接口.md)。
+新版 QML 采用统一的友好蓝视觉体系，覆盖：
 
-## 构建与验证
+- 系统总览、连接状态与关键指标；
+- 巡逻路线、启动确认、暂停/继续/取消；
+- 底盘控制、建图、三维采集与重建；
+- 3D 模型上传状态、失败原因、重试和平台资产 ID；
+- 语音/AI、日志、Mobile Bridge 与云连接状态；
+- 触控友好的按钮尺寸、颜色语义和急停高优先级展示。
+
+UI 有意作为完整 inspection 栈的生命周期锚点。桌面自启动和 systemd/Supervisor 所有权识别可避免 Mobile Bridge 重复启动，详见 [本体 QML 操控台](docs/本体QML操控台.md)。
+
+## AI Agent 安全边界
+
+UI 和语音请求进入 `InspectionAgentRuntime` 后，由 AgentSpec 描述当前可用能力。LLM 只能产生状态查询、巡逻控制、受控系统命令和基础运动技能等任务级 tool calling。
+
+执行前经过两层约束：
+
+1. `agent_schema.validate_decision()` 校验工具名、参数类型与数值范围；
+2. `agent_policy.authorize()` 根据风险等级、急停状态和禁止能力决定是否放行。
+
+Agent 不直接开放 `/cmd_vel`、Nav2 goal、删图或任意路线修改。最终执行仍由 ROS2 ToolPack、Supervisor、Patrol Executor 和本地安全链路负责。
+
+## 开发者导航
+
+| 要修改的能力 | 首先查看 |
+|---|---|
+| 底盘、TF、定位与 Nav2 | `src/ylhb_base` |
+| 路线、移动端、云连接与 3D 上传 | `src/ylhb_mobile_bridge`、`maps/route_patrol_*.json` |
+| Agent、语音、Supervisor 与 QML | `src/ylhb_llm` |
+| ZED、TensorRT 与三维重建 | `src/ylhb_perception`、`src/ylhb_3d_mapping` |
+| 安全、平台协议与现场操作 | [`docs/`](docs/) · [完整中文手册](src/电力巡检机器人使用与调试手册.md) |
+
+### 构建与验证
 
 自研包优先按包验证，避免第三方 ZED wrapper 的上游 lint 或网络 schema 问题干扰：
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge ylhb_interfaces ylhb_3d_mapping
+colcon build --symlink-install --packages-select \
+  ylhb_base ylhb_llm ylhb_perception \
+  ylhb_mobile_bridge ylhb_interfaces ylhb_3d_mapping
 source install/setup.bash
-colcon test --packages-select ylhb_base ylhb_llm ylhb_perception ylhb_mobile_bridge ylhb_interfaces ylhb_3d_mapping --event-handlers console_direct+
+colcon test --packages-select \
+  ylhb_base ylhb_llm ylhb_perception \
+  ylhb_mobile_bridge ylhb_interfaces ylhb_3d_mapping \
+  --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-硬件诊断入口：
-
-```bash
-./scripts/diagnose_pcan.sh
-ros2 topic list -t
-ros2 topic hz /scan
-ros2 topic info /scan -v
-ros2 topic info /cmd_vel -v
-ros2 topic info /cmd_vel_safe -v
-ros2 run tf2_ros tf2_echo map laser_link
-ros2 topic hz /plan
-ros2 lifecycle get /collision_monitor
-ros2 topic hz /imu/data
-ros2 topic hz /odom
-ros2 topic echo /gps/rtk_status --once
-```
+实机问题先查看真实日志、Topic、TF 和 lifecycle；Mock/Fake 或静态字符串检查不能作为实机功能通过证明。
 
 ## 安全与交付边界
 
-- WTRTK980 RTK 当前是第一阶段接入，只发布 `/gps/fix`、`/gps/nmea_sentence` 和 `/gps/rtk_status`；不参与 AMCL、Nav2、`map -> odom` 或巡逻路线计算。
-- ZED 3D 输出是 PLY/OBJ/预览点云，用于展示、复盘和后续空间建模；不作为 Nav2 的二维 `map.yaml/pgm`。
-- AI Agent 当前用于任务级意图解析、状态查询、受控系统命令和基础运动技能调度；不直接开放 `/cmd_vel`、Nav2 goal、删图、改路线等高风险能力。
-- 当前仓库已提供 normal/keepout 自动选择的路线巡逻、二值虚拟墙膨胀、路线安全检查、返航/循环和 UI 状态刷新；正式巡检业务协议、检查点检测服务、告警库和报告导出仍是后续扩展。
-- Robot/Mobile Bridge 已具备公网 heartbeat、部署配置和协议合同；Spring Bridge 与 Web/小程序正式业务接线尚未完成。
-- mobile bridge 面向现场调试，不替代正式巡检任务系统；应只在可信局域网使用。生产模式以 systemd/Supervisor 所有权解析避免重复实例，详情见 [本体 QML 操控台](docs/本体QML操控台.md)。
+- WTRTK980 RTK 当前发布 `/gps/fix`、`/gps/nmea_sentence` 和 `/gps/rtk_status`，并进入 Mobile Bridge 云状态；它不替代 AMCL，不参与 `map → odom` 或巡逻路线计算。
+- PLY 三维模型用于展示、复盘和平台资产，不作为 Nav2 二维地图；没有可靠变换时，不将二维路线坐标直接当作点云坐标。
+- 三维上传为低优先级单线程后台任务，不应阻塞 heartbeat、远程命令 ACK、Nav2、巡逻事件和急停链路。
+- Mobile Bridge 的局域网接口用于现场调试；生产 Token、CA 和平台地址通过受保护配置注入，不写入 QML、ROS Topic 或日志。
+- 路线包含 `hard_keepout` 时由 Supervisor 选择 keepout Profile；修改路线、footprint、轮径、轮距或 CAN 映射后必须进行低速实车复验。
+- 平台后端、Web/小程序审核与业务报告由对应服务实现；本仓库负责机器人硬件端、ROS 2、本体 UI 和连接协议接入。
 
-## 专项文档
+## 文档索引
 
-### 现场操作
+| 分类 | 文档 |
+|---|---|
+| 现场操作 | [电力巡检机器人使用与调试手册](src/电力巡检机器人使用与调试手册.md) · [本体 QML 操控台](docs/本体QML操控台.md) |
+| 三维与 AI | [三维建图工作流程](docs/三维建图工作流程.md) · [AI Agent 工程日志](docs/AI智能体工程日志.md) |
+| 平台连接 | [Robot Platform Protocol v1](docs/protocol/robot-platform-v1.md) · [云平台连接运维](docs/云平台连接运维.md) · [移动端桥接调试接口](docs/移动端桥接调试接口.md) |
+| 路线与安全 | [路线 JSON 字段参考](docs/路线JSON字段参考.md) · [二值 Keepout 操作](docs/二值禁行区安全地图操作.md) |
+| 系统架构 | [架构图与通信矩阵](docs/architecture/README.md) |
+| 硬件资料 | [官方通信协议](官方通信协议/) · [CAD 机械模型](CAD/Retail-Cart-3D-Model/) |
 
-- [重点使用与调试文档](src/电力巡检机器人使用与调试手册.md)：硬件接线、启动组合、数据流、巡逻、感知、RTK 和故障排查
-- [Mobile Bridge APP 调试接口](docs/移动端桥接调试接口.md)：移动端状态、底盘控制、建图、巡逻和安全限制
-- [本体 QML 操控台](docs/本体QML操控台.md)：完整 inspection 栈生命周期、Mobile Bridge 所有权、云连接与 kiosk 指引
+---
 
-### 平台连接
+<div align="center">
 
-- [Robot Platform Protocol v1](docs/protocol/robot-platform-v1.md)：公网 heartbeat、命令、事件、deployment、鉴权与恢复合同
-- [Jetson 云平台连接运维](docs/云平台连接运维.md)：platform.env、systemd、Cloud UI、日志脱敏、备份和本地回退
-- [移动端 APP 仓库](https://github.com/liaojingwu20041031/ylhb-robot-mobile)：Expo React Native 局域网调试端
+**让感知、导航、巡检与三维资产真正运行在同一台机器人上。**
 
-### 路线与安全
+<sub>本仓库用于机器人研发、联调与实验验证。实机运行必须遵守现场安全边界。</sub>
 
-- [路线 JSON 字段参考](docs/路线JSON字段参考.md)：v2/v3 兼容、地图绑定、keepout、循环与 schedule 契约
-- [二值 Keepout 操作](docs/二值禁行区安全地图操作.md)：mask 生成/checker、Profile、lifecycle 与现场验收
-
-### 三维与 AI
-
-- [ZED 3D 双阶段建模流程](docs/三维建图工作流程.md)：SVO 采集、离线重建、QML 页面和 RViz 预览
-- [AI Agent 工程日志](docs/AI智能体工程日志.md)：mini-agent-core 风格本地运行时、工具策略、话题 schema 和测试入口
-- [mini-agent-core](https://github.com/liaojingwu20041031/mini-agent-core)：作者独立维护的轻量 Agent Core / SDK 模板
-
-### 硬件资料
-
-- [官方通信协议](官方通信协议/)：ZLAC8015D V4 手册、CANopen 示例和 RTK 接入资料
-- [CAD 机械模型](CAD/Retail-Cart-3D-Model/)：底盘、支架和结构件模型
-
-## 使用说明
-
-本仓库用于机器人研发、联调与实验验证。启动底盘前应架空驱动轮或确保周围无人员和障碍物；
-修改轮径、轮距、CAN 映射、URDF 或 Nav2 footprint 后，应重新执行包测试并进行低速实车验证。
-
-## 安全地图、路线工具与 UI 自启动
-
-Keepout 禁行区入口：
-
-带启用 `hard_keepout` 的路线会由 supervisor 自动选择 keepout Profile；普通路线选择 normal Profile。现场推荐从 `./scripts/run_on_jetson.sh inspection` 进入巡逻模式，不再使用旧 `enable_keepout` 或旧 mask 文件命令。
-
-```bash
-python3 scripts/generate_keepout_mask.py \
-  --map maps/my_map.yaml \
-  --route maps/route_patrol_001.json \
-  --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml \
-  --output-dir maps/keepout
-python3 scripts/check_keepout_setup.py \
-  --map maps/my_map.yaml \
-  --route maps/route_patrol_001.json \
-  --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml \
-  --output-dir maps/keepout
-```
-
-路线安全检查：
-
-```bash
-python3 scripts/validate_route_safety.py --map maps/my_map.yaml --route maps/route_patrol_001.json --nav2-params src/ylhb_base/config/nav2_params_keepout.yaml --report
-```
-
-PC 标注工具在 `tools/route_map_tool/route_map_tool.html`，禁行区直接保存在 route JSON 的 `keepout_zones`，默认导出 v3 路线。`mask_padding_m` 默认 `0.025m`，只是二值墙栅格化边界补偿；最终避让由 InflationLayer `6.0 / 0.35` 负责。
-
-UI 自启动：
-
-```bash
-./scripts/configure_agent_env.sh
-./scripts/install_ui_autostart.sh
-./scripts/uninstall_ui_autostart.sh
-```
-
-密钥只写入 `~/.config/ylhb/agent.env`（目录 `700`、文件 `600`），不会进入 desktop、YAML、ROS 参数或日志。安装器会先检查密钥、KWS 模型、`install/setup.bash` 和 inspection 所需可执行文件；永久配置错误会拒绝安装，endpoint 暂时不可达仅记录警告。
-
-更多细节见 `docs/二值禁行区安全地图操作.md` 和 `docs/本体QML操控台.md`。
-
-### 操控台运维
-
-参见[显示 UI 生命周期与 kiosk 指引](docs/本体QML操控台.md)和[云连接状态语义](docs/云平台连接运维.md)。UI 有意作为完整 inspection 栈的生命周期锚点；桌面自启动只会重启完整栈。
-
-Mobile Bridge 默认使用 `YLHB_MOBILE_BRIDGE_OWNER=auto`，手工 inspection 与桌面自启动共享 systemd/Supervisor 所有权识别，避免核心服务漏启动或重复启动。
+</div>

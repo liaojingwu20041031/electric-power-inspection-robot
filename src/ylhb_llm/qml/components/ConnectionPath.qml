@@ -3,16 +3,15 @@ import QtQuick.Controls 2.12
 import QtQuick.Layouts 1.12
 import ".."
 
-Rectangle {
+Item {
     id: root
     property color localColor: Theme.muted
     property color cloudColor: Theme.muted
     property string coreState: "stopped"
 
     implicitHeight: 140
-    radius: 16
-    color: Theme.surface
-    border.color: Theme.border
+    Rectangle { x: 0; y: 2; width: parent.width; height: parent.height; radius: Theme.cardRadius; color: "#100F5C8A" }
+    Rectangle { anchors.fill: parent; radius: Theme.cardRadius; color: Theme.surface; border.color: Theme.border }
 
     RowLayout {
         anchors.fill: parent
@@ -29,7 +28,7 @@ Rectangle {
         Rectangle {
             implicitWidth: 170
             implicitHeight: 72
-            radius: 12
+            radius: Theme.cardRadius
             color: root.coreState === "running" ? Theme.successSoft : (root.coreState === "starting" ? Theme.infoSoft : Theme.dangerSoft)
             border.color: root.coreState === "running" ? Theme.success : (root.coreState === "starting" ? Theme.info : Theme.danger)
             Label { anchors.centerIn: parent; text: "Jetson 网桥"; color: Theme.text; font.bold: true; font.pixelSize: 17 }

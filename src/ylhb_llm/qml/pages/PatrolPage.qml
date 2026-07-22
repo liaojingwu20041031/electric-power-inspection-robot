@@ -63,21 +63,21 @@ ScrollView {
     }
 
     ColumnLayout {
-        x: Math.max(20, (root.availableWidth - width) / 2)
-        width: Math.min(root.availableWidth - 40, root.contentMaxWidth)
-        spacing: 18
+        x: Math.max(Theme.pageMargin, (root.availableWidth - width) / 2)
+        width: Math.min(root.availableWidth - Theme.pageMargin * 2, root.contentMaxWidth)
+        spacing: 12
 
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 112
-            radius: 14
+            radius: Theme.cardRadius
             color: Theme.surface
             border.color: Theme.border
 
             RowLayout {
                 anchors.fill: parent
-                anchors.margins: 22
-                spacing: 18
+                anchors.margins: Theme.pageMargin
+                spacing: 12
 
                 ColumnLayout {
                     Layout.fillWidth: true
@@ -97,7 +97,7 @@ ScrollView {
                 Rectangle {
                     Layout.preferredWidth: 168
                     Layout.preferredHeight: 48
-                    radius: 24
+                    radius: Theme.cardRadius
                     color: Qt.rgba(root.patrolStateColor().r, root.patrolStateColor().g, root.patrolStateColor().b, 0.12)
                     border.color: root.patrolStateColor()
                     Row {
@@ -118,14 +118,14 @@ ScrollView {
         GridLayout {
             Layout.fillWidth: true
             columns: 12
-            columnSpacing: 16
-            rowSpacing: 16
+            columnSpacing: 12
+            rowSpacing: 12
 
             Rectangle {
                 Layout.columnSpan: root.wideLayout ? 8 : 12
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.mapPreferredHeight + 128
-                radius: 14
+                radius: Theme.cardRadius
                 color: Theme.surface
                 border.color: Theme.border
 
@@ -189,19 +189,19 @@ ScrollView {
                         Layout.preferredHeight: Math.max(42, childrenRect.height)
                         spacing: 8
                         Rectangle {
-                            width: mapLabel.implicitWidth + 20; height: 28; radius: 14; color: Theme.surfaceAlt; border.color: Theme.border
+                            width: mapLabel.implicitWidth + 20; height: 28; radius: Theme.cardRadius; color: Theme.surfaceAlt; border.color: Theme.border
                             Label { id: mapLabel; anchors.centerIn: parent; text: "地图 " + (root.previewMap.image || "-"); color: Theme.muted; font.pixelSize: 12 }
                         }
                         Rectangle {
-                            width: resolutionLabel.implicitWidth + 20; height: 28; radius: 14; color: Theme.surfaceAlt; border.color: Theme.border
+                            width: resolutionLabel.implicitWidth + 20; height: 28; radius: Theme.cardRadius; color: Theme.surfaceAlt; border.color: Theme.border
                             Label { id: resolutionLabel; anchors.centerIn: parent; text: "分辨率 " + String(backend.routePreview.map_resolution || "-") + " m"; color: Theme.muted; font.pixelSize: 12 }
                         }
                         Rectangle {
-                            width: targetLabel.implicitWidth + 20; height: 28; radius: 14; color: Theme.surfaceAlt; border.color: Theme.border
+                            width: targetLabel.implicitWidth + 20; height: 28; radius: Theme.cardRadius; color: Theme.surfaceAlt; border.color: Theme.border
                             Label { id: targetLabel; anchors.centerIn: parent; text: "检查点 " + String(backend.routePreview.target_count || 0); color: Theme.muted; font.pixelSize: 12 }
                         }
                         Rectangle {
-                            width: keepoutLabel.implicitWidth + 20; height: 28; radius: 14; color: Theme.surfaceAlt; border.color: Theme.border
+                            width: keepoutLabel.implicitWidth + 20; height: 28; radius: Theme.cardRadius; color: Theme.surfaceAlt; border.color: Theme.border
                             Label { id: keepoutLabel; anchors.centerIn: parent; text: "禁行区 " + String(backend.routePreview.keepout_count || 0); color: Theme.muted; font.pixelSize: 12 }
                         }
                         Button {
@@ -223,14 +223,14 @@ ScrollView {
                 Layout.columnSpan: root.wideLayout ? 4 : 12
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.wideLayout ? root.mapPreferredHeight + 128 : 430
-                radius: 14
+                radius: Theme.cardRadius
                 color: Theme.surface
                 border.color: Theme.border
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 20
-                    spacing: 13
+                    anchors.margins: Theme.pageMargin
+                    spacing: 12
 
                     Label { text: "任务控制"; color: Theme.text; font.pixelSize: 20; font.bold: true }
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
@@ -278,7 +278,9 @@ ScrollView {
                         WarmButton {
                             text: "暂停"
                             enabled: backend.patrolCanPause
-                            buttonColor: Theme.warning
+                            buttonColor: Theme.primarySoft
+                            textColor: Theme.primary
+                            borderColor: Theme.accent
                             Layout.fillWidth: true
                             Layout.preferredHeight: 50
                             onClicked: backend.sendSystemCommand("pause_patrol")
@@ -318,7 +320,7 @@ ScrollView {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: detailsColumn.implicitHeight + 32
-            radius: 14
+            radius: Theme.cardRadius
             color: Theme.surface
             border.color: Theme.border
 

@@ -393,6 +393,8 @@ class SystemSupervisorNode(Node):
         self.keepout_lifecycle_started = False
         self.latest_mapping3d_status: Dict[str, Any] = {}
         self.latest_mapping3d_result: Dict[str, Any] = {}
+        self.latest_scene_upload_status: Dict[str, Any] = {}
+        self.scene_uploads_by_session: Dict[str, Dict[str, Any]] = {}
         self.inflight_commands = set()
         self.lifecycle_clients: Dict[str, Any] = {}
         self.lifecycle_manager_clients: Dict[str, Any] = {}
@@ -457,6 +459,10 @@ class SystemSupervisorNode(Node):
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
         self.patrol_command_pub = self.create_publisher(String, '/patrol/command', 10)
         self.mapping3d_command_pub = self.create_publisher(String, '/inspection_ai/mapping3d_capture_command', 10)
+        self.scene_asset_ready_pub = self.create_publisher(
+            String, '/inspection_ai/scene_asset_ready', latched_qos())
+        self.scene_upload_command_pub = self.create_publisher(
+            String, '/inspection_ai/scene_upload_command', 10)
         self.create_subscription(
             String,
             self.get_parameter('system_command_topic').value,
@@ -492,6 +498,12 @@ class SystemSupervisorNode(Node):
             String,
             '/inspection_ai/mapping3d_result',
             self.mapping3d_result_callback,
+            latched_qos(),
+        )
+        self.create_subscription(
+            String,
+            '/inspection_ai/scene_upload_status',
+            self.scene_upload_status_callback,
             latched_qos(),
         )
         self.create_timer(1.0, self.publish_status)
@@ -752,6 +764,53 @@ class SystemSupervisorNode(Node):
             payload = {'raw': msg.data}
         if isinstance(payload, dict):
             self.latest_mapping3d_result = payload
+        if not isinstance(payload, dict) or payload.get('state') != 'succeeded':
+            return
+        model_path = Path(str(payload.get('output_file') or '')).expanduser()
+        metadata_path = Path(str(payload.get('metadata_file') or '')).expanduser()
+        try:
+            root = Path(self.mapping3d_reconstruct_dir).expanduser().resolve()
+            model_path = model_path.resolve(strict=True)
+            metadata_path = metadata_path.resolve(strict=True)
+        except OSError as exc:
+            self.get_logger().error(f'3D reconstruction result is incomplete: {exc}')
+            return
+        if (
+            not model_path.is_file()
+            or not metadata_path.is_file()
+            or not model_path.is_relative_to(root)
+            or not metadata_path.is_relative_to(root)
+        ):
+            self.get_logger().error('3D reconstruction result paths are invalid')
+            return
+        ready = String()
+        ready.data = json.dumps({
+            'schemaVersion': '1.0',
+            'state': 'succeeded',
+            'assetKind': 'POINT_CLOUD',
+            'format': 'PLY',
+            'sourceSessionId': str(payload.get('session_id') or model_path.parent.name),
+            'modelPath': str(model_path),
+            'metadataPath': str(metadata_path),
+        }, ensure_ascii=False)
+        self.scene_asset_ready_pub.publish(ready)
+
+    def scene_upload_status_callback(self, msg: String) -> None:
+        payload = self._json_object(msg.data)
+        if not payload:
+            return
+        self.latest_scene_upload_status = payload
+        session_id = str(payload.get('sourceSessionId') or '')
+        if session_id:
+            self.scene_uploads_by_session[session_id] = payload
+
+    @staticmethod
+    def _json_object(raw: str) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
         correlation = {
@@ -863,6 +922,25 @@ class SystemSupervisorNode(Node):
             return
         if command in ('list_3d_assets', 'rename_3d_asset', 'delete_3d_asset', 'set_latest_3d_capture', 'set_latest_3d_reconstruct'):
             self.handle_3d_asset_command(command, payload)
+            return
+        if command in {'enqueue_scene_upload', 'retry_scene_upload'}:
+            session_id = str(payload.get('session_id') or '').strip()
+            task_id = str(payload.get('task_id') or '').strip()
+            if command == 'enqueue_scene_upload' and not session_id:
+                self.set_result(command, False, '缺少三维重建 session_id')
+                return
+            if command == 'retry_scene_upload' and not task_id:
+                self.set_result(command, False, '缺少三维上传 task_id')
+                return
+            message = String()
+            message.data = json.dumps({
+                'schemaVersion': '1.0',
+                'action': 'enqueue' if command == 'enqueue_scene_upload' else 'retry',
+                'sessionId': session_id,
+                'taskId': task_id,
+            }, ensure_ascii=False)
+            self.scene_upload_command_pub.publish(message)
+            self.set_result(command, True, '三维上传命令已发送')
             return
         if command == 'export_3d_map':
             self.export_3d_map()
@@ -2083,6 +2161,13 @@ class SystemSupervisorNode(Node):
                     str(payload.get('display_name') or session_id),
                 )
             elif command == 'delete_3d_asset':
+                upload = getattr(self, 'scene_uploads_by_session', {}).get(
+                    session_id, {}) if asset_type == 'reconstruct' else {}
+                if str(upload.get('status') or '') in {
+                    'PENDING', 'UPLOADING', 'FAILED_RETRYABLE',
+                    'CREDENTIAL_BLOCKED',
+                }:
+                    raise ValueError('该三维资产仍有活动上传任务，暂不能删除')
                 result = zed_3d_asset_manager.delete_asset(self.asset_root(asset_type), session_id)
             elif command == 'set_latest_3d_capture':
                 result = zed_3d_asset_manager.set_latest_asset(self.asset_root('capture'), session_id)
@@ -3189,6 +3274,8 @@ class SystemSupervisorNode(Node):
             },
             'latest_mapping3d_status': getattr(self, 'latest_mapping3d_status', {}),
             'latest_mapping3d_result': getattr(self, 'latest_mapping3d_result', {}),
+            'latest_scene_upload_status': getattr(self, 'latest_scene_upload_status', {}),
+            'scene_uploads_by_session': getattr(self, 'scene_uploads_by_session', {}),
             'latest_3d_capture': self.read_latest_json(
                 getattr(self, 'mapping3d_capture_dir', getattr(self, 'mapping3d_output_dir', workspace_path('runs', '3d_capture')))
             ),

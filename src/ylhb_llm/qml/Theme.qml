@@ -2,23 +2,26 @@ pragma Singleton
 import QtQuick 2.12
 
 QtObject {
-    readonly property color background: "#FFF7ED"
+    readonly property color background: "#F5FAFF"
     readonly property color surface: "#FFFFFF"
-    readonly property color surfaceAlt: "#FFF9F2"
-    readonly property color primary: "#F97316"
-    readonly property color primarySoft: "#FFEDD5"
-    readonly property color accent: "#FACC15"
+    readonly property color surfaceAlt: "#EAF5FF"
+    readonly property color primary: "#3B8EF3"
+    readonly property color primarySoft: "#EAF5FF"
+    readonly property color accent: "#67C5F8"
     readonly property color success: "#22C55E"
     readonly property color successSoft: "#DCFCE7"
     readonly property color warning: "#F59E0B"
     readonly property color warningSoft: "#FEF3C7"
     readonly property color danger: "#DC2626"
     readonly property color dangerSoft: "#FEE2E2"
-    readonly property color info: "#2563EB"
-    readonly property color infoSoft: "#DBEAFE"
-    readonly property color text: "#1F2937"
-    readonly property color muted: "#6B7280"
-    readonly property color border: "#FED7AA"
+    readonly property color info: "#3B8EF3"
+    readonly property color infoSoft: "#EAF5FF"
+    readonly property color text: "#243447"
+    readonly property color muted: "#7B8A9A"
+    readonly property color border: "#DDEAF4"
+    readonly property int cardRadius: 8
+    readonly property int pageMargin: 24
+    readonly property int controlSpacing: 10
     readonly property int minimumTouchHeight: 48
 
     function stateColor(state) {

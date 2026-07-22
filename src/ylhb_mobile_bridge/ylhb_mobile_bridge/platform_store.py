@@ -166,6 +166,36 @@ class DeploymentStore:
                   created_at REAL NOT NULL,
                   updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS scene_uploads (
+                  task_id TEXT PRIMARY KEY,
+                  idempotency_key TEXT NOT NULL UNIQUE,
+                  source_reconstruct_session_id TEXT NOT NULL,
+                  source_capture_session_id TEXT NOT NULL DEFAULT '',
+                  model_sha256 TEXT NOT NULL,
+                  intent_number INTEGER NOT NULL DEFAULT 0,
+                  model_path TEXT NOT NULL,
+                  metadata_path TEXT NOT NULL,
+                  metadata_json TEXT NOT NULL,
+                  file_size INTEGER NOT NULL,
+                  asset_kind TEXT NOT NULL,
+                  format TEXT NOT NULL,
+                  status TEXT NOT NULL CHECK (status IN (
+                    'PENDING','FAILED_RETRYABLE','FAILED_FINAL',
+                    'CREDENTIAL_BLOCKED','SUCCEEDED'
+                  )),
+                  retry_count INTEGER NOT NULL DEFAULT 0,
+                  next_retry_at REAL NOT NULL DEFAULT 0,
+                  scene_asset_id TEXT NOT NULL DEFAULT '',
+                  last_error TEXT NOT NULL DEFAULT '',
+                  supersedes_task_id TEXT NOT NULL DEFAULT '',
+                  created_at REAL NOT NULL,
+                  updated_at REAL NOT NULL,
+                  UNIQUE(source_reconstruct_session_id, model_sha256, intent_number)
+                );
+                CREATE INDEX IF NOT EXISTS idx_scene_upload_status_retry
+                ON scene_uploads(status, next_retry_at);
+                CREATE INDEX IF NOT EXISTS idx_scene_upload_session
+                ON scene_uploads(source_reconstruct_session_id);
             """)
 
     def _default_map_yaml_path(self) -> Path | None:
@@ -890,4 +920,131 @@ class DeploymentStore:
                 "UPDATE inspection_image_uploads SET file_path='',file_size=0,"
                 "updated_at=? WHERE capture_task_id=?",
                 (time.time(), capture_task_id),
+            )
+
+    @staticmethod
+    def _scene_upload_dict(row: sqlite3.Row | None) -> Dict[str, Any] | None:
+        return dict(row) if row is not None else None
+
+    def scene_upload(self, task_id: str) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM scene_uploads WHERE task_id=?", (task_id,)
+            ).fetchone()
+        return self._scene_upload_dict(row)
+
+    def scene_upload_by_session(self, session_id: str) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM scene_uploads "
+                "WHERE source_reconstruct_session_id=? "
+                "ORDER BY intent_number DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        return self._scene_upload_dict(row)
+
+    def scene_upload_by_identity(
+        self, session_id: str, model_sha256: str,
+    ) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM scene_uploads "
+                "WHERE source_reconstruct_session_id=? AND model_sha256=? "
+                "ORDER BY intent_number DESC LIMIT 1",
+                (session_id, model_sha256),
+            ).fetchone()
+        return self._scene_upload_dict(row)
+
+    def create_scene_upload(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        stamp = time.time()
+        with self._connection() as db:
+            db.execute(
+                "INSERT INTO scene_uploads ("
+                "task_id,idempotency_key,source_reconstruct_session_id,"
+                "source_capture_session_id,model_sha256,intent_number,"
+                "model_path,metadata_path,metadata_json,file_size,asset_kind,"
+                "format,status,retry_count,next_retry_at,scene_asset_id,"
+                "last_error,supersedes_task_id,created_at,updated_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING',0,0,'','',?,?,?)",
+                (
+                    record["task_id"], record["idempotency_key"],
+                    record["source_reconstruct_session_id"],
+                    record.get("source_capture_session_id", ""),
+                    record["model_sha256"], int(record.get("intent_number", 0)),
+                    record["model_path"], record["metadata_path"],
+                    record["metadata_json"], int(record["file_size"]),
+                    record["asset_kind"], record["format"],
+                    record.get("supersedes_task_id", ""), stamp, stamp,
+                ),
+            )
+        return self.scene_upload(record["task_id"]) or {}
+
+    def next_due_scene_upload(self) -> Dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM scene_uploads WHERE status='PENDING' OR "
+                "(status='FAILED_RETRYABLE' AND next_retry_at<=?) "
+                "ORDER BY created_at LIMIT 1",
+                (time.time(),),
+            ).fetchone()
+        return self._scene_upload_dict(row)
+
+    def finish_scene_upload(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        scene_asset_id: str = "",
+        error: str = "",
+        next_retry_at: float = 0.0,
+    ) -> Dict[str, Any]:
+        if status not in {
+            "FAILED_RETRYABLE", "FAILED_FINAL", "CREDENTIAL_BLOCKED", "SUCCEEDED",
+        }:
+            raise ValueError("invalid scene upload status")
+        with self._connection() as db:
+            db.execute(
+                "UPDATE scene_uploads SET status=?,retry_count=retry_count+"
+                "CASE WHEN ?='FAILED_RETRYABLE' THEN 1 ELSE 0 END,"
+                "next_retry_at=?,scene_asset_id=?,last_error=?,updated_at=? "
+                "WHERE task_id=?",
+                (
+                    status, status, next_retry_at, scene_asset_id, error[:300],
+                    time.time(), task_id,
+                ),
+            )
+        return self.scene_upload(task_id) or {}
+
+    def requeue_scene_upload(self, task_id: str) -> Dict[str, Any]:
+        with self._connection() as db:
+            db.execute(
+                "UPDATE scene_uploads SET status='PENDING',next_retry_at=0,"
+                "last_error='',updated_at=? WHERE task_id=?",
+                (time.time(), task_id),
+            )
+        return self.scene_upload(task_id) or {}
+
+    def scene_uploads(self, limit: int = 20) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit), 100))
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT * FROM scene_uploads ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def scene_uploads_for_cleanup(self) -> List[Dict[str, Any]]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT * FROM scene_uploads WHERE status='SUCCEEDED' "
+                "AND model_path<>'' ORDER BY created_at DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_scene_upload_snapshot(self, task_id: str) -> None:
+        with self._connection() as db:
+            db.execute(
+                "UPDATE scene_uploads SET model_path='',metadata_path='',"
+                "updated_at=? WHERE task_id=?",
+                (time.time(), task_id),
             )

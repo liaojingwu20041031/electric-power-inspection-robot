@@ -6,8 +6,8 @@ import ".."
 
 ColumnLayout {
     anchors.fill: parent
-    anchors.margins: 22
-    spacing: 18
+    anchors.margins: Theme.pageMargin
+    spacing: 12
 
     RowLayout {
         Layout.fillWidth: true

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import signal
@@ -97,7 +98,23 @@ def write_latest_json(root: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         'note': metadata.get('note') or '',
         'tags': metadata.get('tags') if isinstance(metadata.get('tags'), list) else [],
     }
-    for key in ('output_file', 'export_point_count', 'reconstruct_profile', 'source_capture_session_id', 'source_svo_file'):
+    for key in (
+        'schema_version',
+        'asset_kind',
+        'format',
+        'coordinate_system',
+        'unit',
+        'model_sha256',
+        'output_file',
+        'export_point_count',
+        'reconstruct_profile',
+        'source_capture_session_id',
+        'source_svo_file',
+        'scene_frame',
+        'reference_frame',
+        'scene_to_reference_transform',
+        'finished_at',
+    ):
         if key in metadata:
             latest[key] = metadata[key]
     write_json(root_path / 'latest.json', latest)
@@ -379,10 +396,24 @@ def reconstruct_svo(
             if method is not None:
                 method()
 
+    if not output_file.is_file():
+        raise RuntimeError(f'spatial_map.save did not create point cloud: {output_file}')
+    file_size = output_file.stat().st_size
+    if file_size <= 0:
+        raise RuntimeError(f'spatial_map.save created empty point cloud: {output_file}')
+    model_sha = hashlib.sha256()
+    with output_file.open('rb') as source:
+        while chunk := source.read(1024 * 1024):
+            model_sha.update(chunk)
+
     finished_at = now()
     metadata = {
-        'schema_version': '1.0',
+        'schema_version': '1.1',
         'state': 'succeeded',
+        'asset_kind': 'POINT_CLOUD',
+        'format': 'PLY',
+        'coordinate_system': 'RIGHT_HANDED_Z_UP',
+        'unit': 'METER',
         'session_id': session_id,
         'svo_file': str(svo_file),
         'svo_frame_count': frame_count,
@@ -397,7 +428,12 @@ def reconstruct_svo(
         'started_at': started_at,
         'finished_at': finished_at,
         'duration_sec': max(0.0, finished_at - started_at),
+        'file_size_bytes': file_size,
+        'model_sha256': model_sha.hexdigest(),
         'export_point_count': point_count,
+        'scene_frame': 'zed_3d_map',
+        'reference_frame': 'map',
+        'scene_to_reference_transform': None,
         'parameters': params,
     }
     write_json(out_dir / 'metadata.json', metadata)

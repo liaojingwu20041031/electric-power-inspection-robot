@@ -5,8 +5,8 @@ import ".."
 
 ColumnLayout {
     anchors.fill: parent
-    anchors.margins: 22
-    spacing: 14
+    anchors.margins: Theme.pageMargin
+    spacing: 12
 
     Label { text: "事件日志"; color: Theme.text; font.pixelSize: 26; font.bold: true }
     ListView {
@@ -19,7 +19,7 @@ ColumnLayout {
             required property var modelData
             width: ListView.view.width
             height: 48
-            radius: 6
+            radius: Theme.cardRadius
             color: Theme.surface
             border.color: Theme.border
             RowLayout {

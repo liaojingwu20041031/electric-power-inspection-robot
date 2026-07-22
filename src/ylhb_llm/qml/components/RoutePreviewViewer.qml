@@ -5,8 +5,8 @@ import ".."
 
 Rectangle {
     id: root
-    radius: 12
-    color: "#F1F5F9"
+    radius: Theme.cardRadius
+    color: Theme.surfaceAlt
     border.color: Theme.border
     clip: true
 
@@ -171,7 +171,7 @@ Rectangle {
         anchors.margins: 12
         width: toolRow.implicitWidth + 12
         height: 54
-        radius: 10
+        radius: Theme.cardRadius
         color: "#EFFFFFFF"
         border.color: Theme.border
         visible: root.previewOk && routePreviewImage.status === Image.Ready
@@ -194,7 +194,7 @@ Rectangle {
         anchors.bottomMargin: 12
         width: hintLabel.implicitWidth + 24
         height: 34
-        radius: 17
+        radius: Theme.cardRadius
         color: "#D91F2937"
         visible: root.previewOk && routePreviewImage.status === Image.Ready
         Label {

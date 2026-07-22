@@ -3,7 +3,7 @@ import QtQuick.Controls 2.12
 import QtQuick.Layouts 1.12
 import ".."
 
-Rectangle {
+Item {
     id: root
     default property alias contentData: body.data
     property string title: ""
@@ -14,9 +14,8 @@ Rectangle {
 
     implicitWidth: 320
     implicitHeight: Math.max(300, body.childrenRect.height + 48)
-    radius: 16
-    color: Theme.surface
-    border.color: Theme.border
+    Rectangle { x: 0; y: 2; width: parent.width; height: parent.height; radius: Theme.cardRadius; color: "#100F5C8A" }
+    Rectangle { anchors.fill: parent; radius: Theme.cardRadius; color: Theme.surface; border.color: Theme.border }
 
     ColumnLayout {
         id: body
@@ -46,7 +45,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: stateTitleLabel.implicitHeight + stateDescriptionLabel.implicitHeight + 28
-            radius: 12
+            radius: Theme.cardRadius
             color: root.softColor
             ColumnLayout {
                 id: stateColumn

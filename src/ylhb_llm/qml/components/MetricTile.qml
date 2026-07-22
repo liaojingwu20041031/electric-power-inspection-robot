@@ -3,7 +3,7 @@ import QtQuick.Controls 2.12
 import QtQuick.Layouts 1.12
 import ".."
 
-Rectangle {
+Item {
     id: root
     property string label: ""
     property string value: "-"
@@ -11,9 +11,8 @@ Rectangle {
     property color valueColor: Theme.text
 
     implicitHeight: 100
-    radius: 12
-    color: Theme.surfaceAlt
-    border.color: Theme.border
+    Rectangle { x: 0; y: 2; width: parent.width; height: parent.height; radius: Theme.cardRadius; color: "#0D0F5C8A" }
+    Rectangle { anchors.fill: parent; radius: Theme.cardRadius; color: Theme.surfaceAlt; border.color: Theme.border }
 
     ColumnLayout {
         anchors.fill: parent

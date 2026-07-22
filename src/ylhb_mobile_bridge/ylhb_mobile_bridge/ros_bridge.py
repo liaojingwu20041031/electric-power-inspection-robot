@@ -5,9 +5,11 @@ import queue
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, Optional
 
 import rclpy
+from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -19,7 +21,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import CompressedImage, Imu, LaserScan
+from sensor_msgs.msg import CompressedImage, Imu, LaserScan, NavSatFix
 from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger
 
@@ -75,6 +77,14 @@ class MobileRosBridge(Node):
         self.scan_topic = self.get_parameter('scan_topic').value
         self.map_topic = self.get_parameter('map_topic').value
         self.imu_topic = self.get_parameter('imu_topic').value
+        self.gps_fix_topic = str(self.get_parameter('gps_fix_topic').value)
+        self.gps_status_topic = str(
+            self.get_parameter('gps_status_topic').value
+        )
+        self.gps_stale_timeout_sec = max(
+            0.1,
+            float(self.get_parameter('gps_stale_timeout_sec').value),
+        )
         self.amcl_pose_topic = self.get_parameter('amcl_pose_topic').value
         self.zlac_status_topic = self.get_parameter('zlac_status_topic').value
         self.zlac_fault_topic = self.get_parameter('zlac_fault_topic').value
@@ -162,6 +172,16 @@ class MobileRosBridge(Node):
         )
         self.local_app_status_topic = str(self.get_parameter('local_app_status_topic').value)
         self.set_local_app_enabled_service_name = str(self.get_parameter('set_local_app_enabled_service_name').value)
+        self.scene_asset_ready_topic = str(
+            self.get_parameter('scene_asset_ready_topic').value)
+        self.scene_upload_command_topic = str(
+            self.get_parameter('scene_upload_command_topic').value)
+        self.scene_upload_status_topic = str(
+            self.get_parameter('scene_upload_status_topic').value)
+        self.scene_upload_allowed_root = Path(
+            os.environ.get('YLHB_SCENE_UPLOAD_ALLOWED_ROOT')
+            or str(self.get_parameter('scene_upload_allowed_root').value)
+        ).expanduser().resolve()
         self.host = str(self.get_parameter('host').value)
         self.port = int(self.get_parameter('port').value)
         self.network_status = NetworkStatusProvider()
@@ -170,6 +190,15 @@ class MobileRosBridge(Node):
         self._last_scan_time: Optional[float] = None
         self._last_map_time: Optional[float] = None
         self._last_imu_time: Optional[float] = None
+        self._last_gps_receive_monotonic: Optional[float] = None
+        self._gps_observed_at: Optional[str] = None
+        self._gps_fix: Optional[dict] = None
+        self._gps_quality = 0
+        self._gps_fix_type = 'NO_FIX'
+        self._gps_satellites: Optional[int] = None
+        self._gps_hdop: Optional[float] = None
+        self._gps_differential_age: Optional[float] = None
+        self._gps_base_station_id = ''
         self._latest_map: Optional[OccupancyGrid] = None
         self._pose: Optional[dict] = None
         self._map_pose: Optional[dict] = None
@@ -194,6 +223,8 @@ class MobileRosBridge(Node):
         self._stop_timer: Optional[threading.Timer] = None
         self._nav_goal_handle = None
         self.cloud_client = None
+        self.scene_upload_worker = None
+        self._scene_upload_status_keys: Dict[str, str] = {}
         self.inspection_image_worker = None
         self._inspection_capture: Optional[dict] = None
         self._inspection_navigation_key = ''
@@ -232,6 +263,8 @@ class MobileRosBridge(Node):
         )
         self._cloud_status_pub = self.create_publisher(String, self.cloud_status_topic, initial_pose_qos_profile())
         self._local_app_status_pub = self.create_publisher(String, self.local_app_status_topic, initial_pose_qos_profile())
+        self._scene_upload_status_pub = self.create_publisher(
+            String, self.scene_upload_status_topic, initial_pose_qos_profile())
         self.create_service(SetBool, self.set_cloud_enabled_service_name, self._set_cloud_enabled)
         self._confirm_platform_start_service = self.create_service(
             Trigger, self.confirm_platform_start_service_name,
@@ -266,6 +299,18 @@ class MobileRosBridge(Node):
             self.imu_topic,
             self._on_imu,
             qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            NavSatFix,
+            self.gps_fix_topic,
+            self._on_gps_fix,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            DiagnosticArray,
+            self.gps_status_topic,
+            self._on_gps_status,
+            10,
         )
         self.create_subscription(
             PoseWithCovarianceStamped, self.amcl_pose_topic, self._on_amcl_pose, 10,
@@ -304,6 +349,14 @@ class MobileRosBridge(Node):
             String, self.patrol_event_topic, self._on_patrol_event,
             initial_pose_qos_profile(),
         )
+        self.create_subscription(
+            String, self.scene_asset_ready_topic,
+            self._on_scene_asset_ready, initial_pose_qos_profile(),
+        )
+        self.create_subscription(
+            String, self.scene_upload_command_topic,
+            self._on_scene_upload_command, 10,
+        )
         self._nav_client = ActionClient(
             self,
             NavigateToPose,
@@ -312,6 +365,7 @@ class MobileRosBridge(Node):
         self.create_timer(0.2, self._drain_cloud_commands)
         self.create_timer(0.5, self._refresh_cloud_snapshot)
         self.create_timer(1.0, self._expire_local_confirmations)
+        self.create_timer(1.0, self._refresh_scene_upload_statuses)
 
     def _declare_parameters(self) -> None:
         defaults = {
@@ -323,6 +377,9 @@ class MobileRosBridge(Node):
             'scan_topic': '/scan',
             'map_topic': '/map',
             'imu_topic': '/imu/data',
+            'gps_fix_topic': '/gps/fix',
+            'gps_status_topic': '/gps/rtk_status',
+            'gps_stale_timeout_sec': 3.0,
             'amcl_pose_topic': '/amcl_pose',
             'zlac_status_topic': '/zlac8015d/status',
             'zlac_fault_topic': '/zlac8015d/fault',
@@ -353,6 +410,10 @@ class MobileRosBridge(Node):
             'local_confirm_ui_timeout_sec': 3.0,
             'local_app_status_topic': '/mobile_bridge/local_app_status',
             'set_local_app_enabled_service_name': '/mobile_bridge/set_local_app_enabled',
+            'scene_asset_ready_topic': '/inspection_ai/scene_asset_ready',
+            'scene_upload_command_topic': '/inspection_ai/scene_upload_command',
+            'scene_upload_status_topic': '/inspection_ai/scene_upload_status',
+            'scene_upload_allowed_root': '/home/nvidia/ros2_DL/runs/3d_reconstruct',
             'max_linear_speed': 0.30,
             'max_angular_speed': 0.55,
             'default_cmd_duration_ms': 300,
@@ -423,6 +484,117 @@ class MobileRosBridge(Node):
     def _on_imu(self, _msg: Imu) -> None:
         self._last_imu_time = time.time()
 
+    def _on_gps_fix(self, msg: NavSatFix) -> None:
+        latitude = self._finite_float(msg.latitude)
+        longitude = self._finite_float(msg.longitude)
+        coordinate_valid = (
+            latitude is not None
+            and longitude is not None
+            and -90.0 <= latitude <= 90.0
+            and -180.0 <= longitude <= 180.0
+        )
+        stamp = msg.header.stamp
+        stamp_sec = int(stamp.sec) + int(stamp.nanosec) / 1_000_000_000
+        self._last_gps_receive_monotonic = time.monotonic()
+        self._gps_observed_at = (
+            datetime.fromtimestamp(stamp_sec, timezone.utc)
+            .isoformat()
+            .replace('+00:00', 'Z')
+            if stamp_sec > 0
+            else _now()
+        )
+        self._gps_fix = {
+            'frame': msg.header.frame_id or 'gps_link',
+            'latitude': latitude if coordinate_valid else None,
+            'longitude': longitude if coordinate_valid else None,
+            'altitude': self._finite_float(msg.altitude),
+            'navSatStatus': int(msg.status.status),
+        }
+
+    def _on_gps_status(self, msg: DiagnosticArray) -> None:
+        values = {
+            item.key: item.value
+            for status in msg.status
+            for item in status.values
+        }
+        quality = self._safe_int(values.get('quality'))
+        self._gps_quality = quality if quality is not None else 0
+        self._gps_fix_type = self._gps_fix_type_for_quality(
+            self._gps_quality
+        )
+        self._gps_satellites = self._safe_int(values.get('satellites'))
+        self._gps_hdop = self._finite_float(values.get('hdop'))
+        self._gps_differential_age = self._finite_float(
+            values.get('differential_age')
+        )
+        self._gps_base_station_id = str(
+            values.get('base_station_id') or ''
+        )
+
+    @staticmethod
+    def _finite_float(value) -> Optional[float]:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    @staticmethod
+    def _safe_int(value) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _gps_fix_type_for_quality(quality: int) -> str:
+        return {
+            0: 'NO_FIX',
+            1: 'SINGLE_POINT',
+            2: 'DGPS',
+            4: 'RTK_FIXED',
+            5: 'RTK_FLOAT',
+        }.get(quality, 'UNKNOWN')
+
+    def _gps_age_sec(self) -> Optional[float]:
+        if self._last_gps_receive_monotonic is None:
+            return None
+        return round(max(
+            0.0,
+            time.monotonic() - self._last_gps_receive_monotonic,
+        ), 3)
+
+    def _gnss_fix_snapshot(self) -> Optional[dict]:
+        if self._gps_fix is None:
+            return None
+        age_sec = self._gps_age_sec()
+        stale = age_sec is None or age_sec > self.gps_stale_timeout_sec
+        latitude = self._gps_fix.get('latitude')
+        longitude = self._gps_fix.get('longitude')
+        coordinate_valid = (
+            isinstance(latitude, (int, float))
+            and not isinstance(latitude, bool)
+            and isinstance(longitude, (int, float))
+            and not isinstance(longitude, bool)
+            and math.isfinite(latitude)
+            and math.isfinite(longitude)
+            and -90.0 <= latitude <= 90.0
+            and -180.0 <= longitude <= 180.0
+        )
+        return {
+            **self._gps_fix,
+            'valid': coordinate_valid and self._gps_quality > 0 and not stale,
+            'stale': stale,
+            'quality': self._gps_quality,
+            'fixType': self._gps_fix_type,
+            'satellites': self._gps_satellites,
+            'hdop': self._gps_hdop,
+            'differentialAge': self._gps_differential_age,
+            'baseStationId': self._gps_base_station_id,
+            'ageSec': age_sec,
+            'observedAt': self._gps_observed_at,
+        }
+
     def _on_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
         if msg.header.frame_id != 'map':
             return
@@ -449,6 +621,188 @@ class MobileRosBridge(Node):
             return parsed if isinstance(parsed, dict) else {}
         except json.JSONDecodeError:
             return {}
+
+    @staticmethod
+    def _scene_value(record: dict, camel: str, snake: str, default=''):
+        value = record.get(camel)
+        return record.get(snake, default) if value is None else value
+
+    def _scene_status_payload(
+        self, record: dict, source_session_id: str = '', error: str = '',
+    ) -> dict:
+        last_error = str(
+            self._scene_value(record, 'lastError', 'last_error', error) or error
+        )
+        for secret in (
+            os.environ.get('YLHB_CLOUD_ROBOT_TOKEN', ''),
+            os.environ.get('YLHB_CLOUD_BASE_URL', ''),
+        ):
+            if secret:
+                last_error = last_error.replace(secret, '[redacted]')
+        return {
+            'schemaVersion': '1.0',
+            'taskId': str(self._scene_value(record, 'taskId', 'task_id') or ''),
+            'sourceSessionId': str(
+                self._scene_value(
+                    record, 'sourceSessionId',
+                    'source_reconstruct_session_id', source_session_id,
+                ) or source_session_id
+            ),
+            'status': str(record.get('status') or 'FAILED_FINAL'),
+            'retryCount': int(
+                self._scene_value(record, 'retryCount', 'retry_count', 0) or 0
+            ),
+            'nextRetryAt': self._scene_value(
+                record, 'nextRetryAt', 'next_retry_at', 0,
+            ),
+            'sceneAssetId': str(
+                self._scene_value(record, 'sceneAssetId', 'scene_asset_id') or ''
+            ),
+            'lastError': last_error,
+        }
+
+    def _publish_scene_upload_status(
+        self, record: dict, source_session_id: str = '', error: str = '',
+    ) -> None:
+        payload = self._scene_status_payload(record, source_session_id, error)
+        key = payload['taskId'] or f"session:{payload['sourceSessionId']}"
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if self._scene_upload_status_keys.get(key) == serialized:
+            return
+        self._scene_upload_status_keys[key] = serialized
+        msg = String()
+        msg.data = serialized
+        self._scene_upload_status_pub.publish(msg)
+
+    def _validated_scene_paths(
+        self, model_path: Path, metadata_path: Path,
+    ) -> tuple[Path, Path]:
+        model = model_path.expanduser().resolve(strict=True)
+        metadata = metadata_path.expanduser().resolve(strict=True)
+        root = self.scene_upload_allowed_root
+        if (
+            not model.is_file()
+            or not metadata.is_file()
+            or not model.is_relative_to(root)
+            or not metadata.is_relative_to(root)
+            or model.suffix.lower() != '.ply'
+        ):
+            raise ValueError('scene upload paths are invalid')
+        return model, metadata
+
+    def _enqueue_scene_upload(
+        self, model_path: Path, metadata_path: Path, source_session_id: str,
+    ) -> None:
+        worker = getattr(self, 'scene_upload_worker', None)
+        if worker is None:
+            self._publish_scene_upload_status(
+                {'status': 'FAILED_FINAL'}, source_session_id,
+                'scene upload worker is unavailable',
+            )
+            return
+        try:
+            model, metadata = self._validated_scene_paths(
+                model_path, metadata_path)
+            result = worker.enqueue(model, metadata)
+            self._publish_scene_upload_status(result, source_session_id)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._publish_scene_upload_status(
+                {'status': 'FAILED_FINAL'}, source_session_id, str(exc),
+            )
+
+    def _on_scene_asset_ready(self, msg: String) -> None:
+        payload = self._parse_json_message(msg.data)
+        if (
+            payload.get('schemaVersion') != '1.0'
+            or payload.get('state') != 'succeeded'
+            or payload.get('assetKind') != 'POINT_CLOUD'
+            or payload.get('format') != 'PLY'
+        ):
+            return
+        source_session_id = str(payload.get('sourceSessionId') or '')
+        self._enqueue_scene_upload(
+            Path(str(payload.get('modelPath') or '')),
+            Path(str(payload.get('metadataPath') or '')),
+            source_session_id,
+        )
+
+    def _on_scene_upload_command(self, msg: String) -> None:
+        payload = self._parse_json_message(msg.data)
+        if payload.get('schemaVersion') != '1.0':
+            return
+        action = str(payload.get('action') or '')
+        if action == 'retry':
+            task_id = str(payload.get('taskId') or '').strip()
+            worker = getattr(self, 'scene_upload_worker', None)
+            if not task_id or worker is None:
+                self._publish_scene_upload_status(
+                    {'task_id': task_id, 'status': 'FAILED_FINAL'},
+                    error='scene upload task or worker is unavailable',
+                )
+                return
+            try:
+                self._publish_scene_upload_status(worker.retry(task_id))
+            except (OSError, ValueError, RuntimeError) as exc:
+                self._publish_scene_upload_status(
+                    {'task_id': task_id, 'status': 'FAILED_FINAL'},
+                    error=str(exc),
+                )
+            return
+        if action != 'enqueue':
+            return
+        session_id = str(payload.get('sessionId') or '').strip()
+        if not session_id or Path(session_id).name != session_id:
+            self._publish_scene_upload_status(
+                {'status': 'FAILED_FINAL'}, session_id, 'invalid scene session id',
+            )
+            return
+        try:
+            root = self.scene_upload_allowed_root.resolve()
+            session_dir = (root / session_id).resolve()
+            if session_dir == root or not session_dir.is_relative_to(root):
+                raise ValueError('invalid scene session id')
+            metadata_path = (session_dir / 'metadata.json').resolve(strict=True)
+            if not metadata_path.is_relative_to(root):
+                raise ValueError('scene metadata is outside the allowed root')
+            metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+            if not isinstance(metadata, dict):
+                raise ValueError('scene metadata must contain an object')
+            model_path = Path(str(
+                metadata.get('output_file') or metadata_path.with_name('pointcloud.ply')
+            ))
+            if not model_path.is_absolute():
+                model_path = metadata_path.parent / model_path
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._publish_scene_upload_status(
+                {'status': 'FAILED_FINAL'}, session_id, str(exc),
+            )
+            return
+        self._enqueue_scene_upload(model_path, metadata_path, session_id)
+
+    def _refresh_scene_upload_statuses(self) -> None:
+        worker = getattr(self, 'scene_upload_worker', None)
+        list_status = getattr(worker, 'list_status', None)
+        if not callable(list_status):
+            return
+        try:
+            records = list_status()
+        except Exception as exc:
+            self.get_logger().warning(
+                f'scene upload status refresh failed: {type(exc).__name__}')
+            return
+        if isinstance(records, dict):
+            records = records.get('uploads') or records.get('items') or []
+        if not isinstance(records, list):
+            return
+        for record in records:
+            if isinstance(record, dict):
+                if (
+                    record.get('status') == 'PENDING'
+                    and str(record.get('task_id') or '')
+                    == str(getattr(worker, 'current_task_id', '') or '')
+                ):
+                    record = {**record, 'status': 'UPLOADING'}
+                self._publish_scene_upload_status(record)
 
     def _on_system_status(self, msg: String) -> None:
         self._system_status = self._parse_json_message(msg.data)
@@ -860,6 +1214,8 @@ class MobileRosBridge(Node):
             'last_odom_age_sec': self._age(self._last_odom_time),
             'last_scan_age_sec': self._age(self._last_scan_time),
             'last_imu_age_sec': self._age(self._last_imu_time),
+            'lastGpsAgeSec': self._gps_age_sec(),
+            'gnssFix': self._gnss_fix_snapshot(),
             'pose': self._pose,
             'mapPose': self._map_pose,
             'odomPose': self._pose,
@@ -885,6 +1241,8 @@ class MobileRosBridge(Node):
             '/scan': self._topic_available(self.scan_topic),
             '/map': self._topic_available(self.map_topic),
             '/imu/data': self._topic_available(self.imu_topic),
+            '/gps/fix': self._topic_available(self.gps_fix_topic),
+            '/gps/rtk_status': self._topic_available(self.gps_status_topic),
         }
         nodes: Dict[str, bool] = {
             'zlac8015d_canopen_controller': self._node_available(
@@ -1153,7 +1511,8 @@ class MobileRosBridge(Node):
             'lastSuccessAt': '', 'lastError': '',
         }
         local_confirm = self.local_confirm_start_readiness()
-        self._cloud_snapshot = {'state': str(patrol.get('state') or 'idle'), 'mapPose': status.get('mapPose'), 'odomPose': status.get('odomPose'), 'platformContext': context, 'health': {'odomAgeSec': status.get('last_odom_age_sec'), 'scanAgeSec': status.get('last_scan_age_sec'), 'imuAgeSec': status.get('last_imu_age_sec'), 'nav2': status.get('nav2_status'), 'systemMode': status.get('system_mode'), 'lastError': patrol.get('last_error') or self._system_status.get('last_error'), 'inspectionImageUpload': image_status, 'localConfirmStartReady': local_confirm['ready'], 'localConfirmStartError': local_confirm['error']}}
+        gnss_fix = status.get('gnssFix')
+        self._cloud_snapshot = {'state': str(patrol.get('state') or 'idle'), 'mapPose': status.get('mapPose'), 'odomPose': status.get('odomPose'), 'gnssFix': gnss_fix, 'platformContext': context, 'health': {'odomAgeSec': status.get('last_odom_age_sec'), 'scanAgeSec': status.get('last_scan_age_sec'), 'imuAgeSec': status.get('last_imu_age_sec'), 'nav2': status.get('nav2_status'), 'systemMode': status.get('system_mode'), 'lastError': patrol.get('last_error') or self._system_status.get('last_error'), 'inspectionImageUpload': image_status, 'localConfirmStartReady': local_confirm['ready'], 'localConfirmStartError': local_confirm['error'], 'gpsAgeSec': gnss_fix.get('ageSec') if gnss_fix else None, 'gpsFixType': gnss_fix.get('fixType') if gnss_fix else 'NO_FIX', 'gpsSatellites': gnss_fix.get('satellites') if gnss_fix else None, 'gpsHdop': gnss_fix.get('hdop') if gnss_fix else None}}
         if self.cloud_client:
             self.publish_cloud_status_now()
         self._publish_local_app_status()

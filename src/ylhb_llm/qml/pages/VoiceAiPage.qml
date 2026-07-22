@@ -1,17 +1,18 @@
 import QtQuick 2.12
 import QtQuick.Controls 2.12
 import QtQuick.Layouts 1.12
+import ".."
 
 Rectangle {
     id: root
-    color: "#F3F6F8"
+    color: "transparent"
 
-    property color cardColor: "#FFFFFF"
-    property color accentColor: "#0891B2"
-    property color accentSoftColor: "#ECFEFF"
-    property color borderColor: "#CBD5E1"
-    property color textColor: "#0F172A"
-    property color mutedColor: "#64748B"
+    property color cardColor: Theme.surface
+    property color accentColor: Theme.primary
+    property color accentSoftColor: Theme.primarySoft
+    property color borderColor: Theme.border
+    property color textColor: Theme.text
+    property color mutedColor: Theme.muted
 
     function safeMarkdown(text) {
         return String(text || "")
@@ -20,22 +21,22 @@ Rectangle {
     }
 
     function voiceColor() {
-        if (backend.voiceActivityTone === "active") return "#059669"
-        if (backend.voiceActivityTone === "busy") return "#D97706"
+        if (backend.voiceActivityTone === "active") return Theme.success
+        if (backend.voiceActivityTone === "busy") return Theme.warning
         if (backend.voiceActivityTone === "speaking") return accentColor
-        if (backend.voiceActivityTone === "wake") return "#2563EB"
+        if (backend.voiceActivityTone === "wake") return Theme.info
         return mutedColor
     }
 
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 24
-        spacing: 16
+        spacing: 12
 
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 96
-            radius: 12
+            radius: Theme.cardRadius
             color: cardColor
             border.color: borderColor
 
@@ -54,7 +55,7 @@ Rectangle {
                 anchors.rightMargin: 20
                 anchors.topMargin: 14
                 anchors.bottomMargin: 14
-                spacing: 24
+                spacing: 12
 
                 ColumnLayout {
                     Layout.fillWidth: true
@@ -76,7 +77,7 @@ Rectangle {
                 Rectangle {
                     Layout.preferredWidth: followupText.implicitWidth + 28
                     Layout.preferredHeight: 44
-                    radius: 22
+                    radius: Theme.cardRadius
                     color: accentSoftColor
                     visible: followupText.remaining > 0
                     Label {
@@ -103,20 +104,20 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 16
+            spacing: 12
 
             Rectangle {
                 Layout.preferredWidth: Math.min(480, root.width * 0.34)
                 Layout.minimumWidth: 360
                 Layout.fillHeight: true
-                radius: 12
+                radius: Theme.cardRadius
                 color: cardColor
                 border.color: borderColor
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 22
-                    spacing: 14
+                    anchors.margins: 20
+                    spacing: 12
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -130,7 +131,7 @@ Rectangle {
                         Rectangle {
                             Layout.preferredWidth: agentStateText.implicitWidth + 20
                             Layout.preferredHeight: 34
-                            radius: 17
+                            radius: Theme.cardRadius
                             color: accentSoftColor
                             Label {
                                 id: agentStateText
@@ -160,9 +161,9 @@ Rectangle {
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.preferredHeight: Math.max(120, stepColumn.implicitHeight + 30)
-                        radius: 10
+                        radius: Theme.cardRadius
                         color: accentSoftColor
-                        border.color: "#A5F3FC"
+                        border.color: Theme.accent
                         ColumnLayout {
                             id: stepColumn
                             anchors.fill: parent
@@ -202,14 +203,14 @@ Rectangle {
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                radius: 12
+                radius: Theme.cardRadius
                 color: cardColor
                 border.color: borderColor
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 22
-                    spacing: 14
+                    anchors.margins: 20
+                    spacing: 12
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -224,7 +225,7 @@ Rectangle {
                             text: backend.agentStatus.state === "waiting_feedback"
                                 ? "等待真实反馈" : "完整回答"
                             color: backend.agentStatus.state === "waiting_feedback"
-                                ? "#D97706" : accentColor
+                                ? Theme.warning : accentColor
                             font.pixelSize: 17
                             font.bold: true
                         }
@@ -258,7 +259,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 210
-            radius: 12
+            radius: Theme.cardRadius
             color: cardColor
             border.color: borderColor
 
@@ -296,8 +297,8 @@ Rectangle {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: detailButton.checked
                                     ? detailColumn.implicitHeight + 18 : 42
-                                radius: 7
-                                color: index % 2 === 0 ? "#F8FAFC" : "#F1F5F9"
+                                radius: Theme.cardRadius
+                                color: index % 2 === 0 ? Theme.surface : Theme.surfaceAlt
 
                                 ColumnLayout {
                                     id: detailColumn

@@ -8,7 +8,7 @@ Item {
 
     ColumnLayout {
         anchors.centerIn: parent
-        spacing: 14
+        spacing: 12
 
         BusyIndicator {
             Layout.alignment: Qt.AlignHCenter

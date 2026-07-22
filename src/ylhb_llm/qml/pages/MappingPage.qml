@@ -6,8 +6,8 @@ import ".."
 
 ColumnLayout {
     anchors.fill: parent
-    anchors.margins: 22
-    spacing: 18
+    anchors.margins: Theme.pageMargin
+    spacing: 12
 
     Label { text: "建图管理"; color: Theme.text; font.pixelSize: 26; font.bold: true }
     StatusCard {
