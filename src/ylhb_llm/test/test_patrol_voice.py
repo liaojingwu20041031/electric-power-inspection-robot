@@ -63,12 +63,30 @@ def test_route_failed_is_high_priority_and_interrupting():
 
 
 def test_unknown_and_disabled_events_are_ignored(tmp_path):
-    assert make_voice().request_for_event(event('target_task_finished')) is None
+    assert make_voice().request_for_event(event('unknown_event')) is None
 
     config = tmp_path / 'disabled.yaml'
     config.write_text('version: 1\nenabled: false\nannouncements: {}\n', encoding='utf-8')
     voice = PatrolVoice.from_file(str(config), str(AUDIO_DIR))
     assert voice.request_for_event(event('route_started')) is None
+
+
+def test_target_task_events_use_success_and_failure_priorities():
+    success = make_voice().request_for_event(
+        event('target_task_finished', result_status='succeeded')
+    )
+    failed = make_voice().request_for_event(
+        event('target_task_failed', timestamp=1784601701.0)
+    )
+
+    assert success.text == '当前检查点检测完成。'
+    assert success.priority == 40
+    assert success.interrupt is False
+    assert failed.priority == 90
+    assert failed.interrupt is True
+    assert make_voice().request_for_event(
+        event('target_task_finished', result_status='navigation_only')
+    ) is None
 
 
 def test_missing_template_field_uses_safe_default():

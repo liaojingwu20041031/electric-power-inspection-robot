@@ -39,11 +39,15 @@ def test_system_prompt_requires_evidence_and_feedback_after_actions():
         '检查目标工具 preconditions',
         'recovery_components=[bringup]',
         '重试同一目标',
-        'sent/accepted/running 不等于完成',
+        'sent/accepted/running 都不等于任务完成',
         '同一目标取得终态后不得再次执行',
         '组件准备不能作为动作成功证据',
         'Supervisor 内部准备',
         '最终答案只能来自真实 ToolResult',
         '自然简体中文',
+        '三维采集启动不代表 SVO 已保存',
+        '重建启动不代表 PLY 已生成',
+        '上传任务提交不代表平台上传成功',
+        'get_recent_inspection_results',
     ):
         assert requirement in prompt

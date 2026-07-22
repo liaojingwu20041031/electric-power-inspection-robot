@@ -8,6 +8,8 @@ import subprocess
 import threading
 import time
 import sys
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -66,6 +68,19 @@ LONG_RUNNING_COMMANDS = {
     'recover_component',
 }
 AGENT_COMPONENTS = {'bringup', 'navigation', 'perception', 'patrol_executor'}
+ACTIVE_PATROL_RESOURCE_STATES = {
+    'starting', 'command_sent', 'running', 'paused', 'returning_home',
+    'waiting_loop', 'manual_takeover',
+}
+INSPECTION_HISTORY_EVENTS = {
+    'route_started', 'target_task_finished', 'target_task_failed',
+    'route_finished', 'route_failed', 'route_canceled',
+}
+INSPECTION_HISTORY_FIELDS = (
+    'schema_version', 'event', 'execution_id', 'route_id', 'target_id',
+    'target_name', 'inspection_items', 'sample_count', 'object_count',
+    'classes', 'result_status', 'reason', 'occurred_at',
+)
 
 STARTUP_STEP_LABELS = {
     'starting_bringup': '等待底盘传感器',
@@ -283,6 +298,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('patrol_amcl_timeout_sec', 10.0)
         self.declare_parameter('patrol_nav2_timeout_sec', 25.0)
         self.declare_parameter('patrol_command_timeout_sec', 8.0)
+        self.declare_parameter('patrol_runtime_guard_debounce_sec', 2.0)
         self.declare_parameter('mobile_bridge_managed_externally', False)
         self.declare_parameter('auto_start_mobile_bridge', True)
         self.declare_parameter('recovery_config_file', '')
@@ -395,6 +411,12 @@ class SystemSupervisorNode(Node):
         self.latest_mapping3d_result: Dict[str, Any] = {}
         self.latest_scene_upload_status: Dict[str, Any] = {}
         self.scene_uploads_by_session: Dict[str, Dict[str, Any]] = {}
+        self.active_patrol_profile = 'navigation'
+        self.supervisor_started_at = time.time()
+        self._inspection_history_keys = set()
+        self._inspection_history_order = deque(maxlen=256)
+        self._runtime_fault_since: Dict[str, float] = {}
+        self._runtime_faults_triggered = set()
         self.inflight_commands = set()
         self.lifecycle_clients: Dict[str, Any] = {}
         self.lifecycle_manager_clients: Dict[str, Any] = {}
@@ -507,6 +529,7 @@ class SystemSupervisorNode(Node):
             latched_qos(),
         )
         self.create_timer(1.0, self.publish_status)
+        self.create_timer(1.0, self.check_patrol_runtime_guard)
         self._mobile_bridge_auto_start_scheduled = False
         self._mobile_bridge_auto_start_timer = self.create_timer(
             0.2, self.schedule_mobile_bridge_auto_start
@@ -677,8 +700,11 @@ class SystemSupervisorNode(Node):
             self.last_patrol_status = payload
             self.last_patrol_status_received_at = time.time()
             state = str(payload.get('state') or payload.get('status') or '')
-            if state == 'running':
-                self.patrol_mode_state = 'running'
+            if state in {
+                'running', 'paused', 'manual_takeover', 'returning_home',
+                'waiting_loop', 'canceling',
+            }:
+                self.patrol_mode_state = state
                 phase = str(payload.get('navigation_phase') or 'target')
                 self.startup_step = {
                     'waiting_nav2': 'waiting_nav2',
@@ -687,7 +713,8 @@ class SystemSupervisorNode(Node):
                     'target': 'patrol_started',
                     'return_home': 'returning_home',
                 }.get(phase, 'patrol_started')
-                self.patrol_error = ''
+                if state == 'running':
+                    self.patrol_error = ''
             elif state == 'failed':
                 self.patrol_mode_state = 'failed'
                 self.startup_step = 'patrol_failed'
@@ -716,6 +743,7 @@ class SystemSupervisorNode(Node):
             if payload.get('event') == 'command_accepted':
                 self.last_patrol_command_ack = payload
             event = str(payload.get('event') or '')
+            self.append_inspection_history(payload)
             operation_id = str(payload.get('operation_id') or '')
             if operation_id and event in {
                 'route_paused', 'route_resumed', 'route_canceled', 'command_rejected',
@@ -736,6 +764,63 @@ class SystemSupervisorNode(Node):
                 }
                 self.publish_status()
                 self.last_agent_operation_feedback = {}
+
+    def append_inspection_history(self, payload: Dict[str, Any]) -> None:
+        event = str(payload.get('event') or '')
+        if event not in INSPECTION_HISTORY_EVENTS:
+            return
+        occurred_at = str(payload.get('occurred_at') or '')
+        event_time = float(payload.get('timestamp') or 0.0)
+        if occurred_at:
+            try:
+                event_time = datetime.fromisoformat(
+                    occurred_at.replace('Z', '+00:00')
+                ).timestamp()
+            except ValueError:
+                pass
+        if event_time and event_time < float(getattr(self, 'supervisor_started_at', 0.0)):
+            return
+        key = (
+            event,
+            str(payload.get('execution_id') or ''),
+            str(payload.get('target_id') or ''),
+            occurred_at or str(event_time),
+        )
+        if key in getattr(self, '_inspection_history_keys', set()):
+            return
+        order = getattr(self, '_inspection_history_order', None)
+        if order is None:
+            order = deque(maxlen=256)
+            self._inspection_history_order = order
+            self._inspection_history_keys = set()
+        if len(order) == order.maxlen:
+            self._inspection_history_keys.discard(order[0])
+        order.append(key)
+        self._inspection_history_keys.add(key)
+        record = {
+            'schema_version': str(payload.get('schema_version') or '1.0'),
+            'event': event,
+            'execution_id': str(payload.get('execution_id') or ''),
+            'route_id': str(payload.get('route_id') or ''),
+            'target_id': str(payload.get('target_id') or ''),
+            'target_name': str(payload.get('target_name') or ''),
+            'inspection_items': list(payload.get('inspection_items') or []),
+            'sample_count': int(payload.get('sample_count') or 0),
+            'object_count': int(payload.get('object_count') or 0),
+            'classes': list(payload.get('classes') or []),
+            'result_status': str(payload.get('result_status') or payload.get('result') or ''),
+            'reason': str(payload.get('reason') or ''),
+            'occurred_at': occurred_at or datetime.now(timezone.utc).isoformat(),
+        }
+        root = Path(getattr(self, 'workspace_dir', workspace_path())).expanduser()
+        directory = root / 'runs' / 'inspection_history'
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            day = datetime.fromtimestamp(event_time or time.time(), timezone.utc).date().isoformat()
+            with (directory / f'{day}.jsonl').open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except OSError as exc:
+            self.log_info(f'巡检历史写入失败: {exc}')
 
     def odom_callback(self, _msg: Odometry) -> None:
         self.last_odom_received_at = time.time()
@@ -906,19 +991,25 @@ class SystemSupervisorNode(Node):
             self.set_result(command, True, '巡逻、导航、感知与底盘已停止')
             return
         if command == 'start_3d_mapping':
-            self.start_3d_mapping()
+            self.start_3d_mapping(correlation)
             return
         if command == 'stop_3d_mapping':
-            self.stop_3d_mapping()
+            self.stop_3d_mapping(correlation)
+            return
+        if command == 'reconstruct_3d_model':
+            self.reconstruct_3d_map(
+                str(payload.get('profile') or ''), command,
+                str(payload.get('session_id') or ''), correlation,
+            )
             return
         if command == 'reconstruct_latest_3d_map':
-            self.reconstruct_3d_map('quality_safe', command, str(payload.get('session_id') or ''))
+            self.reconstruct_3d_map('quality_safe', command, str(payload.get('session_id') or ''), correlation)
             return
         if command == 'reconstruct_fast_3d_map':
-            self.reconstruct_3d_map('fast_check', command, str(payload.get('session_id') or ''))
+            self.reconstruct_3d_map('fast_check', command, str(payload.get('session_id') or ''), correlation)
             return
         if command == 'reconstruct_quality_3d_map':
-            self.reconstruct_3d_map('quality_plus', command, str(payload.get('session_id') or ''))
+            self.reconstruct_3d_map('quality_plus', command, str(payload.get('session_id') or ''), correlation)
             return
         if command in ('list_3d_assets', 'rename_3d_asset', 'delete_3d_asset', 'set_latest_3d_capture', 'set_latest_3d_reconstruct'):
             self.handle_3d_asset_command(command, payload)
@@ -928,9 +1019,19 @@ class SystemSupervisorNode(Node):
             task_id = str(payload.get('task_id') or '').strip()
             if command == 'enqueue_scene_upload' and not session_id:
                 self.set_result(command, False, '缺少三维重建 session_id')
+                self.publish_agent_operation_feedback(correlation, False, 'failed', '缺少三维重建 session_id')
                 return
             if command == 'retry_scene_upload' and not task_id:
                 self.set_result(command, False, '缺少三维上传 task_id')
+                self.publish_agent_operation_feedback(correlation, False, 'failed', '缺少三维上传 task_id')
+                return
+            if command == 'enqueue_scene_upload' and not self.valid_reconstruct_session(session_id):
+                self.set_result(command, False, '未找到已有的三维重建 session_id')
+                self.publish_agent_operation_feedback(correlation, False, 'failed', '未找到已有的三维重建 session_id')
+                return
+            if command == 'retry_scene_upload' and not self.known_upload_task(task_id):
+                self.set_result(command, False, '未找到已有的三维上传 task_id')
+                self.publish_agent_operation_feedback(correlation, False, 'failed', '未找到已有的三维上传 task_id')
                 return
             message = String()
             message.data = json.dumps({
@@ -940,7 +1041,9 @@ class SystemSupervisorNode(Node):
                 'taskId': task_id,
             }, ensure_ascii=False)
             self.scene_upload_command_pub.publish(message)
-            self.set_result(command, True, '三维上传命令已发送')
+            feedback = '上传任务已提交' if command == 'enqueue_scene_upload' else '上传重试任务已提交'
+            self.set_result(command, True, feedback)
+            self.publish_agent_operation_feedback(correlation, True, 'succeeded', feedback)
             return
         if command == 'export_3d_map':
             self.export_3d_map()
@@ -1393,6 +1496,7 @@ class SystemSupervisorNode(Node):
             self.navigation_lifecycle_started = False
             self.keepout_lifecycle_started = False
             self.patrol_transaction_kind = 'checkpoint' if target_id else 'route'
+            self.active_patrol_profile = profile
             self.patrol_transaction_owned_components = []
             self.patrol_transaction_preexisting_components = [
                 name for name in PATROL_SHUTDOWN_ORDER
@@ -1911,6 +2015,7 @@ class SystemSupervisorNode(Node):
             'auto_start:=false',
             'publish_initial_pose_on_startup:=false',
             f'startup_id:={startup_id}',
+            f'inspection_enabled:={str(getattr(self, "active_patrol_profile", "navigation") == "inspection").lower()}',
         ]
         optional = {
             'execution_id': context.get('active_execution_id'),
@@ -2087,47 +2192,106 @@ class SystemSupervisorNode(Node):
         }, ensure_ascii=False)
         self.mapping3d_command_pub.publish(msg)
 
-    def start_3d_mapping(self) -> None:
-        blockers = [
-            name for name in ('zed', 'perception')
+    def patrol_resource_blocker(self) -> str:
+        if str(getattr(self, 'patrol_mode_state', 'idle')) in ACTIVE_PATROL_RESOURCE_STATES:
+            return '活动巡逻期间不能启动三维采集或重建'
+        return ''
+
+    def running_processes(self, names: Iterable[str]) -> List[str]:
+        return [
+            name for name in names
             if self.processes.get(name) and self.processes[name].is_running()
         ]
-        if blockers:
-            self.set_result(
-                'start_3d_mapping',
-                False,
-                '请先停止 ZED wrapper/感知进程: ' + ', '.join(blockers),
-            )
-            return
-        self.start_process('3d_capture')
-        self.set_result('start_3d_mapping', True, '现场 SVO 采集已启动')
 
-    def stop_3d_mapping(self) -> None:
+    def start_3d_mapping(self, correlation: Optional[Dict[str, str]] = None) -> None:
+        blocker = self.patrol_resource_blocker()
+        blockers = self.running_processes(('zed', 'perception', '3d_capture', '3d_reconstruct'))
+        if blocker or blockers:
+            message = blocker or '三维采集资源被占用: ' + ', '.join(blockers)
+            self.set_result('start_3d_mapping', False, message)
+            self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
+            return
+        success = self.start_process('3d_capture')
+        proc = self.processes.get('3d_capture')
+        success = bool(success and proc and proc.is_running())
+        message = '现场三维采集已启动' if success else '现场三维采集启动失败'
+        self.set_result('start_3d_mapping', success, message)
+        self.publish_agent_operation_feedback(correlation or {}, success, 'succeeded' if success else 'failed', message)
+
+    def stop_3d_mapping(self, correlation: Optional[Dict[str, str]] = None) -> None:
         proc = self.processes.get('3d_capture')
         if not proc or not proc.is_running():
-            self.set_result('stop_3d_mapping', True, '3d_capture already stopped')
+            message = '现场三维采集已停止'
+            self.set_result('stop_3d_mapping', True, message)
+            self.publish_agent_operation_feedback(correlation or {}, True, 'succeeded', message)
             return
+        self.latest_mapping3d_status = {}
         self.publish_3d_mapping_command('stop')
         terminal = self.wait_for_mapping3d_terminal(8.0)
         if terminal == 'timeout' or terminal not in ('succeeded', 'failed', 'idle', 'stopped'):
             self.stop_process('3d_capture')
-        latest = self.read_latest_json(self.mapping3d_output_dir)
-        svo_file = str(latest.get('svo_file') or '')
-        message = 'SVO 采集已停止'
-        if svo_file:
-            message = f'SVO 采集已停止，最新文件: {svo_file}'
-        self.set_result('stop_3d_mapping', True, message)
+        success = terminal in ('succeeded', 'idle', 'stopped')
+        if terminal == 'timeout':
+            success = not proc.is_running()
+        message = '现场三维采集已停止' if success else '现场三维采集停止失败'
+        self.set_result('stop_3d_mapping', success, message)
+        self.publish_agent_operation_feedback(correlation or {}, success, 'succeeded' if success else 'failed', message)
 
-    def reconstruct_3d_map(self, profile: str, command: str, session_id: str = '') -> None:
+    def reconstruct_3d_map(
+        self,
+        profile: str,
+        command: str,
+        session_id: str = '',
+        correlation: Optional[Dict[str, str]] = None,
+    ) -> None:
+        if profile not in {'fast_check', 'quality_safe', 'quality_plus'}:
+            message = '三维重建 profile 不在允许列表'
+            self.set_result(command, False, message)
+            self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
+            return
+        if session_id and Path(session_id).name != session_id:
+            message = '三维采集 session_id 无效'
+            self.set_result(command, False, message)
+            self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
+            return
+        blocker = self.patrol_resource_blocker()
+        blockers = self.running_processes(('3d_capture', 'zed', 'perception'))
+        if blocker or blockers:
+            message = blocker or '三维重建资源被占用: ' + ', '.join(blockers)
+            self.set_result(command, False, message)
+            self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
+            return
         latest = self.read_latest_json(self.mapping3d_output_dir) if not session_id else self.load_json_safe(
             os.path.join(self.mapping3d_output_dir, session_id, 'metadata.json')
         )
-        if not latest.get('svo_file'):
-            self.set_result(command, False, '请先完成一次现场采集')
+        svo_file = Path(str(latest.get('svo_file') or '')).expanduser()
+        metadata_value = str(latest.get('metadata_file') or '')
+        metadata_file = (
+            Path(metadata_value).expanduser()
+            if metadata_value
+            else Path(self.mapping3d_output_dir) / str(latest.get('session_id') or session_id) / 'metadata.json'
+        )
+        capture_root = Path(self.mapping3d_output_dir).expanduser().resolve()
+        try:
+            svo_file = svo_file.resolve(strict=True)
+            metadata_file = metadata_file.resolve(strict=True)
+            inputs_valid = (
+                svo_file.is_file() and metadata_file.is_file()
+                and svo_file.is_relative_to(capture_root)
+                and metadata_file.is_relative_to(capture_root)
+            )
+        except OSError:
+            inputs_valid = False
+        if not inputs_valid:
+            message = '三维重建输入 SVO 或 metadata 无效'
+            self.set_result(command, False, message)
+            self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
             return
         proc = self.processes.get('3d_reconstruct')
         if proc and proc.is_running():
-            self.set_result(command, True, '三维重建已在运行')
+            message = '离线重建任务已在运行'
+            self.set_result(command, True, message)
+            self.publish_agent_operation_feedback(correlation or {}, True, 'succeeded', message)
             return
         reconstruct_root = getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
         input_arg = f'session:={session_id}' if session_id else 'input:=latest'
@@ -2137,8 +2301,93 @@ class SystemSupervisorNode(Node):
             f'{input_arg} capture_root:={self.mapping3d_output_dir} '
             f'output_root:={reconstruct_root} profile:={profile}',
         )
-        self.start_process('3d_reconstruct')
-        self.set_result(command, True, f'离线三维重建已启动: {profile}')
+        success = self.start_process('3d_reconstruct')
+        proc = self.processes.get('3d_reconstruct')
+        success = bool(success and proc and proc.is_running())
+        message = '离线重建任务已启动' if success else '离线重建任务启动失败'
+        self.set_result(command, success, message)
+        self.publish_agent_operation_feedback(correlation or {}, success, 'succeeded' if success else 'failed', message)
+
+    def valid_reconstruct_session(self, session_id: str) -> bool:
+        if not session_id or Path(session_id).name != session_id:
+            return False
+        root = Path(self.mapping3d_reconstruct_dir).expanduser()
+        session = root / session_id
+        metadata = self.load_json_safe(str(session / 'metadata.json'))
+        model = Path(str(metadata.get('output_file') or metadata.get('model_file') or session / 'model.ply')).expanduser()
+        try:
+            model = model.resolve(strict=True)
+            root = root.resolve()
+        except OSError:
+            return False
+        return (
+            (session / 'metadata.json').is_file()
+            and model.is_file()
+            and model.is_relative_to(root)
+        )
+
+    def known_upload_task(self, task_id: str) -> bool:
+        return bool(task_id) and any(
+            str(item.get('taskId') or item.get('task_id') or '') == task_id
+            for item in getattr(self, 'scene_uploads_by_session', {}).values()
+        )
+
+    def check_patrol_runtime_guard(self) -> None:
+        state = str(getattr(self, 'patrol_mode_state', 'idle'))
+        if state not in {
+            'command_sent', 'running', 'paused', 'returning_home',
+            'waiting_loop', 'manual_takeover',
+        }:
+            self._runtime_fault_since = {}
+            self._runtime_faults_triggered = set()
+            return
+        if getattr(self, '_runtime_faults_triggered', set()):
+            return
+        reasons = []
+        for name, label in (
+            ('bringup', '底盘与传感器进程已退出'),
+            ('navigation', '导航进程已退出'),
+            ('patrol_executor', '巡逻执行器进程已退出'),
+        ):
+            proc = getattr(self, 'processes', {}).get(name)
+            if not proc or not proc.is_running():
+                reasons.append((name, label))
+        now = time.time()
+        freshness = float(self.get_parameter('patrol_sensor_freshness_sec').value)
+        if not getattr(self, 'last_odom_received_at', 0.0) or now - self.last_odom_received_at > freshness:
+            reasons.append(('odom', '里程计数据已超时'))
+        if not getattr(self, 'last_scan_received_at', 0.0) or now - self.last_scan_received_at > freshness:
+            reasons.append(('scan', '激光雷达数据已超时'))
+        if getattr(self, 'active_patrol_profile', 'navigation') == 'inspection':
+            for name, label in (
+                ('perception', '感知进程已退出'),
+                ('zed', 'ZED 相机进程已退出'),
+            ):
+                proc = getattr(self, 'processes', {}).get(name)
+                if not proc or not proc.is_running():
+                    reasons.append((name, label))
+        active = {key for key, _message in reasons}
+        self._runtime_fault_since = {
+            key: since for key, since in getattr(self, '_runtime_fault_since', {}).items()
+            if key in active
+        }
+        debounce = float(self.get_parameter('patrol_runtime_guard_debounce_sec').value)
+        for key, message in reasons:
+            since = self._runtime_fault_since.setdefault(key, now)
+            if now - since < debounce or key in self._runtime_faults_triggered:
+                continue
+            self._runtime_faults_triggered.add(key)
+            self.publish_zero_velocity()
+            fail = String()
+            fail.data = json.dumps({
+                'schema_version': '1.0', 'command': 'fail',
+                'source': 'system_supervisor', 'reason': message,
+                'timestamp': now,
+            }, ensure_ascii=False)
+            self.patrol_command_pub.publish(fail)
+            self.patrol_error = message
+            self.set_result('patrol_runtime_guard', False, message)
+            break
 
     def asset_root(self, asset_type: str) -> str:
         if asset_type in ('reconstruct', 'reconstructs', '3d_reconstruct'):
@@ -3109,14 +3358,47 @@ class SystemSupervisorNode(Node):
         success: bool,
         result_status: str,
     ) -> None:
+        self.publish_agent_operation_feedback(
+            correlation, success, result_status, '',
+        )
+
+    def publish_agent_operation_feedback(
+        self,
+        correlation: Dict[str, str],
+        success: bool,
+        result_status: str,
+        message: str,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not str(correlation.get('operation_id') or ''):
+            return
         self.last_agent_operation_feedback = {
             **correlation,
             'state': 'succeeded' if success else 'failed',
             'status': 'succeeded' if success else 'failed',
             'result_status': result_status,
+            **({'message': message} if message else {}),
+            **({'data': data} if data is not None else {}),
         }
         self.publish_status()
         self.last_agent_operation_feedback = {}
+
+    @staticmethod
+    def inspection_state_fields(patrol_state: str) -> tuple[str, str]:
+        state = str(patrol_state or 'idle')
+        if state in {'starting', 'command_sent'}:
+            return 'PREPARING', 'running'
+        if state == 'paused':
+            return 'PAUSED', 'running'
+        if state in {'running', 'returning_home', 'waiting_loop', 'manual_takeover', 'canceling'}:
+            return 'RUNNING', 'running'
+        if state == 'failed':
+            return 'FAILED', 'failed'
+        if state == 'succeeded':
+            return 'COMPLETED', 'succeeded'
+        if state in {'canceled', 'cancelled'}:
+            return 'IDLE', 'canceled'
+        return 'IDLE', ''
 
     def log_info(self, message: str) -> None:
         try:
@@ -3176,6 +3458,7 @@ class SystemSupervisorNode(Node):
             else 'stopped'
         )
         patrol_state = getattr(self, 'patrol_mode_state', 'idle')
+        inspection_state, inspection_outcome = self.inspection_state_fields(patrol_state)
         if patrol_state in ('starting', 'command_sent', 'running'):
             patrol_readiness = self.build_patrol_readiness()
         else:
@@ -3192,7 +3475,7 @@ class SystemSupervisorNode(Node):
         if keepout_required:
             keepout_status.update(self.keepout_subscription_status())
         system_mode = getattr(self, 'current_system_mode', 'ready')
-        if patrol_state in {'starting', 'command_sent', 'running', 'paused', 'returning_home'}:
+        if patrol_state in ACTIVE_PATROL_RESOURCE_STATES | {'canceling'}:
             system_mode = 'inspection' if payload.get('perception') == 'running' else 'patrol'
         elif payload.get('mapping') == 'running':
             system_mode = 'mapping'
@@ -3215,6 +3498,8 @@ class SystemSupervisorNode(Node):
             'command_result': getattr(self, 'command_result', {}),
             'jetson_ip': self.jetson_ip,
             'patrol_mode_state': patrol_state,
+            'inspection_state': inspection_state,
+            'inspection_outcome': inspection_outcome,
             'patrol_readiness': patrol_readiness,
             'patrol_error': getattr(self, 'patrol_error', ''),
             'patrol_warning': getattr(self, 'patrol_warning', ''),

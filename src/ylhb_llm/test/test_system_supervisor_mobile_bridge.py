@@ -791,6 +791,22 @@ def test_patrol_status_callback_is_business_state_source():
     assert node.patrol_mode_state == 'failed'
 
 
+@pytest.mark.parametrize('state', [
+    'paused', 'manual_takeover', 'returning_home', 'waiting_loop', 'canceling',
+])
+def test_patrol_status_callback_preserves_non_running_states(state):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'running'
+    node.startup_step = 'patrol_started'
+    node.patrol_error = ''
+
+    node.patrol_status_callback(type('Msg', (), {
+        'data': json.dumps({'state': state}),
+    })())
+
+    assert node.patrol_mode_state == state
+
+
 def test_start_patrol_does_not_retry_when_executor_acknowledges(monkeypatch):
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.start_process = Mock()
@@ -1059,6 +1075,19 @@ def test_platform_patrol_executor_command_includes_platform_arguments():
     assert 'deployment_id:=deployment 456' in arguments
     assert 'platform_request_id:=request 789' in arguments
     assert 'platform_command_id:=command 012' in arguments
+
+
+def test_inspection_patrol_executor_command_enables_detection_window():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_route_request = '/tmp/route.json'
+    node.route_directory = '/tmp/routes'
+    node.startup_id = 'startup-123'
+    node.platform_context = {}
+    node.active_patrol_profile = 'inspection'
+
+    assert 'inspection_enabled:=true' in shlex.split(
+        node.build_patrol_executor_command()
+    )
 
 
 @pytest.mark.parametrize('context', [
@@ -1618,3 +1647,174 @@ def test_same_diagnostic_recovery_is_blocked_by_cooldown(monkeypatch):
 
     assert node.start_process.call_count == 1
     assert node.publish_component_operation_feedback.call_args.args[1:] == (False, 'rejected')
+
+
+def test_active_patrol_blocks_3d_capture_and_reconstruct_but_not_stop():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'running'
+    node.processes = {'3d_capture': FakeProcess(running=False)}
+    node.set_result = Mock()
+    node.publish_agent_operation_feedback = Mock()
+    node.start_process = Mock()
+
+    node.handle_command('start_3d_mapping', {'operation_id': 'op_start'})
+    node.handle_command('reconstruct_3d_model', {
+        'operation_id': 'op_reconstruct', 'profile': 'fast_check',
+    })
+    node.handle_command('stop_3d_mapping', {'operation_id': 'op_stop'})
+
+    assert node.start_process.call_count == 0
+    assert node.publish_agent_operation_feedback.call_args_list[-1].args[1:4] == (
+        True, 'succeeded', '现场三维采集已停止',
+    )
+
+
+def test_3d_capture_operation_feedback_reports_started_not_completed():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    capture = FakeProcess(running=False)
+    node.patrol_mode_state = 'idle'
+    node.processes = {'3d_capture': capture}
+    node.start_process = Mock(side_effect=lambda _name: setattr(capture, '_running', True) or True)
+    node.set_result = Mock()
+    node.publish_agent_operation_feedback = Mock()
+
+    node.handle_command('start_3d_mapping', {
+        'operation_id': 'op_1', 'run_id': 'run_1', 'tool_call_id': 'call_1',
+    })
+
+    node.publish_agent_operation_feedback.assert_called_once_with(
+        {'run_id': 'run_1', 'operation_id': 'op_1', 'tool_call_id': 'call_1'},
+        True, 'succeeded', '现场三维采集已启动',
+    )
+
+
+def test_3d_stop_and_reconstruct_publish_terminal_operation_feedback(tmp_path):
+    capture = tmp_path / 'capture_1'
+    capture.mkdir()
+    svo = capture / 'capture.svo2'
+    svo.write_bytes(b'svo')
+    metadata = capture / 'metadata.json'
+    metadata.write_text(json.dumps({
+        'session_id': 'capture_1', 'svo_file': str(svo),
+        'metadata_file': str(metadata),
+    }), encoding='utf-8')
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'idle'
+    node.mapping3d_output_dir = str(tmp_path)
+    node.mapping3d_reconstruct_dir = str(tmp_path / 'reconstruct')
+    node.processes = {'3d_capture': FakeProcess(running=False)}
+    node.set_result = Mock()
+    node.publish_agent_operation_feedback = Mock()
+
+    def start_process(name):
+        node.processes[name].is_running = lambda: True
+        return True
+
+    node.start_process = Mock(side_effect=start_process)
+    node.handle_command('stop_3d_mapping', {'operation_id': 'op_stop'})
+    node.handle_command('reconstruct_3d_model', {
+        'operation_id': 'op_reconstruct', 'profile': 'quality_safe',
+        'session_id': 'capture_1',
+    })
+
+    assert node.publish_agent_operation_feedback.call_args_list[0].args[1:4] == (
+        True, 'succeeded', '现场三维采集已停止',
+    )
+    assert node.publish_agent_operation_feedback.call_args_list[1].args[1:4] == (
+        True, 'succeeded', '离线重建任务已启动',
+    )
+
+
+def test_upload_submission_is_allowed_during_patrol_and_reports_submitted(tmp_path):
+    session = tmp_path / 'reconstruct_1'
+    session.mkdir()
+    model = session / 'model.ply'
+    model.write_text('ply', encoding='utf-8')
+    (session / 'metadata.json').write_text(
+        json.dumps({'output_file': str(model)}), encoding='utf-8'
+    )
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'running'
+    node.mapping3d_reconstruct_dir = str(tmp_path)
+    node.scene_upload_command_pub = FakePublisher()
+    node.set_result = Mock()
+    node.publish_agent_operation_feedback = Mock()
+
+    node.handle_command('enqueue_scene_upload', {
+        'session_id': 'reconstruct_1', 'operation_id': 'op_upload',
+    })
+
+    assert len(node.scene_upload_command_pub.messages) == 1
+    node.set_result.assert_called_with('enqueue_scene_upload', True, '上传任务已提交')
+
+
+@pytest.mark.parametrize(('patrol_state', 'expected'), [
+    ('idle', ('IDLE', '')),
+    ('starting', ('PREPARING', 'running')),
+    ('paused', ('PAUSED', 'running')),
+    ('waiting_loop', ('RUNNING', 'running')),
+    ('manual_takeover', ('RUNNING', 'running')),
+    ('failed', ('FAILED', 'failed')),
+    ('succeeded', ('COMPLETED', 'succeeded')),
+    ('canceled', ('IDLE', 'canceled')),
+])
+def test_inspection_state_mapping(patrol_state, expected):
+    assert SystemSupervisorNode.inspection_state_fields(patrol_state) == expected
+
+
+def test_runtime_guard_triggers_same_fault_only_once(monkeypatch):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'running'
+    node.active_patrol_profile = 'navigation'
+    node.processes = {
+        name: FakeProcess(running=True)
+        for name in ('bringup', 'navigation', 'patrol_executor')
+    }
+    node.last_odom_received_at = 0.0
+    node.last_scan_received_at = 0.0
+    node._runtime_fault_since = {}
+    node._runtime_faults_triggered = set()
+    node.get_parameter = lambda name: SimpleNamespace(value={
+        'patrol_sensor_freshness_sec': 1.0,
+        'patrol_runtime_guard_debounce_sec': 0.0,
+    }[name])
+    node.publish_zero_velocity = Mock()
+    node.patrol_command_pub = FakePublisher()
+    node.set_result = Mock()
+    monkeypatch.setattr(system_supervisor_node.time, 'time', lambda: 100.0)
+
+    node.check_patrol_runtime_guard()
+    node.check_patrol_runtime_guard()
+
+    assert node.publish_zero_velocity.call_count == 1
+    payload = json.loads(node.patrol_command_pub.messages[0].data)
+    assert payload['command'] == 'fail'
+    assert payload['reason'] == '里程计数据已超时'
+
+
+def test_inspection_history_writes_only_summary_and_deduplicates(tmp_path):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.workspace_dir = str(tmp_path)
+    node.supervisor_started_at = 0.0
+    node._inspection_history_keys = set()
+    node._inspection_history_order = __import__('collections').deque(maxlen=256)
+    node.log_info = Mock()
+    payload = {
+        'schema_version': '1.0', 'event': 'target_task_finished',
+        'execution_id': 'exec_1', 'route_id': 'route_1',
+        'target_id': 'target_1', 'target_name': '一号点',
+        'inspection_items': ['仪表'], 'sample_count': 2, 'object_count': 1,
+        'classes': ['仪表'], 'result_status': 'succeeded', 'reason': '',
+        'occurred_at': '2026-07-22T10:00:00+00:00',
+        'objects': [{'class_name': '不应写入'}], 'depth': [1, 2, 3],
+    }
+
+    node.append_inspection_history(payload)
+    node.append_inspection_history(payload)
+
+    path = next((tmp_path / 'runs' / 'inspection_history').glob('*.jsonl'))
+    lines = path.read_text(encoding='utf-8').splitlines()
+    record = json.loads(lines[0])
+    assert len(lines) == 1
+    assert set(record) == set(system_supervisor_node.INSPECTION_HISTORY_FIELDS)
+    assert 'objects' not in record

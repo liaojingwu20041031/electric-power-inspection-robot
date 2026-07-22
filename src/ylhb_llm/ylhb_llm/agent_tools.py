@@ -1,6 +1,9 @@
 import json
+import os
 import time
+from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from std_msgs.msg import String
@@ -103,7 +106,7 @@ class AgentTools:
         for name in VOICE_SESSION_TOOLS:
             if self.registry.get(name) is None:
                 self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_voice_session))
-        for name in {'get_robot_summary', 'get_system_status', 'get_patrol_status', 'get_voice_status', 'generate_local_status_reply', 'list_routes', 'describe_route', 'list_checkpoints', 'inspect_checkpoint'}:
+        for name in {'get_robot_summary', 'get_system_status', 'get_patrol_status', 'get_voice_status', 'get_3d_status', 'list_3d_assets', 'get_recent_inspection_results', 'generate_local_status_reply', 'list_routes', 'describe_route', 'list_checkpoints', 'inspect_checkpoint'}:
             if self.registry.get(name) is None:
                 self.registry.register(ToolDefinition(name, tool_schemas.get(name, {}), self._execute_local))
 
@@ -189,6 +192,8 @@ class AgentTools:
 
     def _execute_system(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
         name = str(decision['tool_call']['name'])
+        schema = self.tool_schemas.get(name) or {}
+        args = {**args, **dict(schema.get('fixed_arguments') or {})}
         if name == 'recover_component':
             component = str(args.get('component') or '')
             if component.lower() in FORBIDDEN_RECOVERY_COMPONENTS:
@@ -228,7 +233,7 @@ class AgentTools:
             command = f'{"start" if name == "start_component" else "stop"}_{component}'
         else:
             command = str(
-                (self.tool_schemas.get(name) or {}).get('command')
+                schema.get('command')
                 or ('start_patrol_mode' if name == 'start_route' else name)
             )
         if name == 'go_to_checkpoint' and self.route_toolpack is not None:
@@ -302,6 +307,26 @@ class AgentTools:
             return tool_result(name, True, 'ok', 'patrol status', self.state.patrol_status)
         if name == 'get_voice_status':
             return tool_result(name, True, 'ok', 'voice status', self.state.voice_status)
+        if name == 'get_3d_status':
+            system = self.state.system_status
+            fields = (
+                '3d_mapping', 'latest_mapping3d_status', 'latest_mapping3d_result',
+                'latest_3d_capture', 'latest_3d_reconstruct',
+                'latest_scene_upload_status', 'mapping3d_storage_summary',
+            )
+            return tool_result(name, True, 'ok', '三维任务状态', {
+                field: system.get(field) for field in fields
+            })
+        if name == 'list_3d_assets':
+            return tool_result(
+                name, True, 'ok', '三维资产列表',
+                dict(self.state.system_status.get('mapping3d_assets') or {}),
+            )
+        if name == 'get_recent_inspection_results':
+            return tool_result(
+                name, True, 'ok', '最近巡检结果',
+                {'results': self._recent_inspection_results(int(args.get('limit') or 5))},
+            )
         if name == 'get_robot_summary':
             if self.status_aggregator is None:
                 return tool_result(name, False, 'failed', 'robot status aggregator unavailable')
@@ -320,6 +345,25 @@ class AgentTools:
         speak = decision.get('speak') or {}
         answer = str(decision.get('final_answer') or speak.get('text') or '当前状态未知。')
         return tool_result(name, True, 'ok', answer, {'answer': answer})
+
+    @staticmethod
+    def _recent_inspection_results(limit: int) -> list[Dict[str, Any]]:
+        root = Path(os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL')))
+        files = sorted((root / 'runs' / 'inspection_history').glob('*.jsonl'), reverse=True)
+        rows: deque[Dict[str, Any]] = deque(maxlen=max(1, min(limit, 20)))
+        for path in reversed(files):
+            try:
+                with path.open(encoding='utf-8') as stream:
+                    for line in stream:
+                        try:
+                            item = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(item, dict):
+                            rows.append(item)
+            except OSError:
+                continue
+        return list(rows)
 
     def say(self, decision: Dict[str, Any], priority: int = 5, interrupt: bool = False) -> None:
         speak = decision.get('speak') or {}

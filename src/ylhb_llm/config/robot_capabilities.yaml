@@ -160,6 +160,8 @@ capabilities:
     risk_level: mission
     executor: system
     command: start_patrol_mode
+    fixed_arguments:
+      profile: inspection
     topic_role: system_command
     side_effect: robot_navigation
     requires_confirmation: false
@@ -297,6 +299,96 @@ capabilities:
     timeout_sec: 1.0
     result_schema: {status: [ok, failed]}
     argument_schema: {properties: {}, required: []}
+  get_3d_status:
+    description: 查询三维采集、重建、上传和存储摘要的真实状态
+    risk_level: read_only
+    executor: local
+    side_effect: none
+    preconditions: []
+    timeout_sec: 1.0
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: []}
+  list_3d_assets:
+    description: 查询 Supervisor 已聚合的三维采集和重建资产摘要
+    risk_level: read_only
+    executor: local
+    side_effect: none
+    preconditions: []
+    timeout_sec: 1.0
+    result_schema: {status: [ok, failed]}
+    argument_schema: {properties: {}, required: []}
+  start_3d_capture:
+    description: 启动现场三维 SVO 采集；启动不表示采集完成
+    risk_level: mission
+    executor: system
+    command: start_3d_mapping
+    side_effect: mapping3d_capture
+    preconditions: [no_active_patrol]
+    timeout_sec: 30.0
+    result_schema: {status: [succeeded, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
+  stop_3d_capture:
+    description: 停止现场三维采集并等待终态；可重复调用
+    risk_level: mission
+    executor: system
+    command: stop_3d_mapping
+    side_effect: mapping3d_capture
+    preconditions: []
+    timeout_sec: 15.0
+    result_schema: {status: [succeeded, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
+  reconstruct_3d_model:
+    description: 使用已有采集会话启动离线三维重建；启动不表示模型已生成
+    risk_level: mission
+    executor: system
+    command: reconstruct_3d_model
+    side_effect: mapping3d_reconstruct
+    preconditions: [no_active_patrol]
+    timeout_sec: 30.0
+    result_schema: {status: [succeeded, failed, timeout]}
+    argument_schema:
+      properties:
+        session_id: {type: string}
+        profile: {type: string, enum: [fast_check, quality_safe, quality_plus]}
+      required: [profile]
+  upload_3d_model:
+    description: 将已有重建 session_id 提交到后台上传队列；入队不表示上传成功
+    risk_level: mission
+    executor: system
+    command: enqueue_scene_upload
+    side_effect: scene_upload
+    preconditions: []
+    timeout_sec: 15.0
+    result_schema: {status: [succeeded, failed, timeout]}
+    argument_schema:
+      properties:
+        session_id: {type: string}
+      required: [session_id]
+  retry_3d_upload:
+    description: 重新提交已有三维上传 task_id
+    risk_level: mission
+    executor: system
+    command: retry_scene_upload
+    side_effect: scene_upload
+    preconditions: []
+    timeout_sec: 15.0
+    result_schema: {status: [succeeded, failed, timeout]}
+    argument_schema:
+      properties:
+        task_id: {type: string}
+      required: [task_id]
+  get_recent_inspection_results:
+    description: 读取固定巡检历史目录中最近的摘要结果
+    risk_level: read_only
+    executor: local
+    side_effect: none
+    preconditions: []
+    timeout_sec: 1.0
+    result_schema: {status: [ok, failed]}
+    argument_schema:
+      properties:
+        limit: {type: integer, minimum: 1, maximum: 20}
+      required: []
   get_voice_status:
     description: 读取语音会话状态
     risk_level: read_only

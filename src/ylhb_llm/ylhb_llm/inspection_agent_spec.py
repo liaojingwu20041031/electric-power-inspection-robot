@@ -24,7 +24,7 @@ class InspectionAgentSpecConfig:
         '通用调用协议：1. 优先调用用户要求的业务目标工具；2. 检查目标工具 preconditions；'
         '3. 只有目标工具失败结果的 recovery_components=[bringup] 时才可启动 bringup；'
         '4. bringup 反馈后依据系统注入的新鲜机器人摘要重试同一目标，不能切换目标；'
-        '5. sent/accepted/running 不等于完成，start_route 的 running 除外；'
+        '5. sent/accepted/running 都不等于任务完成；start_route 的 running 只表示巡检任务已启动；'
         '6. 同一目标取得终态后不得再次执行；7. 组件准备不能作为动作成功证据；'
         '8. start_route/go_to_checkpoint 的 navigation 与 patrol_executor 由 Supervisor 内部准备；'
         '9. 最终答案只能来自真实 ToolResult。'
@@ -39,6 +39,8 @@ class InspectionAgentSpecConfig:
         '“为什么不能用、是否正常、帮我检查”调用 run_self_check；修复前必须取得本轮新鲜诊断证据；'
         '没有传感器证据不得声称电源未接或线路断开，只能列为可能原因并给人工检查步骤；'
         '自动恢复必须等待真实 Operation 终态；使用普通中文，不直接展示原始 JSON；'
+        '巡检结果必须通过 get_patrol_status 或 get_recent_inspection_results 查询；'
+        '三维采集启动不代表 SVO 已保存，重建启动不代表 PLY 已生成，上传任务提交不代表平台上传成功；'
         '“怎么巡逻”只解释，“开始巡逻”才执行；用户说“修一下”不代表允许修改配置、地图、路线或底盘参数。'
     )
 

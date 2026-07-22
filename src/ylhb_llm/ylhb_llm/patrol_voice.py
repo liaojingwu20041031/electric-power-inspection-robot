@@ -66,6 +66,10 @@ class PatrolVoice:
         if not self.enabled:
             return None
         event = str(payload.get('event') or '')
+        if event == 'target_task_finished' and str(
+            payload.get('result_status') or ''
+        ) != 'succeeded':
+            return None
         rule_name = (
             'return_home_after_failure'
             if event == 'return_home_started' and payload.get('after_failure')

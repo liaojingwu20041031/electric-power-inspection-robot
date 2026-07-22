@@ -17,6 +17,11 @@ def generate_launch_description():
         "publish_initial_pose_on_startup"
     )
     startup_id = LaunchConfiguration("startup_id")
+    inspection_enabled = LaunchConfiguration("inspection_enabled")
+    localized_objects_topic = LaunchConfiguration("localized_objects_topic")
+    default_inspection_window_sec = LaunchConfiguration(
+        "default_inspection_window_sec"
+    )
 
     return LaunchDescription(
         [
@@ -35,6 +40,15 @@ def generate_launch_description():
                 default_value="true",
             ),
             DeclareLaunchArgument("startup_id", default_value=""),
+            DeclareLaunchArgument("inspection_enabled", default_value="false"),
+            DeclareLaunchArgument(
+                "localized_objects_topic",
+                default_value="/perception/localized_objects",
+            ),
+            DeclareLaunchArgument(
+                "default_inspection_window_sec",
+                default_value="5.0",
+            ),
             Node(
                 package="ylhb_mobile_bridge",
                 executable="patrol_executor_node",
@@ -57,6 +71,15 @@ def generate_launch_description():
                             value_type=bool,
                         ),
                         "startup_id": startup_id,
+                        "inspection_enabled": ParameterValue(
+                            inspection_enabled,
+                            value_type=bool,
+                        ),
+                        "localized_objects_topic": localized_objects_topic,
+                        "default_inspection_window_sec": ParameterValue(
+                            default_inspection_window_sec,
+                            value_type=float,
+                        ),
                     }
                 ],
             ),

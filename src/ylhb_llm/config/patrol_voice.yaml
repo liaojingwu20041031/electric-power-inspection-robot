@@ -17,6 +17,20 @@ announcements:
     interrupt: false
     max_delay_sec: 5.0
 
+  target_task_finished:
+    enabled: true
+    text: "当前检查点检测完成。"
+    audio_file: ""
+    priority: 40
+    interrupt: false
+
+  target_task_failed:
+    enabled: true
+    text: "当前检查点检测失败，请工作人员检查感知设备。"
+    audio_file: ""
+    priority: 90
+    interrupt: true
+
   return_home_started:
     enabled: true
     text: "本轮巡检点检测完成，机器人正在返回起点，请注意避让。"

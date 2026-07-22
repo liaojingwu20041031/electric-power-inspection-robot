@@ -147,6 +147,40 @@ def test_voice_session_tools_are_allowed_by_policy():
     }).allowed is True
 
 
+def test_configured_3d_tool_needs_no_python_allowlist():
+    schema = {
+        'properties': {'profile': {'type': 'string', 'enum': ['fast_check']}},
+        'required': ['profile'],
+        'additionalProperties': False,
+        'preconditions': ['no_active_patrol'],
+        'command': 'reconstruct_3d_model',
+    }
+
+    allowed = authorize(
+        decision('reconstruct_3d_model', profile='fast_check'),
+        {'patrol_state': 'idle'},
+        {'reconstruct_3d_model': schema},
+    )
+    rejected = authorize(
+        decision('reconstruct_3d_model', profile='fast_check', path='/tmp/model.ply'),
+        {'patrol_state': 'idle'},
+        {'reconstruct_3d_model': schema},
+    )
+
+    assert allowed.allowed is True
+    assert allowed.system_command == 'reconstruct_3d_model'
+    assert rejected.allowed is False
+    assert authorize(
+        decision('reconstruct_3d_model', profile='fast_check'),
+        {'patrol_state': 'manual_takeover'},
+        {'reconstruct_3d_model': schema},
+    ).allowed is False
+
+
+def test_unconfigured_tool_is_still_rejected():
+    assert authorize(decision('not_configured'), {}, {}).allowed is False
+
+
 def test_robot_ready_precondition_recovers_only_with_bringup():
     result = authorize(
         decision('rotate_relative', angle_deg=10),

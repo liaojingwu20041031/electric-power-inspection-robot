@@ -94,7 +94,7 @@ class FakeAdapter:
         callback()
 
 
-def make_logic(adapter):
+def make_logic(adapter, **kwargs):
     return PatrolExecutorLogic(
         request_navigation=adapter.request_navigation,
         cancel_navigation=adapter.cancel_navigation,
@@ -104,6 +104,7 @@ def make_logic(adapter):
         publish_text_command=adapter.publish_text_command,
         schedule_once=adapter.schedule_once,
         time_source=adapter.time,
+        **kwargs,
     )
 
 
@@ -133,6 +134,111 @@ def test_navigation_success_executes_targets_in_order():
         target["pose"] for target in targets
     ]
     assert logic.state == "succeeded"
+
+
+def test_navigation_mode_does_not_wait_for_perception():
+    route, targets, start_pose, _data = first_target_scenario(return_to_start=False)
+    adapter = FakeAdapter([True])
+    logic = make_logic(adapter)
+
+    start(logic, route, targets, start_pose)
+    adapter.run_next_scheduled()
+
+    finished = next(event for event in adapter.events if event["event"] == "target_task_finished")
+    assert finished["result_status"] == "navigation_only"
+    assert logic.state == "succeeded"
+
+
+def test_inspection_empty_objects_is_valid_success():
+    route, targets, start_pose, _data = first_target_scenario(return_to_start=False)
+    adapter = FakeAdapter([True])
+    logic = make_logic(adapter, inspection_enabled=True)
+
+    start(logic, route, targets, start_pose)
+    assert logic.localized_objects('{"objects": []}')
+    adapter.run_next_scheduled()
+
+    finished = next(event for event in adapter.events if event["event"] == "target_task_finished")
+    assert finished["sample_count"] == 1
+    assert finished["object_count"] == 0
+    assert finished["classes"] == []
+
+
+def test_inspection_uses_max_object_count_and_deduplicated_classes():
+    route, targets, start_pose, _data = first_target_scenario(return_to_start=False)
+    adapter = FakeAdapter([True])
+    logic = make_logic(adapter, inspection_enabled=True)
+
+    start(logic, route, targets, start_pose)
+    logic.localized_objects('{"objects": [{"class_name": "绝缘子"}]}')
+    logic.localized_objects('{"objects": [{"class_name": "绝缘子"}, {"label": "仪表"}]}')
+    adapter.run_next_scheduled()
+
+    finished = next(event for event in adapter.events if event["event"] == "target_task_finished")
+    assert finished["sample_count"] == 2
+    assert finished["object_count"] == 2
+    assert finished["classes"] == ["仪表", "绝缘子"]
+
+
+def test_inspection_ignores_message_received_before_window():
+    route, targets, start_pose, _data = first_target_scenario(return_to_start=False)
+    adapter = FakeAdapter([True])
+    logic = make_logic(adapter, inspection_enabled=True)
+
+    start(logic, route, targets, start_pose)
+    assert not logic.localized_objects('{"objects": []}', received_at=99.0)
+    adapter.run_next_scheduled()
+
+    failed = next(event for event in adapter.events if event["event"] == "target_task_failed")
+    assert failed["reason"] == "perception_timeout"
+
+
+def test_inspection_timeout_aborts_without_next_checkpoint():
+    route, targets, start_pose, _data = scenario(return_to_start=False, failure_policy="abort")
+    adapter = FakeAdapter([True])
+    logic = make_logic(adapter, inspection_enabled=True)
+
+    start(logic, route, targets, start_pose)
+    adapter.run_next_scheduled()
+
+    assert logic.state == "failed"
+    assert logic.last_error == "perception_timeout"
+    assert len(adapter.navigation_requests) == 1
+
+
+def test_inspection_abort_and_return_home_preserves_timeout_reason():
+    route, targets, start_pose, _data = first_target_scenario(
+        return_to_start=False, failure_policy="abort_and_return_home"
+    )
+    adapter = FakeAdapter([True, True])
+    logic = make_logic(adapter, inspection_enabled=True)
+
+    start(logic, route, targets, start_pose)
+    adapter.run_next_scheduled()
+
+    assert adapter.navigation_requests[-1][0] == start_pose
+    assert logic.state == "failed"
+    assert logic.last_error == "perception_timeout"
+
+
+def test_pause_and_cancel_invalidate_old_inspection_window_callback():
+    route, targets, start_pose, _data = first_target_scenario(return_to_start=False)
+    adapter = FakeAdapter([True])
+    logic = make_logic(adapter, inspection_enabled=True)
+    start(logic, route, targets, start_pose)
+    old_callback = adapter.scheduled.pop()[1]
+
+    assert logic.pause()
+    old_callback()
+    assert logic.state == "paused"
+
+    adapter2 = FakeAdapter([True])
+    logic2 = make_logic(adapter2, inspection_enabled=True)
+    start(logic2, route, targets, start_pose)
+    old_callback = adapter2.scheduled.pop()[1]
+    assert logic2.cancel()
+    old_callback()
+    assert logic2.state == "canceled"
 
 
 def test_target_task_duration_delays_navigation_to_next_target():
@@ -466,7 +572,10 @@ def test_status_and_event_publishers_use_patrol_status_qos(monkeypatch):
         "event_topic": "/patrol/event",
         "text_command_topic": "/inspection_ai/text_command",
         "map_frame": "map",
-        "cmd_vel_topic": "/cmd_vel",
+            "cmd_vel_topic": "/cmd_vel",
+            "localized_objects_topic": "/perception/localized_objects",
+            "inspection_enabled": False,
+            "default_inspection_window_sec": 5.0,
         "auto_start": False,
         "startup_id": "",
         "execution_id": "",

@@ -78,6 +78,10 @@ def test_start_route_publishes_system_command_with_route_id():
         FakePub(),
         FakePub(),
         event_pub,
+        tool_schemas={'start_route': {
+            'executor': 'system', 'command': 'start_patrol_mode',
+            'fixed_arguments': {'profile': 'inspection'},
+        }},
     )
     decision = {
         'tool_call': {'name': 'start_route', 'arguments': {'route_id': 'route_patrol_001'}}
@@ -87,6 +91,27 @@ def test_start_route_publishes_system_command_with_route_id():
 
     assert system_pub.messages[0]['command'] == 'start_patrol_mode'
     assert system_pub.messages[0]['route_id'] == 'route_patrol_001'
+    assert system_pub.messages[0]['profile'] == 'inspection'
+
+
+def test_fixed_arguments_override_model_arguments():
+    system_pub = FakePub()
+    tools = AgentTools(
+        SimpleNamespace(),
+        SimpleNamespace(system_status={}, patrol_status={}, voice_status={}),
+        system_pub, FakePub(), FakePub(), FakePub(),
+        tool_schemas={'start_route': {
+            'executor': 'system', 'command': 'start_patrol_mode',
+            'fixed_arguments': {'profile': 'inspection'},
+        }},
+    )
+    decision = {'tool_call': {'name': 'start_route', 'arguments': {
+        'route_id': 'route_patrol_001', 'profile': 'navigation',
+    }}}
+
+    tools.execute(decision, SimpleNamespace(allowed=True))
+
+    assert system_pub.messages[0]['profile'] == 'inspection'
 
 
 def test_go_to_checkpoint_resolves_target_and_publishes_supervisor_command():
@@ -199,6 +224,42 @@ def test_get_robot_summary_reuses_status_aggregator():
 
     assert result['ok'] is True
     assert result['data']['robot_mode'] == 'ready'
+
+
+def test_3d_read_only_tools_return_existing_system_fields():
+    state = SimpleNamespace(
+        system_status={
+            '3d_mapping': 'running',
+            'latest_mapping3d_status': {'state': 'recording'},
+            'latest_mapping3d_result': {'state': 'idle'},
+            'latest_3d_capture': {'session_id': 'capture_1'},
+            'latest_3d_reconstruct': {'session_id': 'reconstruct_1'},
+            'latest_scene_upload_status': {'status': 'PENDING'},
+            'mapping3d_storage_summary': {'total_bytes': 10},
+            'mapping3d_assets': {'captures': [{'session_id': 'capture_1'}], 'reconstructs': []},
+        },
+        patrol_status={}, voice_status={},
+    )
+    tools = AgentTools(
+        SimpleNamespace(), state, FakePub(), FakePub(), FakePub(), FakePub(),
+        tool_schemas={
+            'get_3d_status': {'executor': 'local'},
+            'list_3d_assets': {'executor': 'local'},
+        },
+    )
+
+    status = tools.execute(
+        {'tool_call': {'name': 'get_3d_status', 'arguments': {}}},
+        SimpleNamespace(allowed=True),
+    )
+    assets = tools.execute(
+        {'tool_call': {'name': 'list_3d_assets', 'arguments': {}}},
+        SimpleNamespace(allowed=True),
+    )
+
+    assert status['data']['latest_3d_capture']['session_id'] == 'capture_1'
+    assert status['data']['mapping3d_storage_summary']['total_bytes'] == 10
+    assert assets['data'] == state.system_status['mapping3d_assets']
 
 
 def test_read_only_operational_tools_use_injected_local_dependencies():

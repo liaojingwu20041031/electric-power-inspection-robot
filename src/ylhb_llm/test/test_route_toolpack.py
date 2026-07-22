@@ -47,3 +47,12 @@ def test_skill_toolpack_forwards_refresh_summary_flag(tmp_path):
 
     assert schema['refresh_summary_after'] is True
     assert schema['requires_fresh_diagnostic'] is True
+
+
+def test_start_route_schema_preserves_fixed_arguments():
+    schemas = SkillToolPack.from_file(
+        str(ROUTE_PATH.parents[1] / 'src' / 'ylhb_llm' / 'config' / 'robot_capabilities.yaml'),
+        {},
+    ).tool_schemas()
+
+    assert schemas['start_route']['fixed_arguments'] == {'profile': 'inspection'}

@@ -113,6 +113,8 @@ class PatrolExecutorLogic:
         publish_text_command: Callable[[str], None],
         schedule_once: Callable[[float, Callable[[], None]], None],
         time_source: Callable[[], float] = time.time,
+        inspection_enabled: bool = False,
+        default_inspection_window_sec: float = 5.0,
     ) -> None:
         self._request_navigation = request_navigation
         self._cancel_navigation = cancel_navigation
@@ -122,6 +124,8 @@ class PatrolExecutorLogic:
         self._publish_text_command = publish_text_command
         self._schedule_once = schedule_once
         self._time_source = time_source
+        self.inspection_enabled = bool(inspection_enabled)
+        self.default_inspection_window_sec = float(default_inspection_window_sec)
 
         self.state = "idle"
         self.route: Optional[Dict[str, Any]] = None
@@ -132,7 +136,11 @@ class PatrolExecutorLogic:
         self._retry_count = 0
         self._navigation_token = 0
         self._navigation_purpose: Optional[str] = None
-        self._return_home_then_fail = False
+        self._return_home_failure_reason = ""
+        self._inspection_token = 0
+        self._inspection_window_started_at: Optional[float] = None
+        self.inspection_phase = "idle"
+        self.inspection_summary: Dict[str, Any] = {}
         self._loop_wait_token = 0
         self._loop_wait_started_at: Optional[float] = None
         self._loop_wait_until: Optional[float] = None
@@ -176,6 +184,8 @@ class PatrolExecutorLogic:
             "loop_wait_until": self._loop_wait_until if self.state == "waiting_loop" else None,
             "home_pose_source": "route_file" if self.home_pose else None,
             "last_error": self.last_error,
+            "inspection_phase": self.inspection_phase,
+            "inspection_summary": dict(self.inspection_summary),
             "timestamp": self._time_source(),
         }
 
@@ -241,7 +251,10 @@ class PatrolExecutorLogic:
         self.current_target_index = 0
         self.cycle_index = 1
         self._retry_count = 0
-        self._return_home_then_fail = False
+        self._return_home_failure_reason = ""
+        self._invalidate_inspection_window()
+        self.inspection_phase = "idle"
+        self.inspection_summary = {}
         self._loop_wait_token += 1
         self._clear_loop_wait()
         self._paused_from_state = None
@@ -280,6 +293,7 @@ class PatrolExecutorLogic:
             return False
         self._paused_from_state = self.state
         self._navigation_token += 1
+        self._invalidate_inspection_window()
         self._loop_wait_token += 1
         self._clear_loop_wait()
         if self.state != "waiting_loop":
@@ -297,12 +311,12 @@ class PatrolExecutorLogic:
         if paused_from_state == "waiting_loop":
             self._start_loop_wait()
         elif paused_from_state == "returning_home":
-            self._start_return_home(self._return_home_then_fail)
+            self._start_return_home(self._return_home_failure_reason)
         elif self.current_target_index < len(self.targets):
             self._set_state("running")
             self._navigate_current_target()
         elif self.route and self.route.get("return_to_start"):
-            self._start_return_home(self._return_home_then_fail)
+            self._start_return_home(self._return_home_failure_reason)
         else:
             self._complete_success()
         return True
@@ -313,6 +327,7 @@ class PatrolExecutorLogic:
         if self.state != "paused":
             self._paused_from_state = self.state
         self._navigation_token += 1
+        self._invalidate_inspection_window()
         self._loop_wait_token += 1
         self._clear_loop_wait()
         self._cancel_navigation()
@@ -330,6 +345,7 @@ class PatrolExecutorLogic:
         }:
             return False
         self._navigation_token += 1
+        self._invalidate_inspection_window()
         self._loop_wait_token += 1
         self._clear_loop_wait()
         self._set_state("canceling")
@@ -376,10 +392,10 @@ class PatrolExecutorLogic:
         if self.state in {"paused", "canceling", "canceled"}:
             return
         if self._navigation_purpose == "home":
-            if self._return_home_then_fail:
-                message = "target navigation failed"
+            if self._return_home_failure_reason:
+                message = self._return_home_failure_reason
                 if not success:
-                    message += "; return home navigation failed"
+                    message += "；返航导航失败"
                 self._finish_failure(message)
             elif success:
                 self._complete_cycle_success()
@@ -416,6 +432,40 @@ class PatrolExecutorLogic:
         self._publish_text_command(
             f"已到达{target['name']}，开始执行任务"
         )
+        if self.inspection_enabled:
+            self._inspection_token += 1
+            token = self._inspection_token
+            self._inspection_window_started_at = self._time_source()
+            self.inspection_phase = "waiting_result"
+            self.inspection_summary = {
+                "target_id": target["id"],
+                "target_name": target["name"],
+                "inspection_items": list(target.get("inspection_items") or []),
+                "sample_count": 0,
+                "object_count": 0,
+                "classes": [],
+                "invalid_sample_count": 0,
+                "result_status": "running",
+                "reason": "",
+            }
+            self._publish_status(self.status())
+            duration = float(target.get("task_duration_sec", 0.0))
+            self._schedule_once(
+                duration if duration > 0.0 else self.default_inspection_window_sec,
+                lambda: self._inspection_window_finished(token),
+            )
+            return
+        self.inspection_phase = "navigation_only"
+        self.inspection_summary = {
+            "target_id": target["id"],
+            "target_name": target["name"],
+            "inspection_items": list(target.get("inspection_items") or []),
+            "sample_count": 0,
+            "object_count": 0,
+            "classes": [],
+            "result_status": "navigation_only",
+            "reason": "",
+        }
         self._schedule_once(
             float(target.get("task_duration_sec", 0.0)),
             self._target_task_finished,
@@ -431,6 +481,11 @@ class PatrolExecutorLogic:
             "target_task_finished",
             target_id=target["id"],
             target_name=target["name"],
+            result_status="navigation_only",
+            inspection_items=list(target.get("inspection_items") or []),
+            sample_count=0,
+            object_count=0,
+            classes=[],
         )
         self.current_target_index += 1
         self._retry_count = 0
@@ -448,23 +503,99 @@ class PatrolExecutorLogic:
             self._navigate_current_target()
             return
         if self.route["failure_policy"] == "abort_and_return_home":
-            self._start_return_home(then_fail=True)
+            self._start_return_home("target navigation failed")
         else:
             self._finish_failure("target navigation failed")
 
+    def localized_objects(self, raw: str, received_at: Optional[float] = None) -> bool:
+        arrived_at = self._time_source() if received_at is None else float(received_at)
+        if (
+            not self.inspection_enabled
+            or self.inspection_phase != "waiting_result"
+            or self.state != "running"
+            or self._inspection_window_started_at is None
+            or arrived_at < self._inspection_window_started_at
+        ):
+            return False
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            payload = None
+        if not isinstance(payload, dict) or not isinstance(payload.get("objects"), list):
+            self.inspection_summary["invalid_sample_count"] += 1
+            self._publish_status(self.status())
+            return False
+        objects = payload["objects"]
+        classes = set(self.inspection_summary.get("classes") or [])
+        for item in objects:
+            if not isinstance(item, dict):
+                continue
+            label = next((str(item.get(key) or "").strip() for key in (
+                "class_name", "class", "label", "name"
+            ) if str(item.get(key) or "").strip()), "")
+            if label:
+                classes.add(label)
+        self.inspection_summary["sample_count"] += 1
+        self.inspection_summary["object_count"] = max(
+            int(self.inspection_summary.get("object_count") or 0), len(objects)
+        )
+        self.inspection_summary["classes"] = sorted(classes)
+        self._publish_status(self.status())
+        return True
+
+    def _inspection_window_finished(self, token: int) -> None:
+        if token != self._inspection_token or self.state != "running":
+            return
+        target = self._current_target()
+        if target is None:
+            return
+        summary = dict(self.inspection_summary)
+        if int(summary.get("sample_count") or 0) > 0:
+            summary["result_status"] = "succeeded"
+            summary["reason"] = ""
+            self.inspection_phase = "succeeded"
+            self.inspection_summary = summary
+            self._event("target_task_finished", **summary)
+            self.current_target_index += 1
+            self._retry_count = 0
+            if self.current_target_index >= len(self.targets):
+                self._complete_targets()
+            else:
+                self._navigate_current_target()
+            return
+        summary["result_status"] = "failed"
+        summary["reason"] = "perception_timeout"
+        self.inspection_phase = "failed"
+        self.inspection_summary = summary
+        self._event("target_task_failed", **summary)
+        if self.route and self.route.get("failure_policy") == "abort_and_return_home":
+            self._start_return_home("perception_timeout")
+        else:
+            self._finish_failure("perception_timeout")
+
+    def fail(self, reason: str) -> bool:
+        if self.state not in ACTIVE_STATES:
+            return False
+        self._navigation_token += 1
+        self._invalidate_inspection_window()
+        self._cancel_navigation()
+        self._stop_motion()
+        self._finish_failure(reason or "巡逻运行故障")
+        return True
+
     def _complete_targets(self) -> None:
         if self.route and self.route.get("return_to_start"):
-            self._start_return_home(then_fail=False)
+            self._start_return_home("")
         else:
             self._complete_success()
 
-    def _start_return_home(self, then_fail: bool) -> None:
+    def _start_return_home(self, failure_reason: str) -> None:
         if self.route is None or self.home_pose is None:
             self._finish_failure("home pose is unavailable")
             return
-        self._return_home_then_fail = then_fail
+        self._return_home_failure_reason = failure_reason
         self._set_state("returning_home")
-        self._event("return_home_started", after_failure=then_fail)
+        self._event("return_home_started", after_failure=bool(failure_reason))
         self._start_navigation(
             self.home_pose,
             float(self.route["goal_timeout_sec"]),
@@ -519,6 +650,7 @@ class PatrolExecutorLogic:
         self._set_state("succeeded")
 
     def _finish_failure(self, message: str) -> None:
+        self._invalidate_inspection_window()
         self._event("route_failed", reason=message)
         self._clear_loop_wait()
         self._set_state("failed", message)
@@ -526,6 +658,10 @@ class PatrolExecutorLogic:
     def _clear_loop_wait(self) -> None:
         self._loop_wait_started_at = None
         self._loop_wait_until = None
+
+    def _invalidate_inspection_window(self) -> None:
+        self._inspection_token += 1
+        self._inspection_window_started_at = None
 
 
 class PatrolExecutorNode(Node):
@@ -543,6 +679,12 @@ class PatrolExecutorNode(Node):
         )
         self.map_frame = str(self.get_parameter("map_frame").value)
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
+        self.localized_objects_topic = str(
+            self.get_parameter("localized_objects_topic").value
+        )
+        self.inspection_enabled = bool(
+            self.get_parameter("inspection_enabled").value
+        )
         self.startup_id = str(self.get_parameter("startup_id").value)
         self.platform_context = {
             "execution_id": str(self.get_parameter("execution_id").value),
@@ -602,6 +744,12 @@ class PatrolExecutorNode(Node):
             self._on_command,
             10,
         )
+        self.create_subscription(
+            String,
+            self.localized_objects_topic,
+            self._on_localized_objects,
+            10,
+        )
         self._nav_client = ActionClient(
             self,
             NavigateToPose,
@@ -615,6 +763,10 @@ class PatrolExecutorNode(Node):
             publish_event=self._publish_event,
             publish_text_command=self._publish_text_command,
             schedule_once=self._schedule_once,
+            inspection_enabled=self.inspection_enabled,
+            default_inspection_window_sec=float(
+                self.get_parameter("default_inspection_window_sec").value
+            ),
         )
 
         self._reload_route_file(log_errors=False)
@@ -638,6 +790,9 @@ class PatrolExecutorNode(Node):
             "text_command_topic": "/inspection_ai/text_command",
             "map_frame": "map",
             "cmd_vel_topic": "/cmd_vel",
+            "localized_objects_topic": "/perception/localized_objects",
+            "inspection_enabled": False,
+            "default_inspection_window_sec": 5.0,
             "auto_start": False,
             "startup_id": "",
             "execution_id": "",
@@ -870,6 +1025,10 @@ class PatrolExecutorNode(Node):
                     "pause": "route_paused", "resume": "route_resumed",
                     "cancel": "route_canceled", "takeover": "manual_takeover",
                 }[command])
+            elif command == "fail":
+                reason = str(payload.get("reason") or "巡逻运行故障")
+                if not self.logic.fail(reason):
+                    raise ValueError(f"cannot fail while {self.logic.state}")
             elif command == "reload":
                 if not self._reload_route_file():
                     raise ValueError("route file reload failed")
@@ -888,6 +1047,9 @@ class PatrolExecutorNode(Node):
             self.get_logger().warning(str(exc))
             if command in {"pause", "resume", "cancel", "takeover"}:
                 self._publish_control_event("command_rejected", error_code="INVALID_STATE", error_message=str(exc))
+
+    def _on_localized_objects(self, message: String) -> None:
+        self.logic.localized_objects(message.data, time.time())
 
     def _publish_control_event(self, event: str, **details: Any) -> None:
         context = self._platform_context()

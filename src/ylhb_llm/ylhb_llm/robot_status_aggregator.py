@@ -78,12 +78,27 @@ class RobotStatusAggregator:
         base = self.get('base_skill_status', now)
         chassis = self.get('chassis_status', now)
         chassis['state'] = str(chassis.get('state') or '').split(maxsplit=1)[0] or 'unknown'
+        inspection_summary = patrol.get('inspection_summary') or {}
         return {
             'robot_mode': system.get('mode') or system.get('system_mode') or 'unknown',
             'health': 'warning' if not system.get('fresh') else 'ok',
             'pose': {key: pose.get(key) for key in ('x', 'y', 'yaw', 'fresh')},
             'navigation': {'state': system.get('navigation_state', 'unknown'), 'profile': system.get('navigation_profile', 'unknown')},
-            'patrol': {'state': patrol.get('state', 'unknown'), 'target': patrol.get('target_id', ''), 'progress': patrol.get('progress', '')},
+            'patrol': {
+                'state': patrol.get('state', 'unknown'),
+                'inspection_state': system.get('inspection_state', 'IDLE'),
+                'inspection_outcome': system.get('inspection_outcome', ''),
+                'target': patrol.get('target_id', ''),
+                'target_name': patrol.get('target_name', ''),
+                'progress': patrol.get('progress', ''),
+                'latest_inspection': inspection_summary,
+            },
+            'mapping3d': {
+                'state': system.get('3d_mapping', 'unknown'),
+                'capture': system.get('latest_3d_capture') or {},
+                'reconstruct': system.get('latest_3d_reconstruct') or {},
+                'upload': system.get('latest_scene_upload_status') or {},
+            },
             'sensors': {'lidar': self.get('scan', now).get('state'), 'odom': self.get('odom', now).get('state')},
             'base': base,
             'chassis': chassis,

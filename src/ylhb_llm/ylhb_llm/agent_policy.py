@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 
-ACTIVE_PATROL_STATES = {'running', 'returning_home', 'waiting_loop'}
+ACTIVE_PATROL_STATES = {'running', 'returning_home', 'waiting_loop', 'manual_takeover'}
 CANCELABLE_PATROL_STATES = ACTIVE_PATROL_STATES | {
     'unknown', 'starting', 'command_sent', 'waiting_nav2', 'waiting_localization',
     'paused', 'canceling',
@@ -42,7 +42,8 @@ def authorize(
         return PolicyResult(True, priority=10, interrupt=True, system_command='emergency_stop')
     if tool in DANGEROUS_TOOLS:
         return PolicyResult(False, '拒绝危险工具')
-    if tool_schemas and tool in tool_schemas:
+    configured = bool(tool_schemas and tool in tool_schemas)
+    if configured:
         schema = tool_schemas[tool]
         rejected = _reject_by_schema(tool, arguments, schema)
         if rejected:
@@ -64,6 +65,8 @@ def authorize(
             )
     if tool == 'recover_component':
         return _authorize_recovery(arguments, state)
+    if configured:
+        return PolicyResult(True, system_command=str(schema.get('command') or ''))
     if tool == 'start_patrol_mode':
         return PolicyResult(True, system_command='start_patrol_mode')
     if tool == 'pause_patrol':
@@ -191,10 +194,14 @@ def _recovery_components(missing: List[str]) -> List[str]:
 
 
 def _reject_by_schema(tool: str, arguments: Dict[str, Any], schema: Dict[str, Any]) -> str:
+    properties = schema.get('properties') or {}
+    unexpected = sorted(set(arguments) - set(properties))
+    if unexpected and schema.get('additionalProperties') is False:
+        return f'{unexpected[0]} 不是允许的参数'
     for field in schema.get('required') or []:
         if field not in arguments:
             return f'{field} 是必填参数'
-    for field, rules in (schema.get('properties') or {}).items():
+    for field, rules in properties.items():
         if field not in arguments:
             continue
         value = arguments[field]
@@ -205,6 +212,15 @@ def _reject_by_schema(tool: str, arguments: Dict[str, Any], schema: Dict[str, An
                 return f'{field} 超出允许范围'
             if 'maximum' in rules and float(value) > float(rules['maximum']):
                 return f'{field} 超出允许范围'
+        if rules.get('type') == 'integer':
+            if isinstance(value, bool) or not isinstance(value, int):
+                return f'{field} 必须是整数'
+            if 'minimum' in rules and value < int(rules['minimum']):
+                return f'{field} 超出允许范围'
+            if 'maximum' in rules and value > int(rules['maximum']):
+                return f'{field} 超出允许范围'
+        if rules.get('type') == 'string' and not isinstance(value, str):
+            return f'{field} 必须是字符串'
         if rules.get('enum') and value not in rules['enum']:
             return f'{field} 不在允许列表'
     return ''

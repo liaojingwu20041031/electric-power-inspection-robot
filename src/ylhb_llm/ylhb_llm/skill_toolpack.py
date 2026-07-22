@@ -45,6 +45,7 @@ class SkillToolPack:
                 "risk_level": capability.get("risk_level", "normal"),
                 "executor": capability.get("executor", "local"),
                 "command": capability.get("command", name),
+                "fixed_arguments": dict(capability.get("fixed_arguments") or {}),
                 "topic_role": capability.get("topic_role", ""),
                 "side_effect": capability.get("side_effect", "none"),
                 "requires_confirmation": bool(capability.get("requires_confirmation", False)),

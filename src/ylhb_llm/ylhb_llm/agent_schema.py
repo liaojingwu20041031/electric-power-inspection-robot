@@ -143,6 +143,13 @@ def _validate_arguments(name: str, arguments: Dict[str, Any], schema: Dict[str, 
                 raise SchemaError(f'{name}.{field} below minimum')
             if 'maximum' in rules and float(value) > float(rules['maximum']):
                 raise SchemaError(f'{name}.{field} above maximum')
+        if expected_type == 'integer':
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise SchemaError(f'{name}.{field} must be integer')
+            if 'minimum' in rules and value < int(rules['minimum']):
+                raise SchemaError(f'{name}.{field} below minimum')
+            if 'maximum' in rules and value > int(rules['maximum']):
+                raise SchemaError(f'{name}.{field} above maximum')
         enum = rules.get('enum')
         if enum and value not in enum:
             raise SchemaError(f'{name}.{field} must be one of {enum}')
