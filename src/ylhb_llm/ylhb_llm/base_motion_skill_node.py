@@ -138,7 +138,7 @@ class BaseMotionSkillNode(Node):
         arguments = payload.get("arguments") or {}
         correlation = {
             key: str(payload.get(key) or "")
-            for key in ("request_id", "run_id", "operation_id", "tool_call_id")
+            for key in ("request_id", "run_id", "operation_id", "tool_call_id", "idempotency_key")
         }
         if command == "stop_motion":
             if self.active:

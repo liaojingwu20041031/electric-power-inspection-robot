@@ -97,7 +97,7 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
         command_id = str(body.get("commandId") or uuid.uuid4())
         platform_context = {"active_task_id": str(body.get("taskId") or ""), "active_execution_id": execution_id, "active_deployment_id": deployment_id, "active_request_id": request_id, "active_command_id": command_id, "active_route_revision_id": deployment["manifest"]["routeRevisionId"], "active_route_path": deployment["routePath"], "active_map_yaml_path": deployment["mapYamlPath"], "executor_route_id": executor_route_id}
         bridge.set_platform_context(platform_context)
-        bridge.publish_system_command("start_platform_patrol", command_id=command_id, profile=str(body.get("profile") or "inspection"), **platform_context)
+        bridge.publish_system_command("start_platform_patrol", source="platform", command_id=command_id, profile=str(body.get("profile") or "inspection"), **platform_context)
         return {"accepted": True, "state": "STARTING", "executionId": execution["execution_id"]}
 
     @app.post("/api/platform/v1/executions/{execution_id}/{action}")
@@ -115,7 +115,7 @@ def attach_platform_api(app: FastAPI, bridge) -> DeploymentStore:
             raise PlatformStoreError("INVALID_REQUEST", "requestId is required")
         command_id = str(body.get("commandId") or uuid.uuid4())
         bridge.set_platform_context({**getattr(bridge, "_platform_context", {}), "active_execution_id": execution_id, "active_deployment_id": execution["deployment_id"], "active_request_id": request_id, "active_command_id": command_id})
-        bridge.publish_system_command(commands[action], command_id=command_id, execution_id=execution_id, request_id=request_id)
+        bridge.publish_system_command(commands[action], source="platform", command_id=command_id, execution_id=execution_id, request_id=request_id)
         return {"accepted": True, "state": "PENDING_ROS", "executionId": execution_id}
 
     @app.get("/api/platform/v1/executions/{execution_id}")

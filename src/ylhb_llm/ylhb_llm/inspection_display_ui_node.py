@@ -10,7 +10,7 @@ os.environ.setdefault('QT_QUICK_BACKEND', 'software')
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from PyQt5.QtCore import QTimer, QUrl
+from PyQt5.QtCore import QCoreApplication, QEvent, QTimer, QUrl
 from PyQt5.QtGui import QGuiApplication, QIcon
 from rclpy.executors import SingleThreadedExecutor
 
@@ -156,6 +156,11 @@ def main(args: Optional[List[str]] = None) -> None:
     try:
         app.exec_()
     finally:
+        root.close()
+        root.deleteLater()
+        engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        app.processEvents()
         backend.shutdown()
         executor.shutdown(timeout_sec=1.0)
         executor_thread.join(timeout=1.0)

@@ -26,6 +26,11 @@ class FakeRuntime:
             'display_text': '屏幕显示完整回答。',
             'speech_text': '收到。',
             'role': 'assistant',
+            'observations': [{
+                'observation_id': 'obs_1',
+                'tool_name': 'run_self_check',
+                'state': 'ok',
+            }],
         }
 
 
@@ -129,6 +134,8 @@ def test_request_callback_dedupes_client_msg_id_and_publishes_chat():
     roles = [item['role'] for item in node.chat_pub.messages]
     assert roles == ['user', 'assistant']
     assert node.chat_pub.messages[-1]['text'] == '屏幕显示完整回答。'
+    assert node.chat_pub.messages[-1]['tool_name'] == 'run_self_check'
+    assert node.chat_pub.messages[-1]['raw']['observations'][0]['tool_name'] == 'run_self_check'
     assert node.status_pub.messages[-1]['agent_spec_summary']['name'] == 'inspection_agent'
 
 

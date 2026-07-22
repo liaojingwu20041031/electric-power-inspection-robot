@@ -2,7 +2,6 @@ import re
 
 
 BAD_TONE_WORDS = ('亲', '哦', '我觉得吧')
-DETAIL_SUFFIX = '详细内容请看屏幕。'
 
 REPLIES = {
     'emergency_stop': ('收到，已急停。', 10, True),
@@ -37,29 +36,51 @@ def sanitize_reply(text: str) -> str:
 def prepare_speech_text(text: str, max_chars: int = 60, max_sentences: int = 2) -> str:
     original = str(text or '').strip()
     cleaned = re.sub(r'```[\s\S]*?```', ' ', original)
+    cleaned = re.sub(r'(?m)^\s{0,3}#{1,6}\s+.*$', ' ', cleaned)
     cleaned = re.sub(r'!\[[^]]*]\([^)]*\)', ' ', cleaned)
     cleaned = re.sub(r'\[([^]]+)]\([^)]*\)', r'\1', cleaned)
     cleaned = re.sub(r'https?://\S+|www\.\S+', ' ', cleaned)
+    cleaned = re.sub(r'[（(][^）)]*(?:=|[A-Za-z_]{2})[^）)]*[）)]', '', cleaned)
+    cleaned = re.sub(r'[：:]\s*\n+', '。\n', cleaned)
+    cleaned = re.sub(r'(?m)^\s*\d+[.、)]\s*', '', cleaned)
+    cleaned = re.sub(r'\n+\s*[-+*]\s*', '。', cleaned)
+    cleaned = re.sub(r'\n+', '。', cleaned)
     cleaned = re.sub(
-        r'<[^>]+>|\b(?:tool_name|tool_call_id|assistant_chat_[\w-]+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b',
+        r'<[^>]+>|\b(?:tool_name|tool_call_id|assistant_chat_[\w-]+|bringup|navigation|'
+        r'perception|patrol_executor|ready|running|idle|unknown|failed|succeeded|'
+        r'[a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b',
         ' ', cleaned)
+    cleaned = cleaned.replace('=', ' ')
     cleaned = re.sub(r'[`#>*_~|]+', ' ', cleaned)
+    cleaned = re.sub(r'。{2,}', '。', cleaned)
+    cleaned = re.sub(r'\s+([，。！？；：])', r'\1', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     if not cleaned:
-        return '详细内容请看屏幕。'
+        return '暂时没有可播报的内容。'
 
     sentences = [item.strip() for item in re.findall(r'[^。！？]+[。！？]?', cleaned) if item.strip()]
     sentences = [item if item[-1] in '。！？' else item + '。' for item in sentences]
+    useful = [
+        item for item in sentences
+        if not item.rstrip('。！？').endswith('如下')
+        and '请按以下步骤操作' not in item
+    ]
+    if useful:
+        sentences = useful
     complete = ''.join(sentences)
     sentence_limit = max(1, int(max_sentences))
     if len(sentences) <= sentence_limit and len(complete) <= max_chars:
         return complete
     selected = ''
-    body_limit = max(0, max_chars - len(DETAIL_SUFFIX))
-    for sentence in sentences[:max(0, sentence_limit - 1)]:
-        if len(selected + sentence) > body_limit:
+    for sentence in sentences[:sentence_limit]:
+        if len(selected + sentence) > max_chars:
             break
         selected += sentence
     if selected:
-        return selected + DETAIL_SUFFIX
-    return '结果较长，详细内容请看屏幕。'
+        return selected
+    first = sentences[0].rstrip('。！？')
+    excerpt = first[:max(1, max_chars - 1)]
+    boundary = max(excerpt.rfind(mark) for mark in '，；：')
+    if boundary >= 12:
+        excerpt = excerpt[:boundary]
+    return excerpt.rstrip('，、；： ') + '。'

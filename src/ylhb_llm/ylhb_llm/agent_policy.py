@@ -48,6 +48,14 @@ def authorize(
         rejected = _reject_by_schema(tool, arguments, schema)
         if rejected:
             return PolicyResult(False, rejected)
+        conflict_group = str(schema.get('conflict_group') or '')
+        idempotency_key = str(decision.get('idempotency_key') or '')
+        if conflict_group and any(
+            str(item.get('idempotency_key') or '') != idempotency_key
+            and str((tool_schemas.get(str(item.get('tool_name') or '')) or {}).get('conflict_group') or '') == conflict_group
+            for item in state.get('active_operations') or []
+        ):
+            return PolicyResult(False, '存在冲突操作，拒绝并发执行', error_code='operation_conflict')
         preconditions = list(schema.get('preconditions') or [])
         for field, values in (schema.get('preconditions_by_argument') or {}).items():
             preconditions.extend((values or {}).get(arguments.get(field), []))

@@ -369,6 +369,8 @@ class SystemSupervisorNode(Node):
         self.tts_language_type = str(self.get_parameter('tts_language_type').value)
         self.dashscope_base_url = str(self.get_parameter('dashscope_base_url').value)
         self.lock = threading.Lock()
+        self.mapping3d_operation_lock = threading.Lock()
+        self.mapping3d_stop_requested = threading.Event()
         self.last_command = ''
         self.last_success = True
         self.last_message = 'system supervisor ready'
@@ -590,6 +592,8 @@ class SystemSupervisorNode(Node):
             key: str(payload.get(key) or '')
             for key in ('run_id', 'operation_id', 'tool_call_id')
         }
+        if payload.get('idempotency_key'):
+            correlation['idempotency_key'] = str(payload['idempotency_key'])
 
         def finish(success: bool, result_status: str, message: str) -> None:
             self.set_result('recover_component', success, message)
@@ -665,6 +669,15 @@ class SystemSupervisorNode(Node):
         if not command:
             self.set_result('', False, 'Missing command.')
             return
+
+        self.log_info(
+            'system command: '
+            f'command={command} source={str(payload.get("source") or "unknown")} '
+            f'request_id={str(payload.get("request_id") or payload.get("active_request_id") or "")} '
+            f'run_id={str(payload.get("run_id") or "")} '
+            f'operation_id={str(payload.get("operation_id") or "")} '
+            f'tool_call_id={str(payload.get("tool_call_id") or "")}'
+        )
 
         if command in LONG_RUNNING_COMMANDS:
             if not self.try_mark_command_inflight(command):
@@ -902,6 +915,12 @@ class SystemSupervisorNode(Node):
             key: str(payload.get(key) or '')
             for key in ('run_id', 'operation_id', 'tool_call_id')
         }
+        if payload.get('idempotency_key'):
+            correlation['idempotency_key'] = str(payload['idempotency_key'])
+        if command == 'prepare_robot_runtime':
+            command = 'start_bringup'
+        elif command == 'release_robot_runtime':
+            command = 'stop_bringup'
         if command in {'start_patrol_mode', 'go_to_checkpoint', 'pause_patrol', 'resume_patrol', 'cancel_patrol', 'emergency_stop', 'recover_component'}:
             self.agent_operation_context = correlation if correlation['operation_id'] else {}
             self.last_agent_operation_feedback = {}
@@ -1043,7 +1062,9 @@ class SystemSupervisorNode(Node):
             self.scene_upload_command_pub.publish(message)
             feedback = '上传任务已提交' if command == 'enqueue_scene_upload' else '上传重试任务已提交'
             self.set_result(command, True, feedback)
-            self.publish_agent_operation_feedback(correlation, True, 'succeeded', feedback)
+            self.publish_agent_operation_feedback(
+                correlation, True, 'submitted', feedback,
+            )
             return
         if command == 'export_3d_map':
             self.export_3d_map()
@@ -2204,38 +2225,51 @@ class SystemSupervisorNode(Node):
         ]
 
     def start_3d_mapping(self, correlation: Optional[Dict[str, str]] = None) -> None:
-        blocker = self.patrol_resource_blocker()
-        blockers = self.running_processes(('zed', 'perception', '3d_capture', '3d_reconstruct'))
-        if blocker or blockers:
-            message = blocker or '三维采集资源被占用: ' + ', '.join(blockers)
-            self.set_result('start_3d_mapping', False, message)
-            self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
-            return
-        success = self.start_process('3d_capture')
-        proc = self.processes.get('3d_capture')
-        success = bool(success and proc and proc.is_running())
-        message = '现场三维采集已启动' if success else '现场三维采集启动失败'
-        self.set_result('start_3d_mapping', success, message)
-        self.publish_agent_operation_feedback(correlation or {}, success, 'succeeded' if success else 'failed', message)
+        with self._mapping3d_lock():
+            proc = self.processes.get('3d_capture')
+            if proc and proc.is_running():
+                message = '现场三维采集已在运行'
+                self.set_result('start_3d_mapping', True, message)
+                self.publish_agent_operation_feedback(correlation or {}, True, 'running', message)
+                return
+            blocker = self.patrol_resource_blocker()
+            blockers = self.running_processes(('zed', 'perception', '3d_reconstruct'))
+            if blocker or blockers or self._mapping3d_stop_event().is_set():
+                message = blocker or ('三维采集资源被占用: ' + ', '.join(blockers) if blockers else '三维采集正在停止')
+                self.set_result('start_3d_mapping', False, message)
+                self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
+                return
+            success = self.start_process('3d_capture')
+            proc = self.processes.get('3d_capture')
+            success = bool(success and proc and proc.is_running())
+            message = '现场三维采集已启动' if success else '现场三维采集启动失败'
+            self.set_result('start_3d_mapping', success, message)
+            self.publish_agent_operation_feedback(correlation or {}, success, 'running' if success else 'failed', message)
 
     def stop_3d_mapping(self, correlation: Optional[Dict[str, str]] = None) -> None:
-        proc = self.processes.get('3d_capture')
-        if not proc or not proc.is_running():
-            message = '现场三维采集已停止'
-            self.set_result('stop_3d_mapping', True, message)
-            self.publish_agent_operation_feedback(correlation or {}, True, 'succeeded', message)
-            return
-        self.latest_mapping3d_status = {}
-        self.publish_3d_mapping_command('stop')
-        terminal = self.wait_for_mapping3d_terminal(8.0)
-        if terminal == 'timeout' or terminal not in ('succeeded', 'failed', 'idle', 'stopped'):
-            self.stop_process('3d_capture')
-        success = terminal in ('succeeded', 'idle', 'stopped')
-        if terminal == 'timeout':
-            success = not proc.is_running()
-        message = '现场三维采集已停止' if success else '现场三维采集停止失败'
-        self.set_result('stop_3d_mapping', success, message)
-        self.publish_agent_operation_feedback(correlation or {}, success, 'succeeded' if success else 'failed', message)
+        stop_event = self._mapping3d_stop_event()
+        stop_event.set()
+        try:
+            with self._mapping3d_lock():
+                proc = self.processes.get('3d_capture')
+                if not proc or not proc.is_running():
+                    message = '现场三维采集已停止'
+                    self.set_result('stop_3d_mapping', True, message)
+                    self.publish_agent_operation_feedback(correlation or {}, True, 'succeeded', message)
+                    return
+                self.latest_mapping3d_status = {}
+                self.publish_3d_mapping_command('stop')
+                terminal = self.wait_for_mapping3d_terminal(8.0)
+                if terminal == 'timeout' or terminal not in ('succeeded', 'failed', 'idle', 'stopped'):
+                    self.stop_process('3d_capture')
+                success = terminal in ('succeeded', 'idle', 'stopped')
+                if terminal == 'timeout':
+                    success = not proc.is_running()
+                message = '现场三维采集已停止' if success else '现场三维采集停止失败'
+                self.set_result('stop_3d_mapping', success, message)
+                self.publish_agent_operation_feedback(correlation or {}, success, 'succeeded' if success else 'failed', message)
+        finally:
+            stop_event.clear()
 
     def reconstruct_3d_map(
         self,
@@ -2244,6 +2278,26 @@ class SystemSupervisorNode(Node):
         session_id: str = '',
         correlation: Optional[Dict[str, str]] = None,
     ) -> None:
+        if self._mapping3d_stop_event().is_set():
+            message = '三维采集正在停止，暂不启动重建'
+            self.set_result(command, False, message)
+            self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
+            return
+        with self._mapping3d_lock():
+            self._reconstruct_3d_map_locked(profile, command, session_id, correlation)
+
+    def _reconstruct_3d_map_locked(
+        self,
+        profile: str,
+        command: str,
+        session_id: str = '',
+        correlation: Optional[Dict[str, str]] = None,
+    ) -> None:
+        if self._mapping3d_stop_event().is_set():
+            message = '三维采集正在停止，暂不启动重建'
+            self.set_result(command, False, message)
+            self.publish_agent_operation_feedback(correlation or {}, False, 'failed', message)
+            return
         if profile not in {'fast_check', 'quality_safe', 'quality_plus'}:
             message = '三维重建 profile 不在允许列表'
             self.set_result(command, False, message)
@@ -2291,7 +2345,7 @@ class SystemSupervisorNode(Node):
         if proc and proc.is_running():
             message = '离线重建任务已在运行'
             self.set_result(command, True, message)
-            self.publish_agent_operation_feedback(correlation or {}, True, 'succeeded', message)
+            self.publish_agent_operation_feedback(correlation or {}, True, 'running', message)
             return
         reconstruct_root = getattr(self, 'mapping3d_reconstruct_dir', workspace_path('runs', '3d_reconstruct'))
         input_arg = f'session:={session_id}' if session_id else 'input:=latest'
@@ -2306,7 +2360,21 @@ class SystemSupervisorNode(Node):
         success = bool(success and proc and proc.is_running())
         message = '离线重建任务已启动' if success else '离线重建任务启动失败'
         self.set_result(command, success, message)
-        self.publish_agent_operation_feedback(correlation or {}, success, 'succeeded' if success else 'failed', message)
+        self.publish_agent_operation_feedback(correlation or {}, success, 'running' if success else 'failed', message)
+
+    def _mapping3d_lock(self) -> threading.Lock:
+        lock = getattr(self, 'mapping3d_operation_lock', None)
+        if lock is None:
+            lock = threading.Lock()
+            self.mapping3d_operation_lock = lock
+        return lock
+
+    def _mapping3d_stop_event(self) -> threading.Event:
+        event = getattr(self, 'mapping3d_stop_requested', None)
+        if event is None:
+            event = threading.Event()
+            self.mapping3d_stop_requested = event
+        return event
 
     def valid_reconstruct_session(self, session_id: str) -> bool:
         if not session_id or Path(session_id).name != session_id:

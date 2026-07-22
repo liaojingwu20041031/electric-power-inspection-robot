@@ -5,7 +5,7 @@ OPERATION_STATES = {
 }
 TERMINAL_OPERATION_STATES = {'succeeded', 'failed', 'canceled', 'timeout'}
 TOOL_RESULT_STATUSES = {
-    'sent', 'accepted', 'running', 'succeeded', 'failed', 'canceled', 'timeout',
+    'sent', 'accepted', 'running', 'submitted', 'succeeded', 'failed', 'canceled', 'timeout',
     'ok', 'warning', 'rejected',
 }
 LEGACY_OPERATION_STATES = {'done': 'succeeded', 'cancelled': 'canceled'}

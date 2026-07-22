@@ -86,6 +86,7 @@ class RobotStatusAggregator:
             'navigation': {'state': system.get('navigation_state', 'unknown'), 'profile': system.get('navigation_profile', 'unknown')},
             'patrol': {
                 'state': patrol.get('state', 'unknown'),
+                'route_id': patrol.get('route_id', ''),
                 'inspection_state': system.get('inspection_state', 'IDLE'),
                 'inspection_outcome': system.get('inspection_outcome', ''),
                 'target': patrol.get('target_id', ''),

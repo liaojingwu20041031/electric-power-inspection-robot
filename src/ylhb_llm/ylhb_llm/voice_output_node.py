@@ -1,6 +1,7 @@
 import itertools
 import os
 import queue
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -16,7 +17,7 @@ from ylhb_interfaces.msg import SayText, VoiceStatus
 
 from .patrol_voice import PatrolVoice, VoiceRequest
 from .qwen_client import QwenClient, QwenClientError
-from .voice_stability import safe_wav_duration_sec
+from .voice_stability import repair_wav_header, safe_wav_duration_sec
 
 
 def patrol_event_qos() -> QoSProfile:
@@ -48,6 +49,7 @@ class VoiceOutputNode(Node):
         self.declare_parameter('tts_model', 'qwen3-tts-flash')
         self.declare_parameter('tts_voice', 'Serena')
         self.declare_parameter('tts_language_type', 'Chinese')
+        self.declare_parameter('assistant_tts_tempo', 1.15)
         self.declare_parameter('request_timeout_sec', 5.0)
         self.declare_parameter('enable_tts_cache', True)
         self.declare_parameter('split_long_tts', True)
@@ -63,6 +65,8 @@ class VoiceOutputNode(Node):
         self.tts_model = self.get_parameter('tts_model').value
         self.tts_voice = str(self.get_parameter('tts_voice').value)
         self.tts_language_type = str(self.get_parameter('tts_language_type').value)
+        self.assistant_tts_tempo = min(
+            1.5, max(0.8, float(self.get_parameter('assistant_tts_tempo').value)))
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.enable_tts_cache = bool(self.get_parameter('enable_tts_cache').value)
         self.split_long_tts = bool(self.get_parameter('split_long_tts').value)
@@ -265,6 +269,7 @@ class VoiceOutputNode(Node):
                 ) as f:
                     f.write(audio)
                     audio_path = f.name
+            repair_wav_header(audio_path)
             time.sleep(0.25)
             if not self.playback_request_valid(generation, deadline):
                 return
@@ -358,11 +363,27 @@ class VoiceOutputNode(Node):
     def _start_audio_process(
         self, audio_path: str, task_id: str
     ) -> tuple[subprocess.Popen, float, float]:
-        cmd = ['aplay', '-q']
-        if self.audio_device and self.audio_device != 'default':
-            cmd.extend(['-D', self.audio_device])
-        cmd.append(audio_path)
         duration = safe_wav_duration_sec(audio_path)
+        tempo = (
+            float(getattr(self, 'assistant_tts_tempo', 1.0))
+            if task_id.startswith('assistant_chat_') else 1.0
+        )
+        sox = shutil.which('sox') if abs(tempo - 1.0) >= 0.01 else None
+        if sox:
+            cmd = [sox, '-q', audio_path]
+            if self.audio_device and self.audio_device != 'default':
+                cmd.extend(['-t', 'alsa', self.audio_device])
+            else:
+                cmd.append('-d')
+            cmd.extend(['tempo', '-s', f'{tempo:.3f}'])
+            duration /= tempo
+        else:
+            cmd = ['aplay', '-q']
+            if self.audio_device and self.audio_device != 'default':
+                cmd.extend(['-D', self.audio_device])
+            cmd.append(audio_path)
+            if abs(tempo - 1.0) >= 0.01:
+                self.get_logger().warn('未找到 sox，Agent 回复使用原始语速播放。')
         play_timeout = min(45.0, max(8.0, duration + 5.0))
         self.get_logger().info(
             f'音频播放开始：task_id={task_id}, device={self.audio_device}, '

@@ -29,6 +29,7 @@ class AgentOperation:
     accepted_at: float | None
     finished_at: float | None
     timeout_sec: float
+    idempotency_key: str = ''
     result: dict = field(default_factory=dict)
 
 
@@ -41,6 +42,7 @@ class AgentOperationManager:
         self._operations: Dict[str, AgentOperation] = {}
         self._order: deque[str] = deque()
         self._by_run_tool: Dict[tuple[str, str], str] = {}
+        self._by_idempotency_key: Dict[str, str] = {}
         self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
 
@@ -52,7 +54,12 @@ class AgentOperationManager:
         arguments: dict,
         timeout_sec: float,
         now: float | None = None,
+        idempotency_key: str = '',
     ) -> AgentOperation:
+        with self._lock:
+            existing_id = self._by_idempotency_key.get(idempotency_key) if idempotency_key else None
+            if existing_id:
+                return self._operations[existing_id]
         created_at = self.clock() if now is None else now
         operation = AgentOperation(
             operation_id=f'op_{uuid.uuid4().hex}',
@@ -65,17 +72,25 @@ class AgentOperationManager:
             accepted_at=None,
             finished_at=None,
             timeout_sec=float(timeout_sec),
+            idempotency_key=str(idempotency_key),
             result={'ok': True, 'status': 'created', 'message': '操作已创建'},
         )
         with self._changed:
+            existing_id = self._by_idempotency_key.get(idempotency_key) if idempotency_key else None
+            if existing_id:
+                return self._operations[existing_id]
             while len(self._order) >= self.max_operations:
                 old_id = self._order.popleft()
                 old = self._operations.pop(old_id, None)
                 if old is not None:
                     self._by_run_tool.pop((old.run_id, old.tool_call_id), None)
+                    if old.idempotency_key:
+                        self._by_idempotency_key.pop(old.idempotency_key, None)
             self._operations[operation.operation_id] = operation
             self._order.append(operation.operation_id)
             self._by_run_tool[(run_id, tool_call_id)] = operation.operation_id
+            if operation.idempotency_key:
+                self._by_idempotency_key[operation.idempotency_key] = operation.operation_id
             self._changed.notify_all()
         return operation
 
@@ -127,6 +142,11 @@ class AgentOperationManager:
     def find(self, run_id: str, tool_call_id: str) -> dict | None:
         with self._lock:
             operation_id = self._by_run_tool.get((run_id, tool_call_id))
+            return self.get(operation_id) if operation_id else None
+
+    def find_by_idempotency_key(self, idempotency_key: str) -> dict | None:
+        with self._lock:
+            operation_id = self._by_idempotency_key.get(str(idempotency_key))
             return self.get(operation_id) if operation_id else None
 
     def wait(self, operation_id: str, timeout_sec: float, poll_sec: float = 0.1) -> dict:

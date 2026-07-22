@@ -25,6 +25,7 @@ from ylhb_llm.voice_output_node import VoiceOutputNode
 from ylhb_llm.patrol_voice import VoiceRequest
 from ylhb_llm.voice_stability import (
     normalize_voice_text,
+    repair_wav_header,
     safe_wav_duration_sec,
 )
 
@@ -43,6 +44,28 @@ class VoiceStabilityTest(unittest.TestCase):
                 wav.setframerate(16000)
                 wav.writeframes(b'\x00\x00' * 16000)
             self.assertTrue(0.9 <= safe_wav_duration_sec(path) <= 1.1)
+        finally:
+            os.unlink(path)
+
+    def test_repair_wav_header_uses_actual_file_size(self):
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+            path = tmp.name
+        try:
+            with wave.open(path, 'wb') as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(24000)
+                wav.writeframes(b'\x00\x00' * 2400)
+            with open(path, 'r+b') as stream:
+                stream.seek(4)
+                stream.write((999999).to_bytes(4, 'little'))
+                stream.seek(40)
+                stream.write((999999).to_bytes(4, 'little'))
+
+            self.assertTrue(repair_wav_header(path))
+
+            with wave.open(path, 'rb') as wav:
+                self.assertEqual(wav.getnframes(), 2400)
         finally:
             os.unlink(path)
 
@@ -85,6 +108,26 @@ class VoiceStabilityTest(unittest.TestCase):
         node.tts_segment_max_chars = 10
 
         self.assertFalse(node.should_split_tts('assistant_chat_123', '很长的回答。' * 20))
+
+    def test_assistant_chat_playback_uses_configured_tempo_without_changing_pitch(self):
+        node = VoiceOutputNode.__new__(VoiceOutputNode)
+        node.audio_device = 'plughw:CARD=Luna,DEV=0'
+        node.assistant_tts_tempo = 1.15
+        node.get_logger = lambda: SimpleNamespace(info=lambda _msg: None, warn=lambda _msg: None)
+
+        with (
+            patch('ylhb_llm.voice_output_node.shutil.which', return_value='/usr/bin/sox'),
+            patch('ylhb_llm.voice_output_node.safe_wav_duration_sec', return_value=11.5),
+            patch('ylhb_llm.voice_output_node.subprocess.Popen') as popen,
+        ):
+            _proc, _timeout, duration = node._start_audio_process(
+                '/tmp/reply.wav', 'assistant_chat_1')
+
+        popen.assert_called_once_with([
+            '/usr/bin/sox', '-q', '/tmp/reply.wav',
+            '-t', 'alsa', 'plughw:CARD=Luna,DEV=0', 'tempo', '-s', '1.150',
+        ])
+        self.assertAlmostEqual(duration, 10.0)
 
     def test_tts_status_is_busy_during_synthesis(self):
         node = VoiceOutputNode.__new__(VoiceOutputNode)

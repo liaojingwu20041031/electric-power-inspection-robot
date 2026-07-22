@@ -687,6 +687,36 @@ def test_duplicate_inflight_long_command_does_not_start_second_handler(monkeypat
     assert node.inflight_commands == set()
 
 
+def test_system_command_log_records_source_and_correlation_without_user_text(monkeypatch):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.handle_command = Mock()
+    node.log_info = Mock()
+    threads = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            threads.append((target, args, daemon))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(system_supervisor_node.threading, 'Thread', FakeThread)
+    msg = String()
+    msg.data = json.dumps({
+        'command': 'emergency_stop', 'source': 'inspection_agent',
+        'request_id': 'req_1', 'run_id': 'run_1', 'operation_id': 'op_1',
+        'tool_call_id': 'call_1', 'text': '不要记录这段用户文本',
+    })
+
+    node.command_callback(msg)
+
+    logged = node.log_info.call_args.args[0]
+    assert logged == (
+        'system command: command=emergency_stop source=inspection_agent '
+        'request_id=req_1 run_id=run_1 operation_id=op_1 tool_call_id=call_1')
+    assert '用户文本' not in logged
+
+
 def test_cancel_patrol_only_forwards_cancel_without_stopping_processes():
     node = SystemSupervisorNode.__new__(SystemSupervisorNode)
     node.publish_patrol_command = Mock()
@@ -944,6 +974,97 @@ def test_start_3d_mapping_starts_process_then_publishes_start():
     node.start_process.assert_called_once_with('3d_capture')
     node.publish_3d_mapping_command.assert_not_called()
     node.set_result.assert_called_with('start_3d_mapping', True, '现场 SVO 采集已启动')
+
+
+def test_concurrent_3d_capture_start_only_starts_one_process():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    capture = FakeProcess(running=False)
+    node.patrol_mode_state = 'idle'
+    node.processes = {'3d_capture': capture}
+    node.mapping3d_operation_lock = threading.Lock()
+    node.mapping3d_stop_requested = threading.Event()
+    node.set_result = Mock()
+    node.publish_agent_operation_feedback = Mock()
+    node.start_process = Mock(side_effect=lambda _name: setattr(capture, '_running', True) or True)
+
+    threads = [threading.Thread(target=node.start_3d_mapping) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    node.start_process.assert_called_once_with('3d_capture')
+
+
+def test_capture_and_reconstruct_controls_do_not_run_concurrently(tmp_path):
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'idle'
+    node.processes = {'3d_capture': FakeProcess(running=True)}
+    node.mapping3d_output_dir = str(tmp_path)
+    node.mapping3d_operation_lock = threading.Lock()
+    node.mapping3d_stop_requested = threading.Event()
+    node.start_process = Mock()
+    node.set_result = Mock()
+    node.publish_agent_operation_feedback = Mock()
+
+    node.reconstruct_3d_map('quality_safe', 'reconstruct_3d_model')
+
+    node.start_process.assert_not_called()
+    assert '3d_capture' in node.set_result.call_args.args[2]
+
+
+def test_concurrent_reconstruct_only_creates_one_process(tmp_path):
+    capture = tmp_path / 'capture_1'
+    capture.mkdir()
+    svo = capture / 'capture.svo2'
+    svo.write_bytes(b'svo')
+    metadata = capture / 'metadata.json'
+    metadata.write_text(json.dumps({
+        'session_id': 'capture_1', 'svo_file': str(svo), 'metadata_file': str(metadata),
+    }), encoding='utf-8')
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.patrol_mode_state = 'idle'
+    node.processes = {'3d_capture': FakeProcess(running=False)}
+    node.mapping3d_output_dir = str(tmp_path)
+    node.mapping3d_reconstruct_dir = str(tmp_path / 'reconstruct')
+    node.mapping3d_operation_lock = threading.Lock()
+    node.mapping3d_stop_requested = threading.Event()
+    node.set_result = Mock()
+    node.publish_agent_operation_feedback = Mock()
+
+    def start_process(_name):
+        node.processes['3d_reconstruct'] = FakeProcess(running=True)
+        return True
+
+    node.start_process = Mock(side_effect=start_process)
+    threads = [
+        threading.Thread(
+            target=node.reconstruct_3d_map,
+            args=('quality_safe', 'reconstruct_3d_model', 'capture_1'),
+        )
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    node.start_process.assert_called_once_with('3d_reconstruct')
+
+
+def test_stop_3d_mapping_is_repeatable():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'3d_capture': FakeProcess(running=False)}
+    node.mapping3d_operation_lock = threading.Lock()
+    node.mapping3d_stop_requested = threading.Event()
+    node.set_result = Mock()
+    node.publish_agent_operation_feedback = Mock()
+
+    node.stop_3d_mapping()
+    node.stop_3d_mapping()
+
+    assert node.set_result.call_count == 2
+    assert all(call.args == ('stop_3d_mapping', True, '现场三维采集已停止') for call in node.set_result.call_args_list)
 
 
 def test_stop_3d_mapping_stops_svo_capture_process():
@@ -1684,7 +1805,7 @@ def test_3d_capture_operation_feedback_reports_started_not_completed():
 
     node.publish_agent_operation_feedback.assert_called_once_with(
         {'run_id': 'run_1', 'operation_id': 'op_1', 'tool_call_id': 'call_1'},
-        True, 'succeeded', '现场三维采集已启动',
+        True, 'running', '现场三维采集已启动',
     )
 
 
@@ -1721,7 +1842,7 @@ def test_3d_stop_and_reconstruct_publish_terminal_operation_feedback(tmp_path):
         True, 'succeeded', '现场三维采集已停止',
     )
     assert node.publish_agent_operation_feedback.call_args_list[1].args[1:4] == (
-        True, 'succeeded', '离线重建任务已启动',
+        True, 'running', '离线重建任务已启动',
     )
 
 
@@ -1746,6 +1867,9 @@ def test_upload_submission_is_allowed_during_patrol_and_reports_submitted(tmp_pa
 
     assert len(node.scene_upload_command_pub.messages) == 1
     node.set_result.assert_called_with('enqueue_scene_upload', True, '上传任务已提交')
+    assert node.publish_agent_operation_feedback.call_args.args[1:4] == (
+        True, 'submitted', '上传任务已提交',
+    )
 
 
 @pytest.mark.parametrize(('patrol_state', 'expected'), [

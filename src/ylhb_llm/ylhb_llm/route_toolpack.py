@@ -117,7 +117,23 @@ class RouteToolPack:
 
     def describe_route(self, route_id: str) -> Dict[str, Any]:
         route = self.catalog.route(route_id)
-        return {**route, "targets": self.route_targets(route["id"])}
+        targets = self.route_targets(route["id"])
+        return {
+            **route,
+            "targets": targets,
+            "inspection_configured": any(target["inspection_items"] for target in targets),
+        }
+
+    def inspection_configured(self, route_id: str = '') -> bool:
+        selected = route_id or str(self.catalog.data.get('active_route_id') or '')
+        if not selected:
+            return False
+        try:
+            return any(
+                target.get('inspection_items') for target in self.catalog.route_targets(selected)
+            )
+        except ValueError:
+            return False
 
     def route_targets(self, route_id: str) -> List[Dict[str, Any]]:
         return [

@@ -808,7 +808,9 @@ class VoiceSessionNode(Node):
             self.stop_session('语音模式已关闭。', say=False)
         self.voice_operation_feedback = {
             'operation_id': str(payload.get('operation_id') or ''),
+            'run_id': str(payload.get('run_id') or ''),
             'tool_call_id': str(payload.get('tool_call_id') or ''),
+            'idempotency_key': str(payload.get('idempotency_key') or ''),
             'state': 'succeeded',
             'status': 'succeeded',
             'result_status': 'succeeded',

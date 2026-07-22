@@ -1,6 +1,6 @@
 capabilities:
   search_robot_help:
-    description: 查询本项目使用手册和运维文档；回答如何使用、如何连接、如何建图、如何巡逻等项目问题时使用
+    description: 查询本项目使用手册和运维文档；回答如何使用、怎么连接、怎么巡逻、怎么进行三维采集与重建、操作步骤和使用说明时使用；检索结果仅作内部依据，最终回答必须重写成自然简体中文指导
     risk_level: read_only
     executor: knowledge
     side_effect: none
@@ -12,7 +12,7 @@ capabilities:
         query: {type: string}
       required: [query]
   get_connection_info:
-    description: 读取机器人当前网络接口、可用APP地址、Mobile Bridge、本地APP服务和云连接状态
+    description: 读取当前网络、当前 APP 地址、Mobile Bridge 是否可达，以及当前是否具备机器人端连接条件
     risk_level: read_only
     executor: connection
     side_effect: none
@@ -24,7 +24,7 @@ capabilities:
         target: {type: string, enum: [all, local_app, cloud]}
       required: []
   run_self_check:
-    description: 基于实时ROS、Supervisor、底盘、传感器、网络和进程状态执行只读自检
+    description: 检查机器人状态、是否正常、是否具备巡逻条件和当前故障；基于实时 ROS、Supervisor、底盘、传感器、网络和进程状态执行只读自检
     risk_level: read_only
     executor: diagnostic
     side_effect: none
@@ -77,7 +77,7 @@ capabilities:
     argument_schema: {properties: {}, required: []}
   start_component:
     description: 仅在目标运动工具返回 precondition_failed 且 recovery_components=[bringup] 后启动 bringup；不能独立启动，也不能启动 navigation 或 patrol_executor；组件就绪不代表目标动作成功
-    model_visible: true
+    model_visible: false
     risk_level: system_control
     executor: system
     side_effect: component_lifecycle
@@ -89,6 +89,34 @@ capabilities:
       properties:
         component: {type: string, enum: [bringup]}
       required: [component]
+  prepare_robot_runtime:
+    description: 请求 Supervisor 准备通用机器人运行环境；仅表示准备过程完成，不代表后续运动或巡逻成功
+    model_visible: true
+    risk_level: system_control
+    executor: system
+    command: prepare_robot_runtime
+    side_effect: runtime_prepare
+    conflict_group: robot_runtime
+    terminal_states: [succeeded, failed, rejected, timeout]
+    requires_confirmation: false
+    preconditions: []
+    timeout_sec: 45.0
+    result_schema: {status: [accepted, running, succeeded, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
+  release_robot_runtime:
+    description: RuntimeLease 内部回收机器人运行环境
+    model_visible: false
+    risk_level: system_control
+    executor: system
+    command: release_robot_runtime
+    side_effect: runtime_cleanup
+    conflict_group: robot_runtime
+    terminal_states: [succeeded, failed, rejected, timeout]
+    requires_confirmation: false
+    preconditions: []
+    timeout_sec: 20.0
+    result_schema: {status: [accepted, succeeded, failed, timeout]}
+    argument_schema: {properties: {}, required: []}
   stop_component:
     description: 停止本轮 Agent 实际启动且已不再需要的通用组件
     model_visible: false
@@ -132,6 +160,8 @@ capabilities:
     command: rotate_relative
     topic_role: base_skill_command
     side_effect: robot_motion
+    conflict_group: robot_motion
+    terminal_states: [succeeded, failed, canceled, timeout]
     requires_confirmation: false
     preconditions: [robot_ready, chassis_online, sensor_fresh]
     timeout_sec: 20.0
@@ -147,6 +177,8 @@ capabilities:
     command: move_relative
     topic_role: base_skill_command
     side_effect: robot_motion
+    conflict_group: robot_motion
+    terminal_states: [succeeded, failed, canceled, timeout]
     requires_confirmation: false
     preconditions: [robot_ready, chassis_online, sensor_fresh]
     timeout_sec: 12.0
@@ -164,6 +196,8 @@ capabilities:
       profile: inspection
     topic_role: system_command
     side_effect: robot_navigation
+    conflict_group: robot_navigation
+    terminal_states: [failed, canceled, timeout]
     requires_confirmation: false
     preconditions: [no_active_patrol]
     timeout_sec: 14400.0
@@ -188,6 +222,8 @@ capabilities:
     command: go_to_checkpoint
     topic_role: system_command
     side_effect: robot_navigation
+    conflict_group: robot_navigation
+    terminal_states: [succeeded, failed, canceled, timeout]
     requires_confirmation: false
     preconditions: [no_active_patrol]
     timeout_sec: 120.0
@@ -200,6 +236,7 @@ capabilities:
     command: pause_patrol
     topic_role: system_command
     side_effect: patrol_control
+    conflict_group: robot_navigation
     requires_confirmation: false
     preconditions: [active_patrol]
     timeout_sec: 15.0
@@ -212,6 +249,7 @@ capabilities:
     command: resume_patrol
     topic_role: system_command
     side_effect: patrol_control
+    conflict_group: robot_navigation
     requires_confirmation: false
     preconditions: [paused_patrol, robot_ready]
     timeout_sec: 15.0
@@ -224,6 +262,8 @@ capabilities:
     command: cancel_patrol
     topic_role: system_command
     side_effect: patrol_cancel
+    conflict_group: robot_navigation
+    terminal_states: [canceled, failed, timeout]
     requires_confirmation: false
     preconditions: []
     timeout_sec: 15.0
@@ -277,6 +317,7 @@ capabilities:
     requires_confirmation: false
     preconditions: []
     timeout_sec: 1.0
+    freshness_ttl_sec: 5.0
     result_schema: {status: [ok, failed]}
     argument_schema: {properties: {}, required: []}
   get_robot_summary:
@@ -287,6 +328,7 @@ capabilities:
     requires_confirmation: false
     preconditions: []
     timeout_sec: 1.0
+    freshness_ttl_sec: 5.0
     result_schema: {status: [ok, failed]}
     argument_schema: {properties: {}, required: []}
   get_patrol_status:
@@ -297,6 +339,7 @@ capabilities:
     requires_confirmation: false
     preconditions: []
     timeout_sec: 1.0
+    freshness_ttl_sec: 5.0
     result_schema: {status: [ok, failed]}
     argument_schema: {properties: {}, required: []}
   get_3d_status:
@@ -306,6 +349,7 @@ capabilities:
     side_effect: none
     preconditions: []
     timeout_sec: 1.0
+    freshness_ttl_sec: 5.0
     result_schema: {status: [ok, failed]}
     argument_schema: {properties: {}, required: []}
   list_3d_assets:
@@ -323,6 +367,8 @@ capabilities:
     executor: system
     command: start_3d_mapping
     side_effect: mapping3d_capture
+    conflict_group: mapping3d_capture
+    terminal_states: [failed, canceled, timeout]
     preconditions: [no_active_patrol]
     timeout_sec: 30.0
     result_schema: {status: [succeeded, failed, timeout]}
@@ -333,6 +379,8 @@ capabilities:
     executor: system
     command: stop_3d_mapping
     side_effect: mapping3d_capture
+    conflict_group: mapping3d_capture
+    terminal_states: [succeeded, failed, canceled, timeout]
     preconditions: []
     timeout_sec: 15.0
     result_schema: {status: [succeeded, failed, timeout]}
@@ -343,6 +391,8 @@ capabilities:
     executor: system
     command: reconstruct_3d_model
     side_effect: mapping3d_reconstruct
+    conflict_group: mapping3d_reconstruct
+    terminal_states: [failed, canceled, timeout]
     preconditions: [no_active_patrol]
     timeout_sec: 30.0
     result_schema: {status: [succeeded, failed, timeout]}
@@ -357,9 +407,11 @@ capabilities:
     executor: system
     command: enqueue_scene_upload
     side_effect: scene_upload
+    conflict_group: scene_upload
+    terminal_states: [submitted, failed, rejected, timeout]
     preconditions: []
     timeout_sec: 15.0
-    result_schema: {status: [succeeded, failed, timeout]}
+    result_schema: {status: [submitted, failed, timeout]}
     argument_schema:
       properties:
         session_id: {type: string}
@@ -400,8 +452,8 @@ capabilities:
     result_schema: {status: [ok, failed]}
     argument_schema: {properties: {}, required: []}
   generate_local_status_reply:
-    description: 仅用于普通问答、解释或澄清，不执行任何机器人动作；用户明确要求运动、巡逻或停止时不得选择本工具
-    model_visible: true
+    description: 仅供 Agent 内部处理空输入、异常和已有工具结果后的最终回答包装，不作为模型第一步工具
+    model_visible: false
     risk_level: read_only
     executor: local
     side_effect: none

@@ -35,19 +35,22 @@ def test_system_prompt_requires_evidence_and_feedback_after_actions():
     prompt = spec.system_prompt()
 
     for requirement in (
-        '优先调用用户要求的业务目标工具',
-        '检查目标工具 preconditions',
-        'recovery_components=[bringup]',
-        '重试同一目标',
-        'sent/accepted/running 都不等于任务完成',
-        '同一目标取得终态后不得再次执行',
-        '组件准备不能作为动作成功证据',
-        'Supervisor 内部准备',
-        '最终答案只能来自真实 ToolResult',
+        '自主选择工具',
+        '只依据 Observation',
+        '准备运行环境',
+        '串行调用',
+        '不得并发调用冲突组',
+        'accepted、running、submitted 都不等于 succeeded',
+        '最终答案必须引用真实 Observation',
         '自然简体中文',
         '三维采集启动不代表 SVO 已保存',
         '重建启动不代表 PLY 已生成',
         '上传任务提交不代表平台上传成功',
         'get_recent_inspection_results',
+        '路径、标题和文档片段只作内部依据',
+        '实际可执行且足以完成目标的步骤',
+        '步骤数量按任务复杂度决定',
+        '不得为了简短而省略前置条件',
+        '第一句话就给出用户可以执行的操作',
     ):
         assert requirement in prompt

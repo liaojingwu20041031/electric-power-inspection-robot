@@ -5,6 +5,7 @@ from ylhb_llm.skill_toolpack import SkillToolPack
 
 
 ROUTE_PATH = Path(__file__).resolve().parents[3] / "maps" / "route_patrol_001.json"
+UNCONFIGURED_ROUTE_PATH = ROUTE_PATH.with_name('route_patrol_002.json')
 
 
 def test_route_toolpack_builds_catalog_from_route_file():
@@ -56,3 +57,20 @@ def test_start_route_schema_preserves_fixed_arguments():
     ).tool_schemas()
 
     assert schemas['start_route']['fixed_arguments'] == {'profile': 'inspection'}
+    assert schemas['generate_local_status_reply']['model_visible'] is False
+    assert '怎么进行三维采集与重建' in schemas['search_robot_help']['description']
+    assert '是否具备巡逻条件' in schemas['run_self_check']['description']
+    assert '机器人端连接条件' in schemas['get_connection_info']['description']
+
+
+def test_describe_route_reports_whether_inspection_items_are_configured():
+    configured = RouteToolPack(RouteCatalog({
+        'active_route_id': 'route_1',
+        'routes': [{'id': 'route_1', 'target_ids': ['target_1']}],
+        'targets': [{'id': 'target_1', 'inspection_items': ['设备外观']}],
+    }))
+    unconfigured = RouteToolPack(RouteCatalog.from_file(str(UNCONFIGURED_ROUTE_PATH)))
+
+    assert configured.describe_route('route_1')['inspection_configured'] is True
+    assert unconfigured.describe_route(
+        unconfigured.catalog.data['active_route_id'])['inspection_configured'] is False

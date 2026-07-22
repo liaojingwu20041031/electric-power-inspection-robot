@@ -103,9 +103,10 @@ class InspectionAgentNode(Node):
         self.declare_parameter('local_app_status_topic', '/mobile_bridge/local_app_status')
         self.declare_parameter('cloud_status_topic', '/mobile_bridge/cloud_status')
         self.declare_parameter('imu_topic', '/imu/data')
-        self.declare_parameter('max_agent_steps', 12)
+        self.declare_parameter('max_agent_steps', 24)
         self.declare_parameter('max_side_effect_tools_per_turn', 4)
         self.declare_parameter('max_identical_tool_calls', 2)
+        self.declare_parameter('runtime_lease_idle_sec', 60.0)
 
         self.state = AgentState()
         self.status_default_max_age_sec = float(self.get_parameter('status_default_max_age_sec').value)
@@ -228,6 +229,7 @@ class InspectionAgentNode(Node):
             max_steps=int(self.get_parameter('max_agent_steps').value),
             max_side_effect_tools_per_turn=int(self.get_parameter('max_side_effect_tools_per_turn').value),
             max_identical_tool_calls=int(self.get_parameter('max_identical_tool_calls').value),
+            runtime_lease_idle_sec=float(self.get_parameter('runtime_lease_idle_sec').value),
         )
 
         self._worker = threading.Thread(target=self.agent_worker, name='inspection-agent-worker', daemon=True)
@@ -236,6 +238,7 @@ class InspectionAgentNode(Node):
             max(0.05, float(self.get_parameter('operation_poll_sec').value)),
             self.poll_pending_operation,
         )
+        self.create_timer(5.0, self.agent_runtime.reap_runtime_lease)
         if self.enable_agent_health_monitor:
             self.create_timer(
                 max(0.5, float(self.get_parameter('health_monitor_interval_sec').value)),
@@ -331,10 +334,27 @@ class InspectionAgentNode(Node):
             role = str(turn.get('role') or 'assistant')
             display_text = str(
                 turn.get('display_text') or turn.get('assistant_text') or result.get('message') or '')
+            observations = list(turn.get('observations') or [])
+            tool_names = list(dict.fromkeys(
+                str(item.get('tool_name') or '') for item in observations
+                if item.get('tool_name')
+            ))
+            chat_raw = dict(result)
+            if observations:
+                chat_raw['observations'] = observations
+            visible_tools = ', '.join(tool_names)
             if role == 'system':
-                self.publish_chat(make_agent_chat('system', display_text, turn_id, client_msg_id, status=str(result.get('status') or ''), raw=result))
+                self.publish_chat(make_agent_chat(
+                    'system', display_text, turn_id, client_msg_id,
+                    tool_name=visible_tools, status=str(result.get('status') or ''),
+                    raw=chat_raw))
             else:
-                self.publish_chat(make_agent_chat('assistant', display_text, turn_id, client_msg_id, intent=str(decision.get('intent') or ''), tool_name=str((decision.get('tool_call') or {}).get('name') or ''), status=str(result.get('status') or ''), raw=result))
+                self.publish_chat(make_agent_chat(
+                    'assistant', display_text, turn_id, client_msg_id,
+                    intent=str(decision.get('intent') or ''),
+                    tool_name=visible_tools or str(
+                        (decision.get('tool_call') or {}).get('name') or ''),
+                    status=str(result.get('status') or ''), raw=chat_raw))
             speak = (decision.get('speak') or {}).get('text')
             if speak and not self.voice_request_stopped(request):
                 self.tools.say(decision)

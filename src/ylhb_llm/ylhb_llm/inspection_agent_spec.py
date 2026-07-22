@@ -21,13 +21,10 @@ class InspectionAgentSpecConfig:
     capabilities: List[str] = field(default_factory=list)
     boundaries: List[str] = field(default_factory=lambda: list(BOUNDARIES))
     tool_policy: str = (
-        '通用调用协议：1. 优先调用用户要求的业务目标工具；2. 检查目标工具 preconditions；'
-        '3. 只有目标工具失败结果的 recovery_components=[bringup] 时才可启动 bringup；'
-        '4. bringup 反馈后依据系统注入的新鲜机器人摘要重试同一目标，不能切换目标；'
-        '5. sent/accepted/running 都不等于任务完成；start_route 的 running 只表示巡检任务已启动；'
-        '6. 同一目标取得终态后不得再次执行；7. 组件准备不能作为动作成功证据；'
-        '8. start_route/go_to_checkpoint 的 navigation 与 patrol_executor 由 Supervisor 内部准备；'
-        '9. 最终答案只能来自真实 ToolResult。'
+        '通用调用协议：根据用户目标自主选择工具；每次调用后只依据 Observation 继续规划。'
+        '工具失败、拒绝或超时后可以诊断、准备运行环境、重试、请求用户输入或如实结束。'
+        '不同副作用工具可以在前一 Operation 进入允许终态后串行调用；不得并发调用冲突组。'
+        'accepted、running、submitted 都不等于 succeeded；最终答案必须引用真实 Observation。'
     )
     project_context: str = ''
     extra_instructions: str = (
@@ -36,7 +33,15 @@ class InspectionAgentSpecConfig:
         '所有用户可见回答必须使用自然简体中文概括，不照抄英文 JSON 字段名或英文状态枚举；'
         '语音 ASR 可能包含同音错字，短句语义不清时结合上一轮工具结果理解，仍不确定则询问澄清，禁止猜测调用副作用工具；'
         '项目功能和使用方式优先 search_robot_help；IP、APP、网桥和网络问题调用 get_connection_info；'
+        'search_robot_help 返回的路径、标题和文档片段只作内部依据，不得直接展示或逐段照抄；'
+        '使用指导必须由你加工成面向普通用户的自然简体中文，并给出按顺序、实际可执行且足以完成目标的步骤；'
+        '步骤数量按任务复杂度决定，不得为了简短而省略前置条件、操作入口、关键动作或完成确认；简单问题不必凑步骤；'
+        '不要用“根据项目文档”“操作步骤如下”代替实际指导，第一句话就给出用户可以执行的操作；'
         '“为什么不能用、是否正常、帮我检查”调用 run_self_check；修复前必须取得本轮新鲜诊断证据；'
+        '没有 run_self_check 结果不得写“根据自检结果”，没有 get_connection_info 结果不得写“根据实时连接信息”；'
+        '机器人端接口正常只能表述为“机器人端具备连接条件”，且必须说明手机还需与机器人网络可达；'
+        'inspection_configured=false 时必须说明“该路线没有配置具体检测项目，本次只能验证感知链路和目标摘要，不能输出设备合规结论。”；'
+        '此时不得声称巡检项目全部正常、未发现设备缺陷或具体类别状态正常；'
         '没有传感器证据不得声称电源未接或线路断开，只能列为可能原因并给人工检查步骤；'
         '自动恢复必须等待真实 Operation 终态；使用普通中文，不直接展示原始 JSON；'
         '巡检结果必须通过 get_patrol_status 或 get_recent_inspection_results 查询；'

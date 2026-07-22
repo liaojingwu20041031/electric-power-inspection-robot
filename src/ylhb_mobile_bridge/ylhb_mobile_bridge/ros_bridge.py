@@ -1451,7 +1451,7 @@ class MobileRosBridge(Node):
                 context.update({'active_task_id': task_id, 'active_route_revision_id': str(command.get('routeRevisionId') or ''), 'active_route_path': str(command.get('routePath') or ''), 'active_map_yaml_path': str(command.get('mapYamlPath') or ''), 'executor_route_id': str(command.get('executorRouteId') or '')})
             self.set_platform_context(context)
             try:
-                self.publish_system_command(mapping[command_type], command_id=command_id, request_id=request_id, execution_id=execution_id, deployment_id=deployment_id, profile=str(command.get('profile') or 'inspection'), **context)
+                self.publish_system_command(mapping[command_type], source='platform', command_id=command_id, request_id=request_id, execution_id=execution_id, deployment_id=deployment_id, profile=str(command.get('profile') or 'inspection'), **context)
             except Exception as exc:
                 self._record_cloud_queue_result(command, 'FAILED', 'command_failed', 'ROS_PUBLISH_FAILED', str(exc))
                 continue

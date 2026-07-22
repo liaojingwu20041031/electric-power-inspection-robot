@@ -128,6 +128,22 @@ class AgentTools:
             self.publish_event(result)
             return result
 
+        idempotency_key = str(decision.get('idempotency_key') or '')
+        existing = (
+            self.operation_manager.find_by_idempotency_key(idempotency_key)
+            if self.operation_manager is not None and idempotency_key else None
+        )
+        if existing is not None:
+            result = dict(existing.get('result') or {})
+            result.setdefault('tool_name', name)
+            result['data'] = {
+                **(result.get('data') or {}),
+                'operation_id': existing['operation_id'],
+                'operation_state': existing['state'],
+                'idempotency_key': idempotency_key,
+            }
+            return result
+
         operation = self._create_operation(decision, args)
         if operation is not None:
             decision = {**decision, 'operation_id': operation.operation_id}
@@ -156,7 +172,12 @@ class AgentTools:
                 operation = self.operation_manager.update(operation.operation_id, 'failed', result)
             result = {
                 **result,
-                'data': {**(result.get('data') or {}), 'operation_id': operation.operation_id, 'operation_state': operation.state},
+                'data': {
+                    **(result.get('data') or {}),
+                    'operation_id': operation.operation_id,
+                    'operation_state': operation.state,
+                    'idempotency_key': operation.idempotency_key,
+                },
             }
         self.publish_event(result)
         return result
@@ -178,6 +199,7 @@ class AgentTools:
                    if decision.get('target_operation_id') else {}),
             },
             float(schema.get('timeout_sec') or 15.0),
+            idempotency_key=str(decision.get('idempotency_key') or ''),
         )
 
     @staticmethod
@@ -188,6 +210,7 @@ class AgentTools:
             'operation_id': str(decision.get('operation_id') or ''),
             'tool_call_id': str(decision.get('tool_call_id') or ''),
             'target_operation_id': str(decision.get('target_operation_id') or ''),
+            'idempotency_key': str(decision.get('idempotency_key') or ''),
         }
 
     def _execute_system(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
@@ -228,7 +251,11 @@ class AgentTools:
             if not matching:
                 return tool_result(name, False, 'rejected', '缺少本轮可恢复诊断证据', error_code='fresh_diagnostic_required')
             args = {**args, 'diagnostic_id': str(report.get('diagnostic_id') or '')}
-        if name in COMPONENT_TOOLS:
+        if name == 'prepare_robot_runtime':
+            command = 'prepare_robot_runtime'
+        elif name == 'release_robot_runtime':
+            command = 'release_robot_runtime'
+        elif name in COMPONENT_TOOLS:
             component = str(args.get('component') or '')
             command = f'{"start" if name == "start_component" else "stop"}_{component}'
         else:
@@ -256,7 +283,7 @@ class AgentTools:
         if self.knowledge_index is None:
             return tool_result(name, False, 'failed', '项目文档索引不可用')
         results = self.knowledge_index.search(str(args.get('query') or ''))
-        return tool_result(name, True, 'ok', '已查询项目文档', {'results': results})
+        return tool_result(name, True, 'ok', '已取得内部使用指导依据', {'results': results})
 
     def _execute_connection(self, decision: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
         name = str(decision['tool_call']['name'])
@@ -304,7 +331,11 @@ class AgentTools:
         if name == 'get_system_status':
             return tool_result(name, True, 'ok', 'system status', self.state.system_status)
         if name == 'get_patrol_status':
-            return tool_result(name, True, 'ok', 'patrol status', self.state.patrol_status)
+            data = dict(self.state.patrol_status)
+            if self.route_toolpack is not None:
+                data['inspection_configured'] = self.route_toolpack.inspection_configured(
+                    str(data.get('route_id') or ''))
+            return tool_result(name, True, 'ok', 'patrol status', data)
         if name == 'get_voice_status':
             return tool_result(name, True, 'ok', 'voice status', self.state.voice_status)
         if name == 'get_3d_status':
@@ -332,7 +363,14 @@ class AgentTools:
                 return tool_result(name, False, 'failed', 'robot status aggregator unavailable')
             summarize = getattr(
                 self.status_aggregator, 'mode_aware_summary', self.status_aggregator.summary)
-            return tool_result(name, True, 'ok', '机器人状态摘要', summarize())
+            data = summarize()
+            if self.route_toolpack is not None:
+                patrol = data.setdefault('patrol', {})
+                route_id = str(
+                    patrol.get('route_id') or self.state.patrol_status.get('route_id') or '')
+                patrol['inspection_configured'] = self.route_toolpack.inspection_configured(route_id)
+                data['inspection_configured'] = patrol['inspection_configured']
+            return tool_result(name, True, 'ok', '机器人状态摘要', data)
         if self.route_toolpack and name == 'list_routes':
             return tool_result(name, True, 'ok', 'routes', {'routes': self.route_toolpack.list_routes()})
         if self.route_toolpack and name == 'describe_route':

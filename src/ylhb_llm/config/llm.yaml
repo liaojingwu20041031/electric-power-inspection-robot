@@ -242,6 +242,7 @@ voice_output_node:
     tts_model: qwen3-tts-flash
     tts_voice: Serena
     tts_language_type: Chinese
+    assistant_tts_tempo: 1.15
     request_timeout_sec: 10.0
     enable_tts_cache: true
     split_long_tts: true

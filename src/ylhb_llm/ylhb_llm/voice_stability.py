@@ -1,6 +1,38 @@
+import struct
 import wave
 from pathlib import Path
 from typing import Optional
+
+
+def repair_wav_header(audio_path: str) -> bool:
+    try:
+        size = Path(audio_path).stat().st_size
+        if size < 44 or size > 0xFFFFFFFF:
+            return False
+        with open(audio_path, 'r+b') as stream:
+            if stream.read(4) != b'RIFF':
+                return False
+            stream.seek(8)
+            if stream.read(4) != b'WAVE':
+                return False
+            stream.seek(4)
+            stream.write(struct.pack('<I', size - 8))
+            offset = 12
+            while offset + 8 <= size:
+                stream.seek(offset)
+                chunk_id = stream.read(4)
+                chunk_size_raw = stream.read(4)
+                if len(chunk_size_raw) != 4:
+                    return False
+                chunk_size = struct.unpack('<I', chunk_size_raw)[0]
+                if chunk_id == b'data':
+                    stream.seek(offset + 4)
+                    stream.write(struct.pack('<I', size - offset - 8))
+                    return True
+                offset += 8 + chunk_size + (chunk_size & 1)
+    except OSError:
+        return False
+    return False
 
 
 def normalize_voice_text(text: str) -> str:

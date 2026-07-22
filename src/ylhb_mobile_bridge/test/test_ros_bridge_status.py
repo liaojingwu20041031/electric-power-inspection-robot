@@ -628,6 +628,16 @@ def test_system_and_patrol_commands_publish_json_and_plain_command():
     assert bridge._patrol_command_pub.messages[-1].data == "pause"
 
 
+def test_platform_system_command_overrides_mobile_bridge_source():
+    bridge = make_velocity_bridge()
+
+    bridge.publish_system_command('pause_patrol', source='platform', request_id='request-1')
+
+    payload = json.loads(bridge._system_command_pub.messages[-1].data)
+    assert payload['source'] == 'platform'
+    assert payload['request_id'] == 'request-1'
+
+
 def test_cloud_command_is_dispatched_only_after_ros_publish():
     bridge = make_velocity_bridge()
     bridge._cloud_command_queue = queue.Queue()

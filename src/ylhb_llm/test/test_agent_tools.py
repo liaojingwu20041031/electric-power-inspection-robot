@@ -226,6 +226,40 @@ def test_get_robot_summary_reuses_status_aggregator():
     assert result['data']['robot_mode'] == 'ready'
 
 
+def test_patrol_status_and_robot_summary_include_inspection_configuration():
+    route_toolpack = RouteToolPack(RouteCatalog({
+        'active_route_id': 'route_1',
+        'routes': [{'id': 'route_1', 'target_ids': ['target_1']}],
+        'targets': [{'id': 'target_1', 'inspection_items': []}],
+    }))
+    state = SimpleNamespace(
+        system_status={}, voice_status={}, patrol_status={'route_id': 'route_1', 'state': 'idle'})
+    aggregator = RobotStatusAggregator(clock=lambda: 10.0)
+    aggregator.update('system_status', {'mode': 'ready'}, now=10.0)
+    aggregator.update('patrol_status', state.patrol_status, now=10.0)
+    tools = AgentTools(
+        SimpleNamespace(), state, FakePub(), FakePub(), FakePub(), FakePub(),
+        route_toolpack=route_toolpack, status_aggregator=aggregator,
+        tool_schemas={
+            'get_patrol_status': {'executor': 'local'},
+            'get_robot_summary': {'executor': 'local'},
+        },
+    )
+
+    patrol = tools.execute(
+        {'tool_call': {'name': 'get_patrol_status', 'arguments': {}}},
+        SimpleNamespace(allowed=True),
+    )
+    summary = tools.execute(
+        {'tool_call': {'name': 'get_robot_summary', 'arguments': {}}},
+        SimpleNamespace(allowed=True),
+    )
+
+    assert patrol['data']['inspection_configured'] is False
+    assert summary['data']['inspection_configured'] is False
+    assert summary['data']['patrol']['inspection_configured'] is False
+
+
 def test_3d_read_only_tools_return_existing_system_fields():
     state = SimpleNamespace(
         system_status={
