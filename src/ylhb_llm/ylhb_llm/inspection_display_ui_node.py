@@ -11,7 +11,7 @@ os.environ.setdefault('QT_QUICK_BACKEND', 'software')
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from PyQt5.QtCore import QTimer, QUrl
-from PyQt5.QtGui import QGuiApplication
+from PyQt5.QtGui import QGuiApplication, QIcon
 from rclpy.executors import SingleThreadedExecutor
 
 from .ui_backend import UiBackend
@@ -83,6 +83,11 @@ def main(args: Optional[List[str]] = None) -> None:
         return
     rclpy.init(args=args)
     app = QGuiApplication(sys.argv[:1])
+    icon_path = os.path.join(
+        get_package_share_directory('ylhb_llm'), 'UI_sc', 'UI图标.png'
+    )
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     shutdown_requested = threading.Event()
     signal.signal(signal.SIGINT, lambda *_args: shutdown_requested.set())
     signal.signal(signal.SIGTERM, lambda *_args: shutdown_requested.set())

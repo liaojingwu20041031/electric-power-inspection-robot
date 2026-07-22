@@ -24,6 +24,7 @@ setup(
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
         ('share/' + package_name + '/assets/audio', glob('assets/audio/*.wav')),
+        ('share/' + package_name + '/UI_sc', glob('../../UI_sc/*.png')),
     ] + qml_data_files(),
     install_requires=['setuptools'],
     zip_safe=True,

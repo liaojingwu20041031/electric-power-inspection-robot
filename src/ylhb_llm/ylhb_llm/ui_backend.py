@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from ament_index_python.packages import get_package_share_directory
 from PyQt5.QtCore import QObject, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QGuiApplication
 
@@ -923,8 +924,7 @@ class UiBackend(QObject):
 
     @pyqtSlot(str, result=str)
     def assetPath(self, filename: str) -> str:
-        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-        path = os.path.join(root, 'UI_sc', filename)
+        path = os.path.join(get_package_share_directory('ylhb_llm'), 'UI_sc', filename)
         return 'file://' + path if os.path.exists(path) else ''
 
     @pyqtSlot(bool)

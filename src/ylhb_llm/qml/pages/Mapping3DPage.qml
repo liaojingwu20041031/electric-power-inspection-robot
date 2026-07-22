@@ -11,12 +11,20 @@ ScrollView {
     property var latestCapture: backend.systemStatus.latest_3d_capture || ({})
     property var latestReconstruct: backend.systemStatus.latest_3d_reconstruct || ({})
     property var mapping3d_assets: backend.systemStatus.mapping3d_assets || ({})
-    property var latestReconstructAsset: assetList("reconstructs").length > 0
-        ? assetList("reconstructs")[0] : ({})
-    property var latestReconstructUpload: backend.sceneUploadStatuses[latestReconstructAsset.session_id] || ({})
+    function openRenameDialog(assetType, sessionId, displayName) {
+        renameDialog.assetType = assetType
+        renameDialog.sessionId = sessionId
+        renameDialog.originalName = displayName || sessionId
+        renameField.text = renameDialog.originalName
+        renameDialog.open()
+    }
     function assetList(kind) {
         var group = root.mapping3d_assets || ({})
         return group[kind] || []
+    }
+    function fileName(path) {
+        var normalized = String(path || "").replace(/\\/g, "/")
+        return normalized.substring(normalized.lastIndexOf("/") + 1)
     }
     function uploadText(status) {
         return ({
@@ -50,6 +58,9 @@ ScrollView {
         return bytes + " B"
     }
     function uploadActionText(status) {
+        if (status === "PENDING") return "等待上传"
+        if (status === "UPLOADING") return "正在上传"
+        if (status === "SUCCEEDED") return "已上传"
         if (status === "FAILED_FINAL") return "重新上传"
         if (status === "CREDENTIAL_BLOCKED") return "凭据修复后重试"
         return "上传到平台"
@@ -87,14 +98,120 @@ ScrollView {
             StatusCard {
                 Layout.fillWidth: true
                 title: "最新 SVO"
-                value: backend.latestSvoFile || "未采集"
+                value: root.fileName(backend.latestSvoFile) || "未采集"
                 statusColor: backend.latestSvoFile.length > 0 ? Theme.success : Theme.warning
             }
             StatusCard {
                 Layout.fillWidth: true
                 title: "最新模型"
-                value: backend.latestModelFile || "未生成"
+                value: root.fileName(backend.latestModelFile) || "未生成"
                 statusColor: backend.latestModelFile.length > 0 ? Theme.success : Theme.muted
+            }
+        }
+
+        Label { text: "作业操作"; color: Theme.text; font.pixelSize: 20; font.bold: true }
+        GridLayout {
+            Layout.fillWidth: true
+            columns: root.availableWidth >= 900 ? 2 : 1
+            columnSpacing: 12
+            rowSpacing: 12
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+                implicitHeight: captureActions.implicitHeight + 32
+                radius: Theme.cardRadius
+                color: Theme.surface
+                border.color: Theme.border
+                ColumnLayout {
+                    id: captureActions
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 10
+                    Label { text: "现场采集"; color: Theme.text; font.pixelSize: 16; font.bold: true }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        WarmButton {
+                            text: "开始采集"
+                            enabled: backend.mapping3dCanStartCapture
+                            Layout.fillWidth: true
+                            onClicked: backend.start3dCapture()
+                        }
+                        WarmButton {
+                            text: "停止并保存 SVO"
+                            enabled: backend.mapping3dCanStopCapture
+                            buttonColor: Theme.danger
+                            Layout.fillWidth: true
+                            onClicked: backend.stop3dCapture()
+                        }
+                    }
+                    Label {
+                        text: "帧数: " + (backend.mapping3dStatus.svo_frame_count || backend.mapping3dStatus.success_frames || root.latestCapture.svo_frame_count || 0)
+                        color: Theme.text
+                        font.pixelSize: 15
+                    }
+                    Label {
+                        text: "时长: " + (backend.mapping3dStatus.capture_duration_sec || 0) + " s"
+                        color: Theme.text
+                        font.pixelSize: 15
+                    }
+                    Label {
+                        text: "目录: " + (backend.mapping3dStatus.output_dir || root.latestCapture.output_dir || "-")
+                        color: Theme.muted
+                        font.pixelSize: 14
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+                implicitHeight: reconstructActions.implicitHeight + 32
+                radius: Theme.cardRadius
+                color: Theme.surface
+                border.color: Theme.border
+                ColumnLayout {
+                    id: reconstructActions
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 10
+                    Label { text: "离线重建"; color: Theme.text; font.pixelSize: 16; font.bold: true }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        WarmButton {
+                            text: "快速重建"
+                            enabled: backend.mapping3dCanReconstruct
+                            Layout.fillWidth: true
+                            onClicked: backend.reconstructLatest3dMap("fast_check")
+                        }
+                        WarmButton {
+                            text: "高质量重建"
+                            enabled: backend.mapping3dCanReconstruct
+                            buttonColor: Theme.primary
+                            Layout.fillWidth: true
+                            onClicked: backend.reconstructLatest3dMap("quality_plus")
+                        }
+                    }
+                    Label {
+                        text: "profile: " + (backend.mapping3dResult.reconstruct_profile || root.latestReconstruct.reconstruct_profile || "quality_safe")
+                        color: Theme.text
+                        font.pixelSize: 15
+                    }
+                    Label {
+                        text: "输出文件: " + (root.fileName(backend.latestModelFile) || "-")
+                        color: Theme.muted
+                        font.pixelSize: 14
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                    Label {
+                        text: "点数: " + (backend.mapping3dResult.export_point_count || root.latestReconstruct.export_point_count || 0)
+                        color: Theme.text
+                        font.pixelSize: 15
+                    }
+                }
             }
         }
 
@@ -116,24 +233,84 @@ ScrollView {
                 Label { text: "SVO2 采集记录"; color: Theme.text; font.pixelSize: 16; font.bold: true }
                 Repeater {
                     model: root.assetList("captures").slice(0, 10)
-                    delegate: RowLayout {
+                    delegate: Frame {
                         required property var modelData
                         Layout.fillWidth: true
-                        spacing: 8
-                        Label {
-                            Layout.fillWidth: true
-                            text: (modelData.display_name || modelData.session_id) + " / " + modelData.session_id
-                                + " / " + (modelData.svo_frame_count || 0) + " 帧"
-                                + " / " + (modelData.capture_duration_sec || 0) + " s"
-                            color: Theme.text
-                            wrapMode: Text.Wrap
+                        padding: 14
+                        background: Rectangle {
+                            radius: Theme.cardRadius
+                            color: Theme.surfaceAlt
+                            border.color: Theme.border
                         }
-                        Label { text: modelData.state || "ready"; color: Theme.stateColor(modelData.state || "ready") }
-                        Button { text: "最新"; onClicked: backend.setLatest3dCapture(modelData.session_id) }
-                        Button { text: "重命名"; onClicked: backend.rename3dAsset("capture", modelData.session_id, (modelData.display_name || modelData.session_id) + "*") }
-                        Button { text: "删除"; onClicked: backend.delete3dAsset("capture", modelData.session_id) }
-                        Button { text: "快速"; onClicked: backend.reconstruct3dCapture(modelData.session_id, "fast_check") }
-                        Button { text: "高质"; onClicked: backend.reconstruct3dCapture(modelData.session_id, "quality_plus") }
+
+                        contentItem: ColumnLayout {
+                            id: captureCardColumn
+                            spacing: 10
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 3
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: modelData.display_name || modelData.session_id
+                                        color: Theme.text
+                                        font.pixelSize: 15
+                                        font.bold: true
+                                        wrapMode: Text.Wrap
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: modelData.session_id + "  ·  "
+                                            + (modelData.svo_frame_count || 0) + " 帧  ·  "
+                                            + (modelData.capture_duration_sec || 0) + " s"
+                                        color: Theme.muted
+                                        font.pixelSize: 12
+                                        wrapMode: Text.Wrap
+                                    }
+                                }
+                                Label {
+                                    text: modelData.state || "ready"
+                                    color: Theme.stateColor(modelData.state || "ready")
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                            }
+
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: root.availableWidth >= 900 ? 5 : 2
+                                columnSpacing: 8
+                                rowSpacing: 8
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "设为最新"
+                                    onClicked: backend.setLatest3dCapture(modelData.session_id)
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "重命名"
+                                    onClicked: root.openRenameDialog("capture", modelData.session_id, modelData.display_name)
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "删除"
+                                    onClicked: backend.delete3dAsset("capture", modelData.session_id)
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "快速重建"
+                                    onClicked: backend.reconstruct3dCapture(modelData.session_id, "fast_check")
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "高质量重建"
+                                    onClicked: backend.reconstruct3dCapture(modelData.session_id, "quality_plus")
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -191,21 +368,19 @@ ScrollView {
                 }
                 Repeater {
                     model: root.assetList("reconstructs").slice(0, 10)
-                    delegate: Rectangle {
+                    delegate: Frame {
                         required property var modelData
                         property var upload: backend.sceneUploadStatuses[modelData.session_id] || ({})
                         Layout.fillWidth: true
-                        implicitHeight: reconstructCardColumn.implicitHeight + 28
-                        radius: Theme.cardRadius
-                        color: Theme.surface
-                        border.color: Theme.border
+                        padding: 14
+                        background: Rectangle {
+                            radius: Theme.cardRadius
+                            color: Theme.surface
+                            border.color: Theme.border
+                        }
 
-                        ColumnLayout {
+                        contentItem: ColumnLayout {
                             id: reconstructCardColumn
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: 14
                             spacing: 10
 
                             RowLayout {
@@ -326,17 +501,20 @@ ScrollView {
                                 }
                             }
 
-                            RowLayout {
+                            GridLayout {
                                 Layout.fillWidth: true
-                                spacing: 8
+                                columns: root.availableWidth >= 900 ? 4 : 2
+                                columnSpacing: 8
+                                rowSpacing: 8
                                 WarmButton {
-                                    visible: !upload.status || upload.status === "FAILED_FINAL"
-                                        || upload.status === "CREDENTIAL_BLOCKED"
-                                    Layout.preferredWidth: 180
+                                    visible: upload.status !== "FAILED_RETRYABLE"
+                                    Layout.fillWidth: true
                                     text: root.uploadActionText(upload.status)
                                     enabled: modelData.state === "succeeded"
                                         && Boolean(modelData.output_file)
                                         && Number(modelData.file_size_bytes || 0) > 0
+                                        && (!upload.status || upload.status === "FAILED_FINAL"
+                                            || upload.status === "CREDENTIAL_BLOCKED")
                                         && (!upload.status || (Boolean(upload.taskId) && upload.taskId.length > 0))
                                     onClicked: upload.status
                                         ? backend.retrySceneUpload(upload.taskId)
@@ -344,15 +522,23 @@ ScrollView {
                                 }
                                 WarmButton {
                                     visible: upload.status === "FAILED_RETRYABLE"
-                                    Layout.preferredWidth: 180
+                                    Layout.fillWidth: true
                                     text: "立即重试"
                                     enabled: Boolean(upload.taskId) && upload.taskId.length > 0
                                     onClicked: backend.retrySceneUpload(upload.taskId)
                                 }
-                                Item { Layout.fillWidth: true }
-                                Button { text: "设为最新"; onClicked: backend.setLatest3dReconstruct(modelData.session_id) }
-                                Button { text: "重命名"; onClicked: backend.rename3dAsset("reconstruct", modelData.session_id, (modelData.display_name || modelData.session_id) + "*") }
                                 Button {
+                                    Layout.fillWidth: true
+                                    text: "设为最新"
+                                    onClicked: backend.setLatest3dReconstruct(modelData.session_id)
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "重命名"
+                                    onClicked: root.openRenameDialog("reconstruct", modelData.session_id, modelData.display_name)
+                                }
+                                Button {
+                                    Layout.fillWidth: true
                                     text: "删除"
                                     enabled: !root.uploadIsActive(upload.status)
                                     onClicked: backend.delete3dAsset("reconstruct", modelData.session_id)
@@ -360,149 +546,6 @@ ScrollView {
                             }
                         }
                     }
-                }
-            }
-        }
-
-        Label { text: "现场采集"; color: Theme.text; font.pixelSize: 20; font.bold: true }
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: 178
-            radius: 8
-            color: Theme.surface
-            border.color: Theme.border
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 16
-                spacing: 10
-                RowLayout {
-                    Layout.fillWidth: true
-                    WarmButton {
-                        text: "开始采集"
-                        enabled: backend.mapping3dCanStartCapture
-                        Layout.fillWidth: true
-                        onClicked: backend.start3dCapture()
-                    }
-                    WarmButton {
-                        text: "停止并保存 SVO"
-                        enabled: backend.mapping3dCanStopCapture
-                        buttonColor: Theme.danger
-                        Layout.fillWidth: true
-                        onClicked: backend.stop3dCapture()
-                    }
-                }
-                Label {
-                    text: "帧数: " + (backend.mapping3dStatus.svo_frame_count || backend.mapping3dStatus.success_frames || root.latestCapture.svo_frame_count || 0)
-                    color: Theme.text
-                    font.pixelSize: 15
-                }
-                Label {
-                    text: "时长: " + (backend.mapping3dStatus.capture_duration_sec || 0) + " s"
-                    color: Theme.text
-                    font.pixelSize: 15
-                }
-                Label {
-                    text: "目录: " + (backend.mapping3dStatus.output_dir || root.latestCapture.output_dir || "-")
-                    color: Theme.muted
-                    font.pixelSize: 14
-                    wrapMode: Text.Wrap
-                    Layout.fillWidth: true
-                }
-            }
-        }
-
-        Label { text: "离线重建"; color: Theme.text; font.pixelSize: 20; font.bold: true }
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: reconstructActions.implicitHeight + 32
-            radius: 8
-            color: Theme.surface
-            border.color: Theme.border
-            ColumnLayout {
-                id: reconstructActions
-                anchors.fill: parent
-                anchors.margins: 16
-                spacing: 10
-                RowLayout {
-                    Layout.fillWidth: true
-                    WarmButton {
-                        text: "快速重建"
-                        enabled: backend.mapping3dCanReconstruct
-                        Layout.fillWidth: true
-                        onClicked: backend.reconstructLatest3dMap("fast_check")
-                    }
-                    WarmButton {
-                        text: "高质量重建"
-                        enabled: backend.mapping3dCanReconstruct
-                        buttonColor: Theme.primary
-                        Layout.fillWidth: true
-                        onClicked: backend.reconstructLatest3dMap("quality_plus")
-                    }
-                }
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: 72
-                    radius: Theme.cardRadius
-                    color: Theme.primarySoft
-                    border.color: Theme.border
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 10
-                        spacing: 10
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 2
-                            Label {
-                                text: "平台上传"
-                                color: Theme.text
-                                font.pixelSize: 13
-                                font.bold: true
-                            }
-                            Label {
-                                text: root.latestReconstructAsset.session_id
-                                    ? root.uploadText(root.latestReconstructUpload.status)
-                                    : "完成重建后可手动上传最新模型"
-                                color: root.latestReconstructAsset.session_id
-                                    ? root.uploadColor(root.latestReconstructUpload.status)
-                                    : Theme.muted
-                                font.pixelSize: 12
-                            }
-                        }
-                        WarmButton {
-                            Layout.fillWidth: true
-                            Layout.alignment: Qt.AlignVCenter
-                            text: root.latestReconstructUpload.status === "FAILED_RETRYABLE"
-                                ? "立即重试"
-                                : root.uploadActionText(root.latestReconstructUpload.status)
-                            enabled: Boolean(root.latestReconstructAsset.session_id)
-                                && root.latestReconstructAsset.state === "succeeded"
-                                && Boolean(root.latestReconstructAsset.output_file)
-                                && Number(root.latestReconstructAsset.file_size_bytes || 0) > 0
-                                && root.latestReconstructUpload.status !== "PENDING"
-                                && root.latestReconstructUpload.status !== "UPLOADING"
-                                && root.latestReconstructUpload.status !== "SUCCEEDED"
-                            onClicked: root.latestReconstructUpload.status
-                                ? backend.retrySceneUpload(root.latestReconstructUpload.taskId)
-                                : backend.enqueueSceneUpload(root.latestReconstructAsset.session_id)
-                        }
-                    }
-                }
-                Label {
-                    text: "profile: " + (backend.mapping3dResult.reconstruct_profile || root.latestReconstruct.reconstruct_profile || "quality_safe")
-                    color: Theme.text
-                    font.pixelSize: 15
-                }
-                Label {
-                    text: "输出文件: " + (backend.latestModelFile || "-")
-                    color: Theme.muted
-                    font.pixelSize: 14
-                    wrapMode: Text.Wrap
-                    Layout.fillWidth: true
-                }
-                Label {
-                    text: "点数: " + (backend.mapping3dResult.export_point_count || root.latestReconstruct.export_point_count || 0)
-                    color: Theme.text
-                    font.pixelSize: 15
                 }
             }
         }
@@ -529,6 +572,35 @@ ScrollView {
                     Layout.fillWidth: true
                 }
             }
+        }
+    }
+
+    Dialog {
+        id: renameDialog
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 40, 480)
+        modal: true
+        focus: true
+        title: "重命名三维资源"
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        property string assetType: ""
+        property string sessionId: ""
+        property string originalName: ""
+        onOpened: {
+            renameField.selectAll()
+            renameField.forceActiveFocus()
+        }
+        onAccepted: {
+            var name = renameField.text.trim()
+            if (name.length > 0 && name !== originalName)
+                backend.rename3dAsset(assetType, sessionId, name)
+        }
+        contentItem: TextField {
+            id: renameField
+            selectByMouse: true
+            placeholderText: "请输入资源名称"
+            onAccepted: renameDialog.accept()
         }
     }
 }

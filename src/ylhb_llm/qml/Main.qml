@@ -98,8 +98,8 @@ ApplicationWindow {
                         spacing: 10
                         Image {
                             source: backend.assetPath("UI图标.png")
-                            Layout.preferredWidth: 36
-                            Layout.preferredHeight: 36
+                            Layout.preferredWidth: 56
+                            Layout.preferredHeight: 56
                             fillMode: Image.PreserveAspectFit
                             cache: true
                         }
