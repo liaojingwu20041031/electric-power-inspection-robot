@@ -17,6 +17,7 @@ INITIALIZING = "INITIALIZING"
 NOMINAL = "NOMINAL"
 GNSS_AIDED = "GNSS_AIDED"
 LIDAR_AIDED = "LIDAR_AIDED"
+UWB_AIDED = "UWB_AIDED"
 DEAD_RECKONING = "DEAD_RECKONING"
 DEGRADED = "DEGRADED"
 REJECTED_UPDATE = "REJECTED_UPDATE"
@@ -198,12 +199,28 @@ class MapPoseMeasurement:
 
 
 @dataclass(frozen=True)
+class UwbPositionMeasurement:
+    """UWB 2D position measurement for MODEL-1 fusion."""
+    x: float
+    y: float
+    timestamp: float
+    state: str = GOOD
+    fresh: bool = True
+    accepted: bool = True
+    residual_rms: float | None = None
+    geometry_score: float | None = None
+    unique_anchor_count: int = 0
+    confidence: float = 0.0
+
+
+@dataclass(frozen=True)
 class FusionInput:
     now: float
     local_odom: Pose2D | None = None
     gnss: GnssPosition | None = None
     scan_match_pose: MapPoseMeasurement | None = None
     amcl_pose: MapPoseMeasurement | None = None
+    uwb: UwbPositionMeasurement | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +252,9 @@ class FusionConfig:
     gnss_base_position_sigma: float = 1.0
     lidar_base_position_sigma: float = 0.5
     lidar_base_yaw_sigma: float = math.radians(10.0)
+    uwb_residual_gate: float = 3.0
+    uwb_base_position_sigma: float = 0.5
+    uwb_min_geometry_score: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -311,6 +331,38 @@ def compute_lidar_confidence(measurement: MapPoseMeasurement, config: FusionConf
     return _clamp(sum(scores) / len(scores) if scores else 1.0)
 
 
+def compute_uwb_confidence(measurement: UwbPositionMeasurement, config: FusionConfig | None = None) -> float:
+    """Return a bounded confidence from UWB quality diagnostics."""
+    config = config or FusionConfig()
+    if not measurement.accepted or not measurement.fresh or measurement.state.upper() in {REJECTED, STALE}:
+        return 0.0
+
+    state_factor = 0.5 if measurement.state.upper() == DEGRADED_QUALITY else 1.0
+
+    scores: list[float] = []
+
+    # Geometry score
+    if measurement.geometry_score is not None and _finite(measurement.geometry_score):
+        geo_score = _clamp(float(measurement.geometry_score) / config.uwb_min_geometry_score if config.uwb_min_geometry_score > 0 else 1.0)
+        scores.append(geo_score)
+
+    # Residual RMS (lower is better)
+    if measurement.residual_rms is not None and _finite(measurement.residual_rms):
+        residual_score = _clamp(1.0 - float(measurement.residual_rms) / 2.0, 0.0, 1.0)
+        scores.append(residual_score)
+
+    # Anchor count (more is better, but max useful is ~4)
+    if measurement.unique_anchor_count > 0:
+        anchor_score = min(1.0, measurement.unique_anchor_count / 4.0)
+        scores.append(anchor_score)
+
+    # Use provided confidence if available
+    if measurement.confidence > 0.0:
+        scores.append(_clamp(measurement.confidence))
+
+    return _clamp(state_factor * (sum(scores) / len(scores) if scores else 0.5))
+
+
 def _compose(first: Pose2D, second: Pose2D, timestamp: float) -> Pose2D:
     cosine = math.cos(first.yaw)
     sine = math.sin(first.yaw)
@@ -358,6 +410,7 @@ class MultisourceFusionCore:
             self.config.freshness_timeout,
             self.config.gnss_residual_gate,
             self.config.lidar_residual_gate,
+            self.config.uwb_residual_gate,
             self.config.max_correction_step,
             self.config.max_yaw_correction_step,
             self.config.odom_position_noise_per_m,
@@ -374,6 +427,8 @@ class MultisourceFusionCore:
             self.config.gnss_base_position_sigma,
             self.config.lidar_base_position_sigma,
             self.config.lidar_base_yaw_sigma,
+            self.config.uwb_base_position_sigma,
+            self.config.uwb_min_geometry_score,
         )
         if any(value < 0.0 for value in nonnegative):
             raise ValueError("fusion limits and noise values must be non-negative")
@@ -422,12 +477,13 @@ class MultisourceFusionCore:
             if event.gnss.state.upper() not in {REJECTED, STALE} and event.gnss.accepted:
                 reasons.append("GNSS_ALIGNMENT_UNAVAILABLE" if self._alignment is None else "GNSS_NOT_USABLE")
         gnss_update = self._gnss_update(event.gnss, event.now, reasons)
+        uwb_update = self._uwb_update(event.uwb, event.now, reasons)
         lidar_update, lidar_source = self._select_lidar_update(event, event.now, reasons)
 
         accepted_source: str | None = None
         updated = False
         if not self._global_anchored:
-            # First global anchor priority: Scan-to-Map, then AMCL, then aligned GNSS.
+            # First global anchor priority: Scan-to-Map, then AMCL, then UWB, then aligned GNSS.
             if lidar_update is not None:
                 lidar_source_name = lidar_source or lidar_update.source.upper()
                 updated = self._apply_absolute_update(
@@ -441,6 +497,19 @@ class MultisourceFusionCore:
                 )
                 if updated:
                     accepted_source = lidar_source_name
+            elif uwb_update is not None:
+                uwb_pose, confidence = uwb_update
+                updated = self._apply_absolute_update(
+                    uwb_pose,
+                    "UWB",
+                    self.config.uwb_residual_gate,
+                    event.now,
+                    reasons,
+                    confidence,
+                    correct_yaw=False,
+                )
+                if updated:
+                    accepted_source = "UWB"
             elif gnss_update is not None:
                 gnss_pose, confidence = gnss_update
                 updated = self._apply_absolute_update(
@@ -468,6 +537,20 @@ class MultisourceFusionCore:
                 )
                 if updated:
                     accepted_source = "GNSS"
+            if uwb_update is not None:
+                uwb_pose, confidence = uwb_update
+                uwb_applied = self._apply_absolute_update(
+                    uwb_pose,
+                    "UWB",
+                    self.config.uwb_residual_gate,
+                    event.now,
+                    reasons,
+                    confidence,
+                    correct_yaw=False,
+                )
+                if uwb_applied:
+                    updated = True
+                    accepted_source = "UWB"
             if lidar_update is not None:
                 lidar_source_name = lidar_source or lidar_update.source.upper()
                 lidar_applied = self._apply_absolute_update(
@@ -485,11 +568,13 @@ class MultisourceFusionCore:
 
         if accepted_source == "GNSS":
             mode = GNSS_AIDED
+        elif accepted_source == "UWB":
+            mode = UWB_AIDED
         elif accepted_source is not None:
             mode = LIDAR_AIDED
         elif self._map_pose is None:
             mode = WAITING_ALIGNMENT if event.gnss is not None and self._alignment is None else INITIALIZING
-        elif any(reason.startswith("GNSS_") or reason.startswith("LIDAR_") for reason in reasons):
+        elif any(reason.startswith("GNSS_") or reason.startswith("LIDAR_") or reason.startswith("UWB_") for reason in reasons):
             mode = DEAD_RECKONING
         else:
             mode = INITIALIZING if not self._global_anchored else NOMINAL
@@ -567,6 +652,32 @@ class MultisourceFusionCore:
         return (
             Pose2D(x, y, self._map_pose.yaw if self._map_pose is not None else 0.0, gnss.timestamp),
             compute_gnss_confidence(gnss, self.config),
+        )
+
+    def _uwb_usable(self, uwb: UwbPositionMeasurement, now: float, reasons: list[str]) -> bool:
+        """Check if UWB measurement is usable."""
+        if not uwb.accepted:
+            reasons.append("UWB_REJECTED")
+            return False
+        if not uwb.fresh or uwb.timestamp > now + 1e-6 or now - uwb.timestamp > self.config.freshness_timeout:
+            reasons.append("UWB_STALE")
+            return False
+        if uwb.state.upper() == REJECTED:
+            reasons.append("UWB_REJECTED")
+            return False
+        if uwb.state.upper() == STALE:
+            reasons.append("UWB_STALE")
+            return False
+        return all(_finite(value) for value in (uwb.x, uwb.y, uwb.timestamp))
+
+    def _uwb_update(self, uwb: UwbPositionMeasurement | None, now: float, reasons: list[str]) -> tuple[Pose2D, float] | None:
+        """Process UWB measurement and return (pose, confidence) or None."""
+        if uwb is None or not self._uwb_usable(uwb, now, reasons):
+            return None
+        # UWB provides x/y in map frame; keep current yaw estimate
+        return (
+            Pose2D(uwb.x, uwb.y, self._map_pose.yaw if self._map_pose is not None else 0.0, uwb.timestamp),
+            compute_uwb_confidence(uwb, self.config),
         )
 
     def _select_lidar_update(

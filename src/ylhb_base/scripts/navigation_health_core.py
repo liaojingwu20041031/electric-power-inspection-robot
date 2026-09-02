@@ -26,6 +26,7 @@ SIGNAL_STATE_KEYS = {
     "lidar": ("state", "temporal_status"),
     "scan_match": ("accepted", "reason"),
     "relocalization": ("state",),
+    "uwb": ("state",),
 }
 
 
@@ -53,6 +54,8 @@ class NavigationHealthInput:
     scan_match_fresh: bool | None = None
     relocalization_state: str | None = None
     relocalization_fresh: bool | None = None
+    uwb_state: str | None = None
+    uwb_fresh: bool | None = None
     required_signals: tuple[str, ...] = ()
 
 
@@ -64,6 +67,7 @@ class NavigationHealthOutput:
     amcl_state: str
     scan_match_state: str
     relocalization_state: str
+    uwb_state: str
     reasons: tuple[str, ...]
     timestamp: float
     transition: bool
@@ -172,6 +176,7 @@ class NavigationHealthAggregator:
         gnss = normalize_signal_state(event.gnss_state, event.gnss_fresh)
         lidar = normalize_signal_state(event.lidar_state, event.lidar_fresh)
         scan_match = normalize_signal_state(event.scan_match_state, event.scan_match_fresh)
+        uwb = normalize_signal_state(event.uwb_state, event.uwb_fresh)
         amcl = self._amcl_state(event)
         relocalization = (
             STALE
@@ -180,7 +185,7 @@ class NavigationHealthAggregator:
         )
         reasons: list[str] = []
         required = set(event.required_signals)
-        for name, state in (("GNSS", gnss), ("LIDAR", lidar), ("SCAN_MATCH", scan_match)):
+        for name, state in (("GNSS", gnss), ("LIDAR", lidar), ("SCAN_MATCH", scan_match), ("UWB", uwb)):
             if state in {DEGRADED, REJECTED, STALE}:
                 reasons.append(f"{name}_{state}")
                 if state == STALE and name.lower() in required:
@@ -232,6 +237,7 @@ class NavigationHealthAggregator:
             amcl_state=amcl,
             scan_match_state=scan_match,
             relocalization_state=relocalization,
+            uwb_state=uwb,
             reasons=tuple(reasons),
             timestamp=event.now,
             transition=transition,
