@@ -11,8 +11,6 @@ Requirements:
 from __future__ import annotations
 import math
 from typing import List, Optional, Tuple
-import sys
-sys.path.insert(0, 'C:/Users/peng/dg202611_stage')
 
 from uwb_data_model import (
     UwbRangeObservation,

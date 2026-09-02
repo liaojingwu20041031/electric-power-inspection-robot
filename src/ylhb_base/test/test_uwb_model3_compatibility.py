@@ -6,8 +6,7 @@ other localization sources (GNSS, LiDAR, odom) remain healthy.
 """
 
 import sys
-sys.path.insert(0, 'C:/Users/peng/dg202611_stage')
-sys.path.insert(0, 'C:/Users/peng/dg202611_stage/relay_repo/src/ylhb_base/scripts')
+sys.path.insert(0, '../scripts')
 
 from multisource_fusion_core import (
     MultisourceFusionCore,

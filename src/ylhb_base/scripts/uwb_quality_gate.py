@@ -11,8 +11,6 @@ State machine:
 
 from __future__ import annotations
 import math
-import sys
-sys.path.insert(0, 'C:/Users/peng/dg202611_stage')
 
 from dataclasses import dataclass, replace
 from typing import Optional, List

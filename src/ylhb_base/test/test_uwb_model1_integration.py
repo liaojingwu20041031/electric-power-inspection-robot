@@ -11,8 +11,7 @@ Tests:
 
 import sys
 import math
-sys.path.insert(0, 'C:/Users/peng/dg202611_stage')
-sys.path.insert(0, 'C:/Users/peng/dg202611_stage/relay_repo/src/ylhb_base/scripts')
+sys.path.insert(0, '../scripts')
 
 from uwb_data_model import UwbRangeObservation, SYNTHETIC_ANCHOR_COORDINATES
 from uwb_2d_estimator import estimate_2d_position
