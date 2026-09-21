@@ -16,6 +16,7 @@ def generate_launch_description():
     workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_DL'))
     default_params = os.path.join(pkg_dir, 'config', 'llm.yaml')
     default_map_output_dir = os.path.join(workspace_dir, 'maps')
+    default_navigation_map_path = os.path.join(workspace_dir, 'maps', 'my_map.yaml')
     default_perception_model = os.path.join(workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
     default_keepout_mask = os.path.join(workspace_dir, 'maps', 'keepout', 'keepout_mask_power_room_a.yaml')
 
@@ -41,8 +42,10 @@ def generate_launch_description():
     mobile_bridge_managed_externally = LaunchConfiguration('mobile_bridge_managed_externally')
     auto_start_mobile_bridge = LaunchConfiguration('auto_start_mobile_bridge')
     workspace_dir_arg = LaunchConfiguration('workspace_dir')
+    base_backend = LaunchConfiguration('base_backend')
     route_directory = LaunchConfiguration('route_directory')
     map_output_dir = LaunchConfiguration('map_output_dir')
+    default_navigation_map = LaunchConfiguration('default_navigation_map')
     perception_model_path = LaunchConfiguration('perception_model_path')
     enable_keepout_navigation = LaunchConfiguration('enable_keepout_navigation')
     keepout_mask_path = LaunchConfiguration('keepout_mask_path')
@@ -101,8 +104,10 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_display_ui', default_value='true'),
         DeclareLaunchArgument('enable_system_supervisor', default_value='true'),
         DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
+        DeclareLaunchArgument('base_backend', default_value='zlac'),
         DeclareLaunchArgument('route_directory', default_value=os.path.join(workspace_dir, 'maps')),
         DeclareLaunchArgument('map_output_dir', default_value=default_map_output_dir),
+        DeclareLaunchArgument('default_navigation_map', default_value=default_navigation_map_path),
         DeclareLaunchArgument('perception_model_path', default_value=default_perception_model),
         DeclareLaunchArgument('enable_keepout_navigation', default_value='true'),
         DeclareLaunchArgument('keepout_mask_path', default_value=default_keepout_mask),
@@ -202,7 +207,7 @@ def generate_launch_description():
             name='system_supervisor_node',
             output='screen',
             condition=IfCondition(enable_system_supervisor),
-            parameters=[params_file, shared_route_parameters, audio_environment_parameters, {'map_output_dir': map_output_dir, 'perception_model_path': perception_model_path, 'enable_keepout_navigation': ParameterValue(enable_keepout_navigation, value_type=bool), 'keepout_mask_path': keepout_mask_path, 'keepout_route_path': keepout_route_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'mobile_bridge_managed_externally': ParameterValue(mobile_bridge_managed_externally, value_type=bool), 'auto_start_mobile_bridge': ParameterValue(auto_start_mobile_bridge, value_type=bool)}],
+            parameters=[params_file, shared_route_parameters, audio_environment_parameters, {'base_backend': base_backend, 'map_output_dir': map_output_dir, 'default_navigation_map': default_navigation_map, 'perception_model_path': perception_model_path, 'enable_keepout_navigation': ParameterValue(enable_keepout_navigation, value_type=bool), 'keepout_mask_path': keepout_mask_path, 'keepout_route_path': keepout_route_path, 'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool), 'enable_voice': ParameterValue(enable_voice, value_type=bool), 'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool), 'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool), 'enable_tts': ParameterValue(enable_tts, value_type=bool), 'mobile_bridge_managed_externally': ParameterValue(mobile_bridge_managed_externally, value_type=bool), 'auto_start_mobile_bridge': ParameterValue(auto_start_mobile_bridge, value_type=bool)}],
         ),
         RegisterEventHandler(
             # The UI is the inspection-console lifecycle anchor: never respawn it alone.

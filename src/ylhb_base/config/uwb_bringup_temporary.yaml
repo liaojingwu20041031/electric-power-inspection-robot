@@ -1,0 +1,52 @@
+# UWB bringup configuration for the measured 2026-09-05 three-anchor layout.
+# The anchor geometry is measured; the UWB-to-map transform still requires a
+# shared map reference before UWB may influence the live navigation solution.
+
+uwb_driver_node:
+  ros__parameters:
+    port: /dev/uwb_tag
+    baud: 115200
+    anchor0_x: 0.0
+    anchor0_y: 0.0
+    anchor1_x: 2.40
+    anchor1_y: 0.0
+    anchor2_x: 1.20
+    anchor2_y: 1.80
+    pose_topic: /dg/uwb/pose
+    quality_topic: /dg/uwb/quality
+    frame_id: uwb
+    six_logical_slots: true
+
+dg_uwb_replay_node:
+  ros__parameters:
+    anchor0_x: 0.0
+    anchor0_y: 0.0
+    anchor1_x: 2.40
+    anchor1_y: 0.0
+    anchor2_x: 1.20
+    anchor2_y: 1.80
+    pose_topic: /dg/uwb/pose
+    quality_topic: /dg/uwb/quality
+    frame_id: uwb
+    six_logical_slots: true
+
+dg_multisource_fusion_node:
+  ros__parameters:
+    # UWB ROS2 wrapper parameters
+    uwb_enabled: false  # Disabled by default until alignment configured
+    uwb_pose_topic: /dg/uwb/pose
+    uwb_quality_topic: /dg/uwb/quality
+
+    # UWB to map alignment - MUST BE CALIBRATED
+    # Set all to valid numbers to enable UWB fusion
+    uwb_alignment_enabled: false
+    # Identity values are placeholders and remain disabled above.
+    uwb_to_map_yaw: 0.0        # radians (0 = no rotation)
+    uwb_to_map_offset_x: 0.0   # meters
+    uwb_to_map_offset_y: 0.0   # meters
+
+    # To enable UWB:
+    # 1. Measure UWB->map alignment (requires reference point in both frames)
+    # 2. Set uwb_to_map_yaw, uwb_to_map_offset_x, uwb_to_map_offset_y
+    # 3. Set uwb_enabled: true
+    # 4. Launch and verify /dg/fusion/status shows UWB_AIDED mode

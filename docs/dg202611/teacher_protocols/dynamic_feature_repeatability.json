@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "requirement_id": "DYNAMIC_FEATURE_REPEATABILITY",
+  "evidence_source": "REAL_HARDWARE",
+  "operator_observed": true,
+  "conditions": {
+    "robot_stationary": true,
+    "dynamic_target_present": true,
+    "dynamic_filter_enabled": true
+  },
+  "notes": "记录行人/动态目标轨迹、激光和辅助传感器安装情况。"
+}

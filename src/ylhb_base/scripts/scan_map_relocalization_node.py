@@ -7,6 +7,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from ros_shutdown import cleanup_ros_node
+
 
 class MatchScore(NamedTuple):
     score: float
@@ -236,8 +238,10 @@ def occupancy_grid_to_distance_field(map_msg, occupied_threshold=50):
 
 def main(args=None):
     import rclpy
+    from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
     from rclpy.duration import Duration
+    from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from sensor_msgs.msg import LaserScan
     from nav_msgs.msg import OccupancyGrid
@@ -253,6 +257,12 @@ def main(args=None):
             self.declare_parameter("max_scan_range", 8.0)
             self.declare_parameter("sample_stride", 2)
             self.declare_parameter("self_publish_ignore_seconds", 1.0)
+            self.declare_parameter("seed_topic", "/dg/relocalization/seed")
+            self.declare_parameter("map_topic", "/map")
+            self.declare_parameter("scan_topic", "/scan")
+            self.declare_parameter("initialpose_topic", "/initialpose")
+            self.declare_parameter("scan_match_pose_topic", "/scan_match_pose")
+            self.declare_parameter("match_quality_topic", "/dg/relocalization/match_quality")
 
             self._map_msg = None
             self._distance_field = None
@@ -261,24 +271,38 @@ def main(args=None):
             self._latest_scan = None
             self._last_published_pose = None
             self._last_published_time = None
+            self._last_scan_error_reason = None
 
             self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, self)
             self._initialpose_pub = self.create_publisher(
                 PoseWithCovarianceStamped,
-                "/initialpose",
+                str(self.get_parameter("initialpose_topic").value),
                 initial_pose_qos_profile(),
             )
             self._scan_match_pub = self.create_publisher(
-                PoseStamped, "/scan_match_pose", 10
+                PoseStamped, str(self.get_parameter("scan_match_pose_topic").value), 10
+            )
+            self._match_quality_pub = self.create_publisher(
+                DiagnosticArray, str(self.get_parameter("match_quality_topic").value), 10
             )
 
-            self.create_subscription(OccupancyGrid, "/map", self._on_map, 1)
-            self.create_subscription(LaserScan, "/scan", self._on_scan, 10)
+            self.create_subscription(
+                OccupancyGrid, str(self.get_parameter("map_topic").value), self._on_map, 1
+            )
+            self.create_subscription(
+                LaserScan, str(self.get_parameter("scan_topic").value), self._on_scan, 10
+            )
             self.create_subscription(
                 PoseWithCovarianceStamped,
-                "/initialpose",
+                str(self.get_parameter("initialpose_topic").value),
                 self._on_initialpose,
+                10,
+            )
+            self.create_subscription(
+                PoseWithCovarianceStamped,
+                str(self.get_parameter("seed_topic").value),
+                self._on_seed,
                 10,
             )
             self.get_logger().info(
@@ -326,6 +350,12 @@ def main(args=None):
             )
 
         def _on_initialpose(self, msg):
+            self._process_seed(msg, automatic=False)
+
+        def _on_seed(self, msg):
+            self._process_seed(msg, automatic=True)
+
+        def _process_seed(self, msg, automatic):
             frame_id = msg.header.frame_id
             if self._is_own_correction(msg):
                 self.get_logger().debug(
@@ -337,16 +367,22 @@ def main(args=None):
                     f"rejecting /initialpose in frame '{frame_id}'; "
                     "publish the coarse pose in map frame"
                 )
+                if automatic:
+                    self._publish_match_failure(msg, "TF_FAILED")
                 return
             if self._distance_field is None:
                 self.get_logger().warn(
                     "cannot refine pose yet: /map has not been received"
                 )
+                if automatic:
+                    self._publish_match_failure(msg, "NO_MAP")
                 return
             if self._latest_scan is None:
                 self.get_logger().warn(
                     "cannot refine pose yet: /scan has not been received"
                 )
+                if automatic:
+                    self._publish_match_failure(msg, "NO_SCAN")
                 return
 
             scan_points = self._scan_to_base_points(self._latest_scan)
@@ -355,6 +391,8 @@ def main(args=None):
                     "cannot refine pose: "
                     "no valid laser points after filtering"
                 )
+                if automatic:
+                    self._publish_match_failure(msg, self._last_scan_error_reason or "NO_VALID_POINTS")
                 return
 
             pose = msg.pose.pose
@@ -394,11 +432,24 @@ def main(args=None):
                     f"inliers={seed_score.inlier_ratio:.2f}; "
                     "not publishing a correction"
                 )
+                if automatic:
+                    reason = "SCORE_LOW"
+                    if seed_score.inlier_ratio < float(self.get_parameter("min_inlier_ratio").value):
+                        reason = "INLIER_LOW"
+                    elif seed_score.mean_distance > float(self.get_parameter("max_mean_distance").value):
+                        reason = "MEAN_DISTANCE_HIGH"
+                    self._publish_match_quality(
+                        seed_score,
+                        seed,
+                        accepted=False,
+                        reason=reason,
+                    )
                 return
 
             self._publish_result(msg, result)
 
         def _scan_to_base_points(self, scan):
+            self._last_scan_error_reason = None
             base_frame = str(self.get_parameter("base_frame").value)
             try:
                 transform = self._tf_buffer.lookup_transform(
@@ -408,6 +459,7 @@ def main(args=None):
                     timeout=Duration(seconds=0.2),
                 )
             except TransformException as exc:
+                self._last_scan_error_reason = "TF_FAILED"
                 self.get_logger().warn(
                     f"cannot transform scan to {base_frame}: {exc}"
                 )
@@ -460,6 +512,12 @@ def main(args=None):
             self._last_published_time = self.get_clock().now()
             self._scan_match_pub.publish(pose_msg)
             self._initialpose_pub.publish(corrected)
+            self._publish_match_quality(
+                result.score,
+                result.pose,
+                accepted=True,
+                reason="ACCEPTED",
+            )
             self.get_logger().info(
                 "scan-map relocalization succeeded: "
                 f"x={result.pose[0]:.3f}, y={result.pose[1]:.3f}, "
@@ -469,15 +527,61 @@ def main(args=None):
                 f"inliers={result.score.inlier_ratio:.2f}"
             )
 
+        def _publish_match_failure(self, seed_msg, reason):
+            pose = seed_msg.pose.pose
+            seed = (
+                float(pose.position.x),
+                float(pose.position.y),
+                yaw_from_quaternion(pose.orientation),
+            )
+            self._publish_match_quality(
+                MatchScore(0.0, 1_000_000.0, 0.0, 0),
+                seed,
+                accepted=False,
+                reason=reason,
+            )
+
+        def _publish_match_quality(self, score, pose, accepted, reason):
+            finite_score = score.score if math.isfinite(score.score) else 0.0
+            finite_mean_distance = (
+                score.mean_distance if math.isfinite(score.mean_distance) else 1_000_000.0
+            )
+            finite_inlier_ratio = (
+                score.inlier_ratio if math.isfinite(score.inlier_ratio) else 0.0
+            )
+            finite_pose = tuple(value if math.isfinite(value) else 0.0 for value in pose)
+            array = DiagnosticArray()
+            array.header.stamp = self.get_clock().now().to_msg()
+            status = DiagnosticStatus()
+            status.name = "DG Scan-to-Map Match Quality"
+            status.level = DiagnosticStatus.OK if accepted else DiagnosticStatus.ERROR
+            status.message = reason
+            status.values = [
+                KeyValue(key="accepted", value=str(bool(accepted))),
+                KeyValue(key="score", value=str(finite_score)),
+                KeyValue(key="mean_distance", value=str(finite_mean_distance)),
+                KeyValue(key="inlier_ratio", value=str(finite_inlier_ratio)),
+                KeyValue(key="used_points", value=str(score.used_points)),
+                KeyValue(key="candidate_x", value=str(finite_pose[0])),
+                KeyValue(key="candidate_y", value=str(finite_pose[1])),
+                KeyValue(key="candidate_yaw", value=str(finite_pose[2])),
+                KeyValue(key="reason", value=reason),
+                KeyValue(
+                    key="timestamp",
+                    value=str(self.get_clock().now().nanoseconds / 1e9),
+                ),
+            ]
+            array.status.append(status)
+            self._match_quality_pub.publish(array)
+
     rclpy.init(args=args)
     node = ScanMapRelocalizationNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        cleanup_ros_node(node, rclpy)
 
 
 if __name__ == "__main__":

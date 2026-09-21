@@ -22,6 +22,7 @@ ScrollView {
     property bool inspectionProfile: backend.patrolStartProfile === "inspection"
     property var readiness: backend.systemStatus.patrol_readiness || ({})
     property var previewMap: backend.routePreview.map_identity || ({})
+    property var dgStatuses: backend.dgModelStatuses || ({})
     property int startupStageIndex: stageIndex(backend.systemStatus.startup_step || "")
     property var readinessItems: [
         { "label": "底盘", "key": "bringup" },
@@ -60,6 +61,83 @@ ScrollView {
         if (backend.patrolError.length > 0 || backend.patrolStatus.state === "failed") return Theme.danger
         if (backend.patrolActive || backend.patrolStatus.state === "succeeded") return Theme.success
         return backend.patrolStarting ? Theme.info : Theme.warning
+    }
+
+    function dgStatus(key) {
+        return root.dgStatuses[key] || ({})
+    }
+
+    function dgStatusText(key) {
+        var item = dgStatus(key)
+        if (!item.fresh) return "未运行"
+        var values = item.values || ({})
+        var state = values.state || values.overall_state || item.message || ""
+        if (state === "STANDBY") return "待机"
+        if (state === "WARMUP") return "准备中"
+        if (key === "model1") return values.fusion_mode || item.message || "运行中"
+        if (key === "model2") {
+            var score = Number(values.geometry_score)
+            return (Number(item.level) === 0 ? "GOOD" : (item.message || "DEGRADED"))
+                + (isNaN(score) ? "" : " · " + score.toFixed(3))
+        }
+        if (key === "model3") return values.state || item.message || "运行中"
+        return values.overall_state || item.message || "运行中"
+    }
+
+    function dgValue(key, name, fallback) {
+        var values = dgStatus(key).values || ({})
+        var value = values[name]
+        return value === undefined || value === null || String(value).length === 0
+            ? fallback : String(value)
+    }
+
+    function dgAgeText(key) {
+        var age = Number(dgStatus(key).age_sec)
+        return isNaN(age) || age > 99999 ? "-" : age.toFixed(1) + " 秒"
+    }
+
+    function dgDetailText(key) {
+        if (!dgStatus(key).fresh) return "状态话题未运行或已经中断"
+        if (key === "model1") {
+            return "模式：" + dgValue(key, "fusion_mode", "-")
+                + "\n坐标系：" + dgValue(key, "output_frame_id", "-")
+                + " · 全局锚定：" + dgValue(key, "global_anchored", "-")
+                + "\n当前来源：" + dgValue(key, "accepted_source", "-")
+                + " · 置信度：" + dgValue(key, "measurement_confidence", "-")
+                + "\n更新：" + dgAgeText(key)
+        }
+        if (key === "model2") {
+            return "状态：" + dgStatusText(key)
+                + "\n几何评分：" + dgValue(key, "geometry_score", "-")
+                + " · 有效比例：" + dgValue(key, "valid_ratio", "-")
+                + "\n有效点：" + dgValue(key, "valid_point_count", "-")
+                + " · 异常点：" + dgValue(key, "outlier_count", "-")
+                + "\n更新：" + dgAgeText(key)
+        }
+        if (key === "model3") {
+            return "状态：" + dgValue(key, "state", dgStatusText(key))
+                + " · 任务：" + dgValue(key, "mission_phase", "-")
+                + "\n触发原因：" + dgValue(key, "trigger_reason", dgValue(key, "standby_reason", "-"))
+                + "\n尝试：" + dgValue(key, "attempt_id", "0")
+                + " · 分段：" + dgValue(key, "active_segment", "-")
+                + "\n恢复控制：" + (dgValue(key, "recovery_motion_armed", "False").toLowerCase() === "true" ? "已接管" : "隔离验证")
+                + " · 更新：" + dgAgeText(key)
+        }
+        return "状态：" + dgValue(key, "overall_state", dgStatusText(key))
+            + " · 任务：" + dgValue(key, "mission_phase", "-")
+            + "\nAMCL：" + dgValue(key, "amcl_state", "-")
+            + " · 里程计/扫描：" + dgValue(key, "reasons", "正常")
+            + "\n重定位：" + dgValue(key, "relocalization_state", "-")
+            + " · UWB：" + dgValue(key, "uwb_state", "-")
+            + "\n更新：" + dgAgeText(key)
+    }
+
+    function dgStatusColor(key) {
+        var item = dgStatus(key)
+        if (!item.fresh) return Theme.muted
+        if (Number(item.level) >= 2) return Theme.danger
+        if (Number(item.level) === 1) return Theme.warning
+        return Theme.success
     }
 
     ColumnLayout {
@@ -264,13 +342,15 @@ ScrollView {
                     WarmButton {
                         objectName: "startPatrolButton"
                         text: backend.pendingPlatformStart.executionId
-                            ? "确认启动平台巡检" : "等待平台任务"
-                        enabled: !!backend.pendingPlatformStart.executionId
-                            && !backend.platformStartConfirmationPending
+                            ? "确认启动平台巡检" : "启动本地巡检"
+                        enabled: backend.pendingPlatformStart.executionId
+                            ? !backend.platformStartConfirmationPending
+                            : backend.patrolCanStart && backend.routePreviewOk
                         Layout.fillWidth: true
                         Layout.preferredHeight: 54
                         font.pixelSize: 16
-                        onClicked: startPatrolDialog.open()
+                        onClicked: backend.pendingPlatformStart.executionId
+                            ? startPatrolDialog.open() : localStartPatrolDialog.open()
                     }
                     RowLayout {
                         Layout.fillWidth: true
@@ -319,6 +399,35 @@ ScrollView {
 
         Rectangle {
             Layout.fillWidth: true
+            Layout.preferredHeight: modelStatusColumn.implicitHeight + 32
+            radius: Theme.cardRadius
+            color: Theme.surface
+            border.color: Theme.border
+
+            ColumnLayout {
+                id: modelStatusColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 16
+                spacing: 10
+
+                Label { text: "DG-202611 三模型状态"; color: Theme.text; font.pixelSize: 19; font.bold: true }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.availableWidth >= 1000 ? 4 : 2
+                    columnSpacing: 12
+                    rowSpacing: 12
+                    StatusCard { Layout.fillWidth: true; title: "MODEL-1 融合定位"; value: root.dgStatusText("model1"); statusColor: root.dgStatusColor("model1") }
+                    StatusCard { Layout.fillWidth: true; title: "MODEL-2 激光质量"; value: root.dgStatusText("model2"); statusColor: root.dgStatusColor("model2") }
+                    StatusCard { Layout.fillWidth: true; title: "MODEL-3 主动重定位"; value: root.dgStatusText("model3"); statusColor: root.dgStatusColor("model3") }
+                    StatusCard { Layout.fillWidth: true; title: "综合导航健康"; value: root.dgStatusText("navigation"); statusColor: root.dgStatusColor("navigation") }
+                }
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
             Layout.preferredHeight: detailsColumn.implicitHeight + 32
             radius: Theme.cardRadius
             color: Theme.surface
@@ -343,6 +452,43 @@ ScrollView {
                     Layout.fillWidth: true
                     visible: root.detailsVisible
                     spacing: 12
+
+                    Label { text: "三模型诊断详情"; color: Theme.text; font.bold: true }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: root.availableWidth >= 1000 ? 2 : 1
+                        columnSpacing: 10
+                        rowSpacing: 10
+                        Repeater {
+                            model: root.detailsVisible ? [
+                                { "key": "model1", "title": "MODEL-1 融合定位" },
+                                { "key": "model2", "title": "MODEL-2 激光质量" },
+                                { "key": "model3", "title": "MODEL-3 主动重定位" },
+                                { "key": "navigation", "title": "综合导航健康" }
+                            ] : []
+                            delegate: Rectangle {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 126
+                                radius: 8
+                                color: Theme.surfaceAlt
+                                border.color: root.dgStatusColor(modelData.key)
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    Label { text: modelData.title; color: Theme.text; font.bold: true }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        text: root.dgDetailText(modelData.key)
+                                        color: Theme.muted
+                                        wrapMode: Text.Wrap
+                                        verticalAlignment: Text.AlignTop
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -473,6 +619,34 @@ ScrollView {
         }
 
         Item { Layout.preferredHeight: 8 }
+    }
+
+    Dialog {
+        id: localStartPatrolDialog
+        objectName: "localStartPatrolDialog"
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        title: "确认启动本地巡检？"
+        width: Math.min(root.availableWidth - 64, 560)
+        height: 260
+        anchors.centerIn: parent
+        contentItem: Label {
+            text: "系统将自动启动底盘、导航和巡检执行器，并按当前路线前往巡检点。"
+            color: Theme.text
+            font.pixelSize: 16
+            wrapMode: Text.Wrap
+        }
+        footer: Item {
+            implicitHeight: 64
+            RowLayout {
+                anchors.fill: parent
+                spacing: 10
+                Item { Layout.fillWidth: true }
+                WarmButton { text: "取消"; Layout.preferredWidth: 120; Layout.preferredHeight: 48; buttonColor: Theme.muted; onClicked: localStartPatrolDialog.close() }
+                WarmButton { objectName: "confirmLocalStartPatrolButton"; text: "确认启动"; enabled: backend.patrolCanStart && backend.routePreviewOk; Layout.preferredWidth: 140; Layout.preferredHeight: 48; onClicked: { localStartPatrolDialog.close(); backend.startPatrolMode() } }
+            }
+        }
     }
 
     Dialog {

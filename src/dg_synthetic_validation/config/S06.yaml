@@ -1,0 +1,270 @@
+# =============================================================================
+# S06 - closed-loop active relocalization motion (STOPPING -> ACTIVE_SCAN)
+#
+# SYNTHETIC_SOFTWARE_VALIDATION only: NOT_REAL_ROBOT_DATA, NOT_GAZEBO_DATA,
+# NOT_COMPETITION_PERFORMANCE_EVIDENCE.
+#
+# Everything in this header is documentation.  load_scenario() reads a fixed
+# key list (dg_synthetic_validation/scenario_schema.py) and never reads
+# comments, so nothing written here can reach the software under test.  The
+# executable part below describes synthetic sensor/base INPUT only.
+#
+# PRECONDITIONS
+#   - Integration launch as the runner starts it: ylhb_base
+#     dg_navigation_integration.launch.py with enable_nav2:=false,
+#     enable_multisource_fusion:=true, cmd_vel_output_topic:=/dg/test_cmd_vel.
+#     The closed loop is therefore supervisor -> /cmd_vel_recovery -> arbiter
+#     -> /dg/test_cmd_vel -> synthetic plant -> /odom + TF -> supervisor.
+#   - The real /cmd_vel has zero publishers; nav2 is off, so /cmd_vel_nav has
+#     no publisher and the arbiter can only ever forward the recovery source.
+#   - Supervisor runs its unmodified defaults: max_covariance 0.5,
+#     suspect_samples 2, trigger_samples 2, signal_timeout 1.0,
+#     stop_velocity 0.03, angular_speed 0.18 rad/s, yaw_tolerance 1.5 deg,
+#     segment_timeout 8.0 s, settle_time 0.5 s,
+#     segment_deltas_deg [10, -20, 10], max_total_rotation 60 deg,
+#     max_attempt_duration 30 s, max_attempts 2, timer_period 0.1 s.
+#     This file changes no threshold.
+#   - Scan-to-Map matcher runs its defaults: min_score 0.45,
+#     min_inlier_ratio 0.45, max_mean_distance 0.30, coarse search +-0.20 m
+#     and +-10 deg around the seed.
+#   - required_signals is the default blank sentinel, so no *_MISSING and no
+#     *_STALE trigger path is armed.
+#
+# INPUT_CONDITIONS
+#   - Plant enabled: planar differential drive, forward Euler, no noise, no
+#     latency, subscribe-only on /dg/test_cmd_vel, start pose (0, 0, 0).
+#     max_angular 1.0 rad/s, so the 0.18 rad/s recovery command is never
+#     clipped.  Because the plant is on, /odom carries the integrated twist,
+#     which is 0.00 m/s and 0.00 rad/s while no command has been issued.
+#   - odom.linear_x is written as 0.0 in every phase.  With the plant enabled
+#     the injector ignores that field, but the historical 0.05 default
+#     exceeds stop_velocity 0.03 and would hang STOPPING forever, so no plant
+#     scenario may inherit it.
+#   - Ray-cast scan against the very occupancy grid published on /map, so the
+#     real matcher sees genuinely matchable geometry.  From (0, 0) the
+#     interior wall is ~1.0 m to the left and the borders ~3.9 m away, all
+#     inside range_max 8.0 m.
+#   - LiDAR stays mode normal with the full +-pi window in every phase; the
+#     degraded-geometry path belongs to S03/S05.
+#   - GNSS stays RTK fixed (quality 4, 12 sats) for the whole run.
+#   - AMCL surrogate enabled and following the plant with a deliberate
+#     constant pose bias (+0.15 m, -0.10 m, +5.0 deg).  The bias is larger
+#     than the matcher's 0.15 m inlier distance, so the seed is genuinely
+#     wrong, yet inside the coarse +-0.20 m / +-10 deg window, so recovery is
+#     not pre-doomed by geometry.  converge_on_match is false: nothing in
+#     this file can script a successful recovery.
+#   - publish_initialpose false, so the Scan-to-Map node gets no bootstrap
+#     seed and every match_quality message is attributable to a real
+#     supervisor candidate request.
+#   - amcl covariance schedule: 0.05 flat (P1), linear ramp 0.20 -> 1.00
+#     (P2), held 1.00 (P3).  yaw_covariance stays 0.03 throughout.
+#
+# REAL_TRIGGER_PATH
+#   - assess_health(): amcl_covariance > max_covariance 0.5 appends
+#     AMCL_COVARIANCE_HIGH to trigger_reasons -> triggerable is true.
+#   - Ramp arithmetic: covariance_at(r) = 0.20 + 0.80 r over [5.0, 11.0).
+#     r = 0.375 crosses 0.5, i.e. elapsed 7.25 s.
+#   - No other path is armed.  GNSS and LiDAR stay nominal and both are
+#     degraded-only causes anyway; with publish_initialpose false the matcher
+#     publishes no match_quality before the first supervisor seed request, so
+#     scan_match health is UNKNOWN and SCAN_MATCH_QUALITY_LOW cannot fire
+#     first; scan, odom and amcl are all published at 10 Hz, so no *_STALE
+#     path fires.
+#
+# TIMING_BUDGET  (all figures use the real unmodifiable thresholds)
+#   7.25 s  covariance crosses 0.5
+#   +0.20 s two triggerable samples -> SUSPECTED     (suspect_samples 2, 10 Hz)
+#   +0.10 s one further sample      -> TRIGGERED     (trigger_samples 2)
+#   +0.10 s TRIGGERED               -> STOPPING
+#   +0.10 s odom twist 0.00 <= stop_velocity 0.03 -> STOP_CONFIRMED
+#           -> ACTIVE_SCAN, segment 1 starts at t0 ~ 7.75 s
+#   segment 1 = +10 deg = 0.17453 rad at 0.18 rad/s = 0.970 s of rotation
+#           (yaw_tolerance 1.5 deg means 8.5 deg = 0.824 s already suffices)
+#   command-path latency before the plant moves, worst case:
+#           supervisor 0.10 + health node 0.10 + arbiter 0.05
+#           + source-switch guard 0.20 + plant tick 0.10 = 0.55 s
+#   detection latency after the target yaw is reached: odom 0.10
+#           + supervisor tick 0.10 = 0.20 s
+#   segment 1 worst case = 0.55 + 0.970 + 0.20 = 1.72 s, measured from the
+#           same t0 as segment_timeout 8.0 s -> 6.28 s margin, 4.6x headroom
+#   + settle_time 0.5 s -> segment 1 plus settle completes by ~10.0 s
+#   plant step per tick = 0.18 * 0.1 = 0.018 rad = 1.03 deg, smaller than
+#           yaw_tolerance 1.5 deg, so the yaw lands inside the band instead
+#           of stepping across it: no limit cycle
+#   all three segments |10| + |20| + |10| = 40 deg < max_total_rotation 60 deg
+#   attempt budget: max_attempt_duration 30 s from t0 7.75 s ends at 37.75 s,
+#           inside duration_sec 40.0 s, so attempt 1 cannot be truncated by
+#           the run ending and no false timeout is manufactured
+#
+# EXPECTED_TRANSITIONS  (documentation; this file asserts nothing)
+#   - relocalization: NORMAL -> SUSPECTED (~7.45 s) -> TRIGGERED (~7.55 s)
+#     -> STOPPING (~7.65 s) -> ACTIVE_SCAN (~7.75 s) -> settle -> segment 1
+#     complete and a candidate request (~10.0 s).  Anything after that is
+#     whatever the real matcher returns and is recorded, not asserted.
+#   - navigation: NOMINAL -> LOCALIZATION_SUSPECT (~7.3 s, amcl REJECTED)
+#     -> RECOVERING (once relocalization reports TRIGGERED).
+#   - command path: the arbiter output stays zero while navigation is
+#     LOCALIZATION_SUSPECT, then switches source with a 0.2 s zero guard, then
+#     the 0.18 rad/s rotation appears on /dg/test_cmd_vel with linear_x 0.0.
+#   - plant yaw: 0.0 -> about +10 deg within yaw_tolerance, then held for
+#     settle_time.
+#
+# REQUIRED_OUTPUTS  (produced by the nodes under test, recorded by the runner)
+#   - /dg/relocalization/status: state, attempt_id, active_segment,
+#     trigger_reason, amcl_health, health_reasons.
+#   - /dg/navigation/status: overall_state and reasons.
+#   - /dg/relocalization/seed and /dg/relocalization/match_quality: only
+#     after a real supervisor candidate request.
+#   - /dg/test_cmd_vel: the arbitrated recovery command.
+#   - /odom and /tf: the plant response to that command.
+#   - samples.csv columns relocalization_state, navigation_state,
+#     cmd_vel_source, cmd_linear_x, cmd_angular_z; timeline.csv; rosbag.
+#
+# PASS_CRITERIA  (checked against the artifacts, not by this file)
+#   - STOPPING is observed and then ACTIVE_SCAN is observed, in that order.
+#   - a non-zero angular_z appears on /dg/test_cmd_vel while relocalization
+#     is in ACTIVE_SCAN, and the /odom angular velocity follows it.
+#   - odom yaw advances by about 10 deg within yaw_tolerance and then holds
+#     through settle_time, so at least one full segment completed.
+#   - no SEGMENT_TIMEOUT and no ATTEMPT_TIMEOUT during segment 1.
+#   - commanded linear_x stays 0.0 for the whole run.
+#   - zero publishers on the real /cmd_vel for the whole run.
+#
+# FAIL_CRITERIA
+#   - STOPPING never confirms and the run sits in WAITING_FOR_STOP.  The
+#     plant reports 0.00 m/s at rest, so this means a wiring or odom defect.
+#   - ACTIVE_SCAN never entered.
+#   - a non-zero command reaches /dg/test_cmd_vel but odom yaw does not move,
+#     which means the plant or TF wiring is broken.
+#   - SEGMENT_TIMEOUT during segment 1, against the 1.72 s of 8.0 s budgeted
+#     above.
+#   - FAILED with ODOM_STALE_*, SCAN_STALE_* or YAW_MISSING_*: scan, odom and
+#     amcl are published at 10 Hz in every phase.
+#   - any publisher on the real /cmd_vel, any non-zero commanded linear_x, or
+#     any /dg/* message attributable to this scenario file.
+#
+# SAFETY_ASSERTIONS
+#   - plant.command_topic is /dg/test_cmd_vel, subscribe-only.  The schema
+#     rejects the real /cmd_vel and any other /dg/* command topic.
+#   - publish_tf emits only the two approved edges: dynamic
+#     odom -> base_footprint and static identity base_footprint -> laser.
+#     map -> odom is deliberately absent, so no ground-truth localization is
+#     injected into the software under test.
+#   - the surrogate reads plant ground truth by design and publishes
+#     /amcl_pose only.  It is NOT the real AMCL and must not be reported as
+#     one; S06 evidence covers the software state chain, not localization
+#     accuracy.
+#   - the surrogate pose is deliberately wrong, so the real matcher must
+#     recover the pose from scan geometry instead of confirming a known
+#     answer, and converge_on_match false keeps recovery unscripted.
+#   - no /dg/* health, fusion, relocalization or command result is described
+#     here; the supervisor commands only rotation, linear_x is always 0.0.
+#
+# OUT_OF_SCOPE
+#   - candidate acceptance, VERIFYING, verification counting, RECOVERED,
+#     retry and MANUAL_REQUIRED escalation, seed provenance and command
+#     arbitration source labels: recorded but not asserted here.
+#   - Localization accuracy, physics fidelity, timing or competition
+#     performance.
+#   - The `expected:` key is deliberately absent.  The verdict belongs to the
+#     evaluator and the reviewer; an input file that also states the answer
+#     is not evidence.
+#
+# KNOWN_SYNTHETIC_LIMITATIONS
+#   - Kinematic plant only: forward Euler at 10 Hz, no wheel dynamics, no
+#     command latency, no noise.  The recovery motion is geometric.
+#   - The ray-cast scan comes from the same grid published on /map, so the
+#     matcher sees perfect map/geometry agreement, no dynamic obstacles and
+#     no sensor noise.  That is favourable to matching and must not be read
+#     as field performance.
+#   - The surrogate covariance is a schedule, not a filter output.
+#   - publish_initialpose false means no matching happens at all before the
+#     first supervisor seed request, by design.
+#   - map -> odom TF is absent by design, so anything that needs a full
+#     map-frame TF chain will not resolve in this run.
+#   - result_writer.py has no S06 branch, so the run reports
+#     UNKNOWN_SCENARIO_NO_SCENARIO_SPECIFIC_ASSERTIONS as a warning and the
+#     criteria above must be checked by review against samples.csv,
+#     timeline.csv and the bag.  Adding that branch is outside this file's
+#     ownership.
+#   - Injector, supervisor, health node and evaluator all tick at 10 Hz, the
+#     arbiter at 20 Hz; sub-100 ms ordering between them is not evidence.
+# =============================================================================
+
+scenario_id: S06
+name: closed_loop_active_scan_recovery_motion
+duration_sec: 40.0
+seed: 20261106
+rates:
+  sensor_hz: 10.0
+  map_hz: 1.0
+map:
+  resolution: 0.1
+  width: 80
+  height: 80
+  origin_x: -4.0
+  origin_y: -4.0
+  border: true
+  interior_wall: true
+  interior_wall_x_min: 30
+  interior_wall_x_max: 31
+  interior_wall_y_min: 15
+  interior_wall_y_max: 65
+scan:
+  generator: raycast           # cast against the grid published on /map
+  beam_count: 360
+  range_min: 0.05
+  range_max: 8.0
+  frame_id: laser              # matches plant.sensor_frame_id
+  raycast_step: 0.05
+plant:
+  enabled: true                # synthetic body, so odom velocity starts at 0.00
+  command_topic: /dg/test_cmd_vel
+  start_x: 0.0
+  start_y: 0.0
+  start_yaw: 0.0
+  max_linear: 0.5
+  max_angular: 1.0             # above angular_speed 0.18, so no clipping
+  kinematics: PLANAR_DIFFERENTIAL_DRIVE
+  integration: EULER_FORWARD
+  command_latency_sec: 0.0
+  noise_stddev: 0.0
+  publish_tf: true             # odom->base_footprint dynamic, base_footprint->laser static
+  odom_frame_id: odom
+  base_frame_id: base_footprint
+  sensor_frame_id: laser
+amcl_surrogate:
+  enabled: true
+  follows_plant: true
+  accesses_plant_ground_truth: true
+  bias_x: 0.15                 # deliberate constant pose error, so the seed is wrong
+  bias_y: -0.10
+  bias_yaw: 0.0873             # 5.0 deg
+  converge_on_match: false     # recovery must not be scripted by this file
+  convergence_delay_sec: 0.0
+  noise_stddev: 0.0
+  match_pose_topic: /scan_match_pose
+  map_frame_id: map
+publish_initialpose: false     # no bootstrap seed; only real supervisor requests
+phases:
+  - id: NOMINAL_AT_REST
+    start_sec: 0.0
+    end_sec: 5.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 0.05, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.0}
+  - id: AMCL_COVARIANCE_RAMP
+    start_sec: 5.0
+    end_sec: 11.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 0.20, covariance_end: 1.00, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.0}
+  - id: AMCL_COVARIANCE_HIGH_HOLD
+    start_sec: 11.0
+    end_sec: 40.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 1.00, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.0}

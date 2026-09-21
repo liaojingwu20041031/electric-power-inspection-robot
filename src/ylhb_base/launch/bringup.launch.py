@@ -301,6 +301,10 @@ def generate_launch_description():
         'enable_imu', default_value='true',
         description='Enable required IMU driver node'
     )
+    enable_cmd_vel_arbiter_arg = DeclareLaunchArgument(
+        'enable_cmd_vel_arbiter', default_value='true',
+        description='Start the single-output manual/navigation/recovery velocity arbiter'
+    )
     imu_port_arg = DeclareLaunchArgument(
         'imu_port', default_value=DEFAULT_IMU_PORT,
         description='Serial port for the IMU sensor'
@@ -353,6 +357,9 @@ def generate_launch_description():
     use_zlac = IfCondition(PythonExpression(["'", base_backend, "' == 'zlac'"]))
     use_stm32 = IfCondition(PythonExpression(["'", base_backend, "' == 'stm32'"]))
     enable_rtk = IfCondition(LaunchConfiguration('enable_rtk'))
+    enable_cmd_vel_arbiter = IfCondition(
+        LaunchConfiguration('enable_cmd_vel_arbiter')
+    )
 
     # 默认 ZLAC8015D SocketCAN 底盘后端，关闭自身 TF，让 EKF 接管
     zlac_base_node = Node(
@@ -376,6 +383,10 @@ def generate_launch_description():
         output='screen',
         condition=use_stm32,
         parameters=[
+            # Node-name-matched block in base_kinematics.yaml supplies the shared
+            # wheel_track. Listed FIRST so the inline dicts below still win on any
+            # key they set; they deliberately do not set wheel_track.
+            base_kinematics_path,
             {'serial_port': base_port},
             {
                 'publish_tf': False,
@@ -408,6 +419,22 @@ def generate_launch_description():
         parameters=[ekf_config_path]
     )
 
+    cmd_vel_arbiter_node = Node(
+        package='ylhb_base',
+        executable='cmd_vel_arbiter_node',
+        name='dg_cmd_vel_arbiter_node',
+        output='screen',
+        condition=enable_cmd_vel_arbiter,
+        parameters=[{
+            'navigation_topic': '/cmd_vel_nav',
+            'recovery_topic': '/cmd_vel_recovery',
+            'manual_command_topic': '/cmd_vel_manual',
+            'manual_authorization_topic': '/dg/control/manual_authorized',
+            'output_topic': '/cmd_vel',
+            'navigation_status_topic': '/dg/navigation/status',
+        }],
+    )
+
     rtk_node = Node(
         package='ylhb_base',
         executable='wtrtk980_nmea_node',
@@ -425,6 +452,7 @@ def generate_launch_description():
         base_backend_arg,
         base_port_arg,
         enable_imu_arg,
+        enable_cmd_vel_arbiter_arg,
         imu_port_arg,
         imu_baud_rate_arg,
         imu_frame_id_arg,
@@ -441,6 +469,7 @@ def generate_launch_description():
         zlac_base_node,
         stm32_base_node,
         ekf_node,
+        cmd_vel_arbiter_node,
         rtk_node,
         critical_exit_handler(robot_state_publisher_node, 'robot_state_publisher'),
         critical_exit_handler(zlac_base_node, 'zlac8015d_canopen_controller'),

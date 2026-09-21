@@ -9,8 +9,12 @@ from geometry_msgs.msg import Twist
 class AutoInitLocalizer(Node):
     def __init__(self):
         super().__init__('auto_align_node')
-        # 创建一个发布者，发布到 /cmd_vel 话题以控制底盘
-        self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel_recovery')
+        # Recovery tools feed the arbiter; they never publish the real chassis
+        # output directly.
+        self.pub = self.create_publisher(
+            Twist, self.get_parameter('cmd_vel_topic').value, 10
+        )
         self.get_logger().info('等待 25 秒以确保 Nav2 和雷达底盘完全启动激活...')
         self.timer_count = 0
         # 将原先的 10 秒等待延长为 25 秒，避免与 AMCL 配置启动期冲突

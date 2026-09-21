@@ -137,7 +137,11 @@ def test_inspection_launch_keeps_ui_as_full_stack_lifecycle_anchor():
     assert "OnProcessExit(" in launch
     assert "EmitEvent(event=Shutdown(" in launch
     assert "respawn=True" not in launch
-    assert 'run_on_jetson.sh" inspection' in autostart
+    assert "DeclareLaunchArgument('default_navigation_map'" in launch
+    assert "'default_navigation_map': default_navigation_map" in launch
+    assert '"${BASE_RUNNER}" inspection' in autostart
+    assert 'mobile_bridge_managed_externally:=true' in autostart
+    assert 'auto_start_mobile_bridge:=false' in autostart
     assert "crash-loop limit" in autostart
     assert "onClosing: function(close)" in qml
     assert "close.accepted = false" in qml
@@ -185,6 +189,7 @@ def test_intentional_shutdown_marker_stops_restart_but_crashes_still_recover(tmp
     env = os.environ.copy()
     env.update({
         "PATH": os.pathsep.join((str(fake_bin), env["PATH"])),
+        "DG_BASE_WS": str(workspace),
         "XDG_RUNTIME_DIR": str(runtime),
         "YLHB_UI_INHIBIT_IDLE": "false",
         "YLHB_INSPECTION_AUTO_RESTART": "true",
@@ -234,6 +239,7 @@ def test_autostart_permanent_preflight_error_does_not_enter_restart_loop(tmp_pat
         env={
             **os.environ,
             'PATH': os.pathsep.join((str(fake_bin), os.environ['PATH'])),
+            'DG_BASE_WS': str(workspace),
             'YLHB_UI_INHIBIT_IDLE': 'false',
         },
         text=True,
@@ -518,7 +524,7 @@ def test_route_preview_viewer_has_zoom_pan_and_error_controls():
 def test_patrol_page_sends_controls_to_supervisor():
     qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
 
-    assert 'backend.startPatrolMode()' not in qml
+    assert qml.count('backend.startPatrolMode()') == 1
     assert 'backend.confirmPlatformPatrolStart()' in qml
     assert 'backend.sendSystemCommand("pause_patrol")' in qml
     assert 'backend.sendSystemCommand("resume_patrol")' in qml
@@ -531,7 +537,7 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.sendPatrolCommand("cancel")' not in qml
     assert 'backend.sendPatrolCommand("reload")' not in qml
     assert "确认启动平台巡检" in qml
-    assert "等待平台任务" in qml
+    assert "启动本地巡检" in qml
     assert "backend.pendingPlatformStart.executionId" in qml
     assert "!root.patrolStarting && !root.patrolRunning && backend.routePreviewOk" not in qml
     assert 'backend.patrolModeState === "running"' not in qml
@@ -546,12 +552,28 @@ def test_patrol_page_sends_controls_to_supervisor():
     assert 'backend.setRoutePreviewMode("full_map")' in qml
     assert 'id: startPatrolDialog' in qml
     assert 'id: stopPatrolDialog' in qml
-    assert 'onClicked: startPatrolDialog.open()' in qml
+    assert 'id: localStartPatrolDialog' in qml
+    assert 'backend.patrolCanStart && backend.routePreviewOk' in qml
     assert 'onClicked: stopPatrolDialog.open()' in qml
     assert qml.count('backend.confirmPlatformPatrolStart()') == 1
     assert qml.count('backend.sendSystemCommand("stop_robot_stack")') == 1
-    assert 'onAccepted: backend.startPatrolMode()' not in qml
     assert 'onAccepted: backend.sendSystemCommand("stop_robot_stack")' in qml
+
+
+def test_patrol_page_displays_live_dg_model_statuses():
+    qml = Path("src/ylhb_llm/qml/pages/PatrolPage.qml").read_text(encoding="utf-8")
+
+    assert 'backend.dgModelStatuses' in qml
+    assert 'MODEL-1 融合定位' in qml
+    assert 'MODEL-2 激光质量' in qml
+    assert 'MODEL-3 主动重定位' in qml
+    assert '综合导航健康' in qml
+    assert 'function dgDetailText(key)' in qml
+    assert 'recovery_motion_armed' in qml
+    assert 'mission_phase' in qml
+    assert 'measurement_confidence' in qml
+    assert 'geometry_score' in qml
+    assert 'standby_reason' in qml
 
 
 def test_patrol_page_keeps_advanced_controls_and_lists_collapsed():

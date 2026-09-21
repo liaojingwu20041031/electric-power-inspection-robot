@@ -36,6 +36,7 @@ using ylhb_base::ChannelFaults;
 using ylhb_base::ChannelRpm;
 using ylhb_base::DifferentialDriveKinematics;
 using ylhb_base::LogicalWheelRpm;
+using ylhb_base::LongitudinalAxisMapping;
 using ylhb_base::ZlacChannelMapping;
 
 namespace
@@ -479,6 +480,8 @@ public:
 
     kinematics_ = std::make_unique<DifferentialDriveKinematics>(
       wheel_radius_, wheel_track_, max_linear_speed_, max_angular_speed_);
+    longitudinal_axis_mapping_ =
+      std::make_unique<LongitudinalAxisMapping>(linear_axis_direction_);
     channel_mapping_ = std::make_unique<ZlacChannelMapping>(
       low_channel_is_left_, low_channel_direction_, high_channel_direction_);
     odom_integrator_ = std::make_unique<OdometryIntegrator>(odom_frame_, base_frame_);
@@ -544,6 +547,7 @@ private:
     declare_parameter<double>("max_linear_velocity", 0.0);
     declare_parameter<double>("max_angular_velocity", 0.0);
     declare_parameter<bool>("low_channel_is_left", false);
+    declare_parameter<double>("linear_axis_direction", 1.0);
     declare_parameter<double>("low_channel_direction", -1.0);
     declare_parameter<double>("high_channel_direction", 1.0);
     declare_parameter<std::string>("odom_frame", "odom");
@@ -602,10 +606,12 @@ private:
       }
     }
     get_parameter("low_channel_is_left", low_channel_is_left_);
+    get_parameter("linear_axis_direction", linear_axis_direction_);
     get_parameter("low_channel_direction", low_channel_direction_);
     get_parameter("high_channel_direction", high_channel_direction_);
     normalize_channel_direction("low_channel_direction", low_channel_direction_);
     normalize_channel_direction("high_channel_direction", high_channel_direction_);
+    normalize_channel_direction("linear_axis_direction", linear_axis_direction_);
     get_parameter("odom_frame", odom_frame_);
     get_parameter("base_frame", base_frame_);
     get_parameter("publish_tf", publish_tf_);
@@ -700,8 +706,9 @@ private:
       client_->write_target_velocity(0.0, 0.0);
       return;
     }
-    const auto logical_rpm =
-      kinematics_->twist_to_wheel_rpm(msg->linear.x, msg->angular.z);
+    const auto [internal_vx, internal_wz] =
+      longitudinal_axis_mapping_->command_to_internal(msg->linear.x, msg->angular.z);
+    const auto logical_rpm = kinematics_->twist_to_wheel_rpm(internal_vx, internal_wz);
     const auto channels = channel_mapping_->logical_to_channels(logical_rpm);
     client_->write_target_velocity(channels.low, channels.high);
   }
@@ -799,8 +806,10 @@ private:
 
   void publish_odom()
   {
-    const auto [vx, wz] =
+    const auto [internal_vx, internal_wz] =
       kinematics_->wheel_rpm_to_twist(LogicalWheelRpm{left_actual_rpm_, right_actual_rpm_});
+    const auto [vx, wz] =
+      longitudinal_axis_mapping_->feedback_to_external(internal_vx, internal_wz);
     auto odom = odom_integrator_->update(now(), vx, wz);
     odom_pub_->publish(odom);
 
@@ -888,6 +897,7 @@ private:
   double max_linear_speed_ = 0.6;
   double max_angular_speed_ = 1.2;
   bool low_channel_is_left_ = false;
+  double linear_axis_direction_ = 1.0;
   double low_channel_direction_ = -1.0;
   double high_channel_direction_ = 1.0;
   std::string odom_frame_ = "odom";
@@ -924,6 +934,7 @@ private:
   rclcpp::Time last_feedback_time_;
 
   std::unique_ptr<DifferentialDriveKinematics> kinematics_;
+  std::unique_ptr<LongitudinalAxisMapping> longitudinal_axis_mapping_;
   std::unique_ptr<ZlacChannelMapping> channel_mapping_;
   std::unique_ptr<Zlac8015DCanopenClient> client_;
   std::unique_ptr<OdometryIntegrator> odom_integrator_;

@@ -1,0 +1,9 @@
+# Runtime entry points must keep Unix line endings in Windows-built archives.
+*.sh text eol=lf
+*.py text eol=lf
+
+# Integrity lists are consumed by sha256sum on the robot.
+*.sha256 text eol=lf
+
+# This evidence note was hashed with LF; preserve those bytes in the archive.
+evidence/uwb/20260905/LONG_RUN_TERMINAL_RECORD.md text eol=lf

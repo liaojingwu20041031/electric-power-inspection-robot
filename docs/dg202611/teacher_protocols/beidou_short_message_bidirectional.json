@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "requirement_id": "BEIDOU_SHORT_MESSAGE_BIDIRECTIONAL",
+  "evidence_source": "REAL_HARDWARE",
+  "operator_observed": true,
+  "terminal_model": "拿到真实短报文终端后填写完整型号",
+  "vendor_protocol": "填写厂商协议名称和版本",
+  "raw_robot_log": "raw/beidou_robot_terminal.log",
+  "raw_remote_log": "raw/beidou_remote_terminal.log",
+  "conditions": {
+    "real_short_message_terminal": true,
+    "satellite_transport": true,
+    "service_active": true,
+    "remote_endpoint_identified": true
+  },
+  "notes": "不能使用 RTK/NTRIP/4G 日志代替北斗卫星短报文。"
+}

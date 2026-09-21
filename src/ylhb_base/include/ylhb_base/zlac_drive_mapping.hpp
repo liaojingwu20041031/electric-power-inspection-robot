@@ -69,6 +69,37 @@ private:
   double max_angular_speed_;
 };
 
+// Converts between the ROS base_link longitudinal axis and the motor driver's
+// calibrated longitudinal axis.  Some assembled chassis have both drive wheels
+// mounted opposite to the driver's positive convention.  Keeping this separate
+// from the left/right channel mapping preserves the verified yaw direction.
+class LongitudinalAxisMapping
+{
+public:
+  explicit LongitudinalAxisMapping(double direction)
+  : direction_(normalize_direction(direction))
+  {
+  }
+
+  static double normalize_direction(double value)
+  {
+    return value < 0.0 ? -1.0 : 1.0;
+  }
+
+  std::pair<double, double> command_to_internal(double linear_x, double angular_z) const
+  {
+    return {direction_ * linear_x, angular_z};
+  }
+
+  std::pair<double, double> feedback_to_external(double linear_x, double angular_z) const
+  {
+    return {direction_ * linear_x, angular_z};
+  }
+
+private:
+  double direction_;
+};
+
 class ZlacChannelMapping
 {
 public:

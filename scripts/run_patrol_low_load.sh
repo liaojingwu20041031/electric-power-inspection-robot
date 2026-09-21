@@ -4,6 +4,7 @@ set -euo pipefail
 WS_DIR="${WS_DIR:-$HOME/ros2_DL}"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 MAP_PATH="${MAP_PATH:-${WS_DIR}/maps/my_map.yaml}"
+START_PATROL="${START_PATROL:-false}"
 
 source_ros_setup() {
   set +u
@@ -37,5 +38,10 @@ ros2 launch ylhb_mobile_bridge patrol_executor.launch.py auto_start:=false &
 pids+=("$!")
 sleep 3
 
-ros2 topic pub --once /patrol/command std_msgs/msg/String "{data: start}"
+if [[ "${START_PATROL,,}" == "true" ]]; then
+  echo "START_PATROL=true: publishing the patrol start command; confirm the robot is safe first."
+  ros2 topic pub --once /patrol/command std_msgs/msg/String "{data: start}"
+else
+  echo "Patrol executor is ready but idle. Set START_PATROL=true only after onsite safety confirmation."
+fi
 wait

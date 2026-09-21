@@ -285,7 +285,7 @@ def test_chassis_uses_direct_cmd_vel_with_driver_watchdogs():
         "inspection_display_ui_node",
         "system_supervisor_node",
     ):
-        assert llm[node_name]["ros__parameters"]["cmd_vel_topic"] == "/cmd_vel"
+        assert llm[node_name]["ros__parameters"]["cmd_vel_topic"] == "/cmd_vel_manual"
 
 
 def test_dwb_low_speed_limits_match_velocity_smoother():

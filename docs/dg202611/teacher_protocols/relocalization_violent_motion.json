@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "requirement_id": "RELOCALIZATION_ROBUSTNESS",
+  "evidence_source": "REAL_HARDWARE",
+  "operator_observed": true,
+  "conditions": {
+    "controlled_real_trial": true,
+    "operator_supervised": true,
+    "trigger_class": "VIOLENT_MOTION"
+  },
+  "notes": "每次失败试验也必须保留。"
+}

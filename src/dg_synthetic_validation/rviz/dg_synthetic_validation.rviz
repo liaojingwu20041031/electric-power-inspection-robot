@@ -1,0 +1,120 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    # Dim and coarse on purpose: the grid is there for scale, not as content.
+    # 2 m cells x 16 covers x,y in [-16, +16], so every text region below sits
+    # over grid, but the lines stay far apart enough not to fight the text.
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Reference Frame: odom
+      Plane Cell Count: 16
+      Cell Size: 2
+      Alpha: 0.2
+      Color: 110; 110; 116
+      Line Style:
+        Line Width: 0.02
+        Value: Lines
+    # No rviz_default_plugins/Map display: /map has header.frame_id "map" and
+    # there is deliberately no map -> odom transform in this system, so an
+    # OccupancyGrid display cannot be rendered against the odom fixed frame.
+    # The occupied cells are re-emitted as a CUBE_LIST by the
+    # dg_validation_visualization_only_node and arrive on the MarkerArray
+    # display below.
+    - Class: rviz_default_plugins/LaserScan
+      Enabled: true
+      Name: Raw Scan
+      Topic: /scan
+      Style: Points
+      Size (Pixels): 3
+      Color: 255; 255; 0
+    - Class: rviz_default_plugins/LaserScan
+      Enabled: true
+      Name: Filtered Scan
+      Topic: /dg/lidar/filtered_scan
+      Style: Points
+      Size (Pixels): 3
+      Color: 0; 255; 255
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Name: Odometry
+      Topic: /odom
+      Shape:
+        Alpha: 1
+        Axes Length: 0.4
+        Axes Radius: 0.03
+    # REMOVED: three rviz_default_plugins/Pose displays on /dg/fusion/pose,
+    # /amcl_pose and /scan_match_pose.  All three were dead for the same reason
+    # the Map display above was dropped, plus a message-type error:
+    #
+    #   * every one of those three topics carries header.frame_id "map"
+    #     (multisource_fusion_node.py:376, scan_map_relocalization_node.py:494,
+    #     and the injector's AMCL surrogate map_frame_id), and there is
+    #     deliberately no map -> odom transform, so RViz cannot transform them
+    #     into the odom fixed frame and drops every message; and
+    #   * /dg/fusion/pose and /amcl_pose are geometry_msgs/PoseWithCovarianceStamped
+    #     (multisource_fusion_node.py:169, synthetic_injector_node.py:406) while
+    #     rviz_default_plugins/Pose subscribes to geometry_msgs/PoseStamped, so
+    #     those two would never have matched even with a valid transform.
+    #
+    # /amcl_pose and /scan_match_pose are instead rendered as arrows in odom by
+    # the dg_validation_visualization_only_node, on the MarkerArray display
+    # below, under its declared display-only map-origin assumption.
+    # /dg/fusion/pose currently has NO visualization path at all.
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+    # Validation evidence markers: map walls (CUBE_LIST), Scan-to-Map and AMCL
+    # candidate arrows, and the text layout -- one marker per line, so nothing
+    # overlaps: the three-line synthetic-data banner, the SCENARIO/SENSOR HEALTH
+    # and ACTIVE RELOCALIZATION columns, the SCAN-TO-MAP CANDIDATE and
+    # MOTION/SAFETY bottom blocks, and the frame/source footer notes.
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Validation Markers
+      Topic: /dg_validation_viz/markers
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    # Screenshot-ready without touching the mouse.  The marker layout occupies
+    # x in [-13.7, +13.7] and y in [-11.5, +7.2] (worst-case full-width rows
+    # included), so the view is centred on y = -2.1 rather than on the origin.
+    # Scale is pixels per metre: on the 1280x800 validation display, with the
+    # Displays dock visible and the right dock hidden, the render area is about
+    # 960x670, so 32 px/m shows roughly 30 m x 21 m -- the whole layout with a
+    # margin, and no manual zooming.  Raise Scale on a larger screen.
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Angle: 0
+      Scale: 32
+      X: 0
+      Y: -2.1
+Window Geometry:
+  # The Displays dock stays visible: its per-topic status is part of the
+  # evidence, and "no messages received" while nothing is running is the
+  # correct, expected reading.  The right dock is hidden only to give the
+  # render area the width the layout needs.
+  Displays:
+    collapsed: false
+  Views:
+    collapsed: false
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Height: 790
+  Width: 1280
+  X: 0
+  Y: 0

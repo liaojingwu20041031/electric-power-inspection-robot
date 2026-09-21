@@ -2,6 +2,7 @@
 set -euo pipefail
 
 WS_DIR="${WS_DIR:-$HOME/ros2_DL}"
+OVERLAY_WS_DIR="${YLHB_OVERLAY_WS:-}"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 MODE="${1:-help}"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mobile_bridge_owner.sh"
@@ -55,6 +56,13 @@ cd "${WS_DIR}"
 source_ros_setup "/opt/ros/${ROS_DISTRO}/setup.bash"
 if [ -f "${WS_DIR}/install/setup.bash" ]; then
   source_ros_setup "${WS_DIR}/install/setup.bash"
+fi
+if [ -n "${OVERLAY_WS_DIR}" ] && [ "${OVERLAY_WS_DIR}" != "${WS_DIR}" ]; then
+  if [ ! -f "${OVERLAY_WS_DIR}/install/setup.bash" ]; then
+    echo "ERROR: overlay workspace is not built: ${OVERLAY_WS_DIR}" >&2
+    exit 2
+  fi
+  source_ros_setup "${OVERLAY_WS_DIR}/install/setup.bash"
 fi
 
 disable_display_sleep() {
@@ -232,6 +240,14 @@ case "${MODE}" in
     shift || true
     exec ros2 launch ylhb_base navigation_keepout.launch.py "$@"
     ;;
+  dg_integration)
+    shift || true
+    exec ros2 launch ylhb_base dg_navigation_integration.launch.py "$@"
+    ;;
+  dg_uwb_evidence)
+    shift || true
+    exec ros2 launch ylhb_base uwb_model1_replay_evidence.launch.py "$@"
+    ;;
   zed)
     shift || true
     exec ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i "$@"
@@ -329,6 +345,8 @@ Modes:
   mapping      Start slam_toolbox mapping
   navigation   Start Nav2 with default map ${WS_DIR}/maps/my_map.yaml
   navigation_keepout  Start Nav2 with keepout filter and keepout mask servers
+  dg_integration  Start DG three-model/UWB side-channel integration (motion output disabled by default)
+  dg_uwb_evidence  Replay measured UWB into isolated MODEL-1 evidence outputs (no motion)
   zed          Start ZED 2i wrapper
   zed_3d_capture  Record ZED SVO for later high-quality 3D reconstruction
   zed_3d_reconstruct  Reconstruct pointcloud.ply from a recorded ZED SVO
@@ -347,6 +365,8 @@ Examples:
   $0 inspection fullscreen:=true
   $0 navigation map:=${WS_DIR}/maps/my_map.yaml
   $0 navigation_keepout map:=${WS_DIR}/maps/my_map.yaml keepout_mask:=${WS_DIR}/maps/keepout/keepout_mask_power_room_a.yaml
+  $0 dg_integration enable_uwb_replay:=true uwb_alignment_enabled:=true
+  $0 dg_uwb_evidence input_file:=${WS_DIR}/src/ylhb_base/data/uwb/20260905/static_raw_20260905_165208.csv
   $0 zed_3d_capture duration_sec:=0
   $0 zed_3d_reconstruct latest
   $0 zed_3d_reconstruct input:=latest profile:=quality_safe

@@ -369,6 +369,7 @@ colcon test-result --verbose
 | 路线与安全 | [路线 JSON 字段参考](docs/路线JSON字段参考.md) · [二值 Keepout 操作](docs/二值禁行区安全地图操作.md) |
 | 系统架构 | [架构图与通信矩阵](docs/architecture/README.md) |
 | 硬件资料 | [官方通信协议](官方通信协议/) · [CAD 机械模型](CAD/Retail-Cart-3D-Model/) |
+| 最终融合交付 | [最终融合技术报告](docs/dg202611/FINAL_INTEGRATION_REPORT.md) · [证据索引](docs/dg202611/FINAL_EVIDENCE_INDEX.md) · [实机验收记录](docs/dg202611/REAL_ROBOT_ACCEPTANCE.md) |
 
 ---
 

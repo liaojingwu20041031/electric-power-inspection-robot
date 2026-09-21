@@ -22,7 +22,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from sensor_msgs.msg import CompressedImage, Imu, LaserScan, NavSatFix
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, Trigger
 
 from .map_snapshot import (
@@ -241,6 +241,11 @@ class MobileRosBridge(Node):
         self._local_app_lock = threading.Lock()
 
         self._cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self._manual_authorized_pub = self.create_publisher(
+            Bool,
+            str(self.get_parameter('manual_authorization_topic').value),
+            10,
+        )
         self._text_pub = self.create_publisher(
             String,
             self.text_command_topic,
@@ -371,7 +376,8 @@ class MobileRosBridge(Node):
         defaults = {
             'host': '0.0.0.0',
             'port': 8000,
-            'cmd_vel_topic': '/cmd_vel',
+            'cmd_vel_topic': '/cmd_vel_manual',
+            'manual_authorization_topic': '/dg/control/manual_authorized',
             'text_command_topic': '/inspection_ai/text_command',
             'odom_topic': '/odom',
             'scan_topic': '/scan',
@@ -1236,7 +1242,12 @@ class MobileRosBridge(Node):
 
     def _debug_status_uncached(self) -> dict:
         topics = {
-            '/cmd_vel': self._topic_available(self.cmd_vel_topic),
+            '/cmd_vel': self._topic_available('/cmd_vel'),
+            '/cmd_vel_manual': self._topic_available(self.cmd_vel_topic),
+            '/dg/control/manual_authorized': self._topic_available(
+                str(self.get_parameter('manual_authorization_topic').value)
+                if hasattr(self, 'get_parameter') else '/dg/control/manual_authorized'
+            ),
             '/odom': self._topic_available(self.odom_topic),
             '/scan': self._topic_available(self.scan_topic),
             '/map': self._topic_available(self.map_topic),
@@ -1349,6 +1360,7 @@ class MobileRosBridge(Node):
         msg = Twist()
         msg.linear.x = linear_x
         msg.angular.z = angular_z
+        self._set_manual_authorized(linear_x != 0.0 or angular_z != 0.0)
         self._cmd_pub.publish(msg)
         if linear_x == 0.0 and angular_z == 0.0:
             if self._stop_timer:
@@ -1373,7 +1385,16 @@ class MobileRosBridge(Node):
             self._stop_timer.cancel()
             self._stop_timer = None
         msg = Twist()
+        self._set_manual_authorized(False)
         self._cmd_pub.publish(msg)
+
+    def _set_manual_authorized(self, enabled: bool) -> None:
+        publisher = getattr(self, '_manual_authorized_pub', None)
+        if publisher is None:
+            return
+        message = Bool()
+        message.data = bool(enabled)
+        publisher.publish(message)
 
     def publish_text_command(self, text: str) -> None:
         msg = String()

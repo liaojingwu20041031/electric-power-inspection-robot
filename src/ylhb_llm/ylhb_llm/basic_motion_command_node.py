@@ -6,7 +6,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from ylhb_interfaces.msg import SayText
 
@@ -26,7 +26,8 @@ class BasicMotionCommandNode(Node):
 
         self.declare_parameter('motion_command_topic', '/inspection_ai/motion_command')
         self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
-        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel_manual')
+        self.declare_parameter('manual_authorization_topic', '/dg/control/manual_authorized')
         self.declare_parameter('say_text_topic', '/inspection_ai/say_text')
         self.declare_parameter('zlac_status_topic', '/zlac8015d/status')
         self.declare_parameter('linear_speed', 0.12)
@@ -52,6 +53,8 @@ class BasicMotionCommandNode(Node):
 
         self.cmd_pub = self.create_publisher(
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
+        self.manual_authorized_pub = self.create_publisher(
+            Bool, self.get_parameter('manual_authorization_topic').value, 10)
         self.say_pub = self.create_publisher(
             SayText, self.get_parameter('say_text_topic').value, 10)
         self.create_subscription(
@@ -121,6 +124,7 @@ class BasicMotionCommandNode(Node):
         twist = Twist()
         twist.linear.x = linear_x
         twist.angular.z = angular_z
+        self.set_manual_authorized(True)
         self.active_twist = twist
         self.cmd_pub.publish(twist)
         self.stop_at = time.monotonic() + self.motion_duration_sec
@@ -169,6 +173,7 @@ class BasicMotionCommandNode(Node):
         )
 
     def reject_motion(self, reason: str) -> None:
+        self.set_manual_authorized(False)
         self.cmd_pub.publish(Twist())
         self.active_twist = None
         self.stop_at = 0.0
@@ -176,10 +181,16 @@ class BasicMotionCommandNode(Node):
         self.say(reason)
 
     def stop_motion(self, reason: str) -> None:
+        self.set_manual_authorized(False)
         self.cmd_pub.publish(Twist())
         self.active_twist = None
         self.stop_at = 0.0
         self.get_logger().info(f'Motion stopped: {reason}')
+
+    def set_manual_authorized(self, enabled: bool) -> None:
+        message = Bool()
+        message.data = bool(enabled)
+        self.manual_authorized_pub.publish(message)
 
     def say(self, text: str) -> None:
         msg = SayText()

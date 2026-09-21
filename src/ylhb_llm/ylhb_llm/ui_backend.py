@@ -82,6 +82,9 @@ PATROL_TERMINAL_LABELS = {
     'cancelled': '已取消',
 }
 
+DG_MODEL_KEYS = ('model1', 'model2', 'model3', 'navigation')
+DG_MODEL_STATUS_FRESH_SEC = 3.0
+
 
 class UiBackend(QObject):
     systemStatusChanged = pyqtSignal()
@@ -96,6 +99,7 @@ class UiBackend(QObject):
     controlUnlockedChanged = pyqtSignal()
     patrolStatusChanged = pyqtSignal()
     patrolEventsChanged = pyqtSignal()
+    dgModelStatusChanged = pyqtSignal()
     mapping3dStatusChanged = pyqtSignal()
     routePreviewChanged = pyqtSignal()
     patrolTasksChanged = pyqtSignal()
@@ -131,6 +135,7 @@ class UiBackend(QObject):
         self._last_status_log_key = ('', '')
         self._patrol_start_profile = 'navigation'
         self._has_patrol_status = False
+        self._dg_model_received_at: Dict[str, float] = {}
         self._agent_debug_visible = False
         self._agent_message_keys: set[str] = set()
         self._ui_ready = False
@@ -161,6 +166,7 @@ class UiBackend(QObject):
         self.safety_timer.start(1000)
         self.freshness_timer = QTimer(self)
         self.freshness_timer.timeout.connect(self.connectionFreshnessChanged.emit)
+        self.freshness_timer.timeout.connect(self.dgModelStatusChanged.emit)
         self.freshness_timer.start(1000)
         self.startup_timer = QTimer(self)
         self.startup_timer.setSingleShot(True)
@@ -429,6 +435,23 @@ class UiBackend(QObject):
     @pyqtProperty('QVariantList', notify=patrolEventsChanged)
     def patrolEvents(self):
         return self.state.patrol_events
+
+    @pyqtProperty('QVariantMap', notify=dgModelStatusChanged)
+    def dgModelStatuses(self) -> Dict[str, Dict[str, Any]]:
+        now = self.clock()
+        result: Dict[str, Dict[str, Any]] = {}
+        for key in DG_MODEL_KEYS:
+            payload = dict(self.state.dg_model_statuses.get(key) or {})
+            received_at = self._dg_model_received_at.get(key)
+            age = max(0.0, now - received_at) if received_at is not None else 1e9
+            payload['fresh'] = bool(
+                payload.get('available')
+                and received_at is not None
+                and age <= DG_MODEL_STATUS_FRESH_SEC
+            )
+            payload['age_sec'] = age
+            result[key] = payload
+        return result
 
     @pyqtProperty('QVariantMap', notify=mapping3dStatusChanged)
     def mapping3dStatus(self) -> Dict[str, Any]:
@@ -1471,6 +1494,13 @@ class UiBackend(QObject):
         if len(self.state.patrol_events) > 100:
             del self.state.patrol_events[:-100]
         self.patrolEventsChanged.emit()
+
+    def update_dg_model_status(self, model_key: str, payload: Dict[str, Any]) -> None:
+        if model_key not in DG_MODEL_KEYS:
+            return
+        self.state.dg_model_statuses[model_key] = dict(payload or {})
+        self._dg_model_received_at[model_key] = self.clock()
+        self.dgModelStatusChanged.emit()
 
     def update_mapping3d_status(self, payload: Dict[str, Any]) -> None:
         self.state.mapping3d_status = payload

@@ -226,6 +226,61 @@ def test_start_bringup_component_waits_for_real_readiness_before_success_feedbac
     ]
 
 
+def test_start_bringup_reports_failure_when_chassis_readiness_fails():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'bringup': FakeProcess(running=False)}
+    node.start_process = Mock(return_value=True)
+    node.wait_for_core_sensors = Mock(return_value=False)
+    node.stop_process = Mock()
+    node.set_result = Mock()
+    node.patrol_error = '底盘驱动未在线: offline heartbeat_seen=false'
+
+    node.handle_command('start_bringup', {})
+
+    node.stop_process.assert_called_once_with('bringup', report=False)
+    assert node.set_result.call_args.args == (
+        'start_bringup', False, node.patrol_error,
+    )
+
+
+def test_chassis_status_info_rejects_offline_and_accepts_fresh_online():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.base_backend = 'zlac'
+    node.zlac_status_topic = '/zlac8015d/status'
+    node.chassis_status_max_age_sec = 2.5
+    node.last_chassis_status_received_at = 100.0
+    node.topic_has_publishers = Mock(return_value=True)
+
+    node.last_chassis_status = 'offline heartbeat_seen=false'
+    offline = node.chassis_status_info(now=100.5)
+    assert offline['chassis_online'] is False
+    assert offline['chassis_status'] == 'offline'
+
+    node.last_chassis_status = 'online heartbeat_seen=true'
+    online = node.chassis_status_info(now=101.0)
+    assert online['chassis_online'] is True
+    assert online['chassis_status_fresh'] is True
+
+
+def test_wait_for_core_sensors_fails_fast_on_terminal_chassis_state():
+    node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+    node.processes = {'bringup': FakeProcess(running=True)}
+    node.base_backend = 'zlac'
+    node.zlac_status_topic = '/zlac8015d/status'
+    node.chassis_status_max_age_sec = 2.5
+    node.last_chassis_status = 'offline heartbeat_seen=false'
+    node.last_chassis_status_received_at = system_supervisor_node.time.time()
+    node.last_odom_received_at = system_supervisor_node.time.time()
+    node.last_scan_received_at = system_supervisor_node.time.time()
+    node.last_scan_stamp_at = system_supervisor_node.time.time()
+    node.topic_has_publishers = Mock(return_value=True)
+    node.has_transform = Mock(return_value=True)
+
+    assert node.wait_for_core_sensors(timeout_sec=1.0) is False
+    assert node.startup_step == 'chassis_offline'
+    assert '底盘驱动未在线' in node.patrol_error
+
+
 def test_navigation_exit_stops_lifecycle_readiness_wait_immediately():
     class ExitedProcess:
         def poll(self):

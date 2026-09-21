@@ -1,0 +1,27 @@
+scenario_id: S01
+name: nominal
+duration_sec: 8.0
+seed: 20261101
+rates:
+  sensor_hz: 10.0
+  map_hz: 1.0
+phases:
+  - id: NOMINAL
+    start_sec: 0.0
+    end_sec: 8.0
+    gnss:
+      quality: 4
+      satellites: 12
+      hdop: 0.8
+      differential_age: 0.5
+      fix_available: true
+    lidar:
+      mode: normal
+      valid_fraction: 1.0
+      angle_min: -3.141592653589793
+      angle_max: 3.141592653589793
+      range_m: 3.0
+expected:
+  gnss: GOOD
+  lidar_geometry_score_min: 0.2
+  relocalization: NORMAL

@@ -1,0 +1,47 @@
+dg_hvs_bridge_node:
+  ros__parameters:
+    device_node: ""
+    sensor_index: 52
+    i2c_bus: 6
+    evs_fps: 240
+    buffer_count: 8
+    frame_id: event_camera_optical_frame
+    camera_name: apx003cc_hvs
+    event_width: 768
+    event_height: 608
+    aps_width: 768
+    aps_height: 608
+    aps_expected_fps: 30.0
+    # One APS period is 33.33 ms; 40 ms leaves a small scheduling margin while rejecting larger gaps.
+    pair_tolerance_ms: 40.0
+    stream_timeout_sec: 0.50
+    static_event_rate_threshold: 500.0
+    event_publish_rate_hz: 20.0
+    max_events_per_message: 20000
+    preview_publish_rate_hz: 10.0
+    jpeg_quality: 80
+    event_decay: 0.90
+    denoise_cell_px: 4
+    denoise_min_events_per_cell: 2
+    max_events_per_second: 1000000
+    publish_features: true
+    feature_cell_px: 12
+    feature_min_events_per_cell: 5
+    feature_min_unique_pixels: 3
+    feature_max_features: 512
+    feature_match_distance_px: 12.0
+    afk_filter_enabled: false
+    recording_enabled: false
+    # Empty means use $HOME/dg202611_rdk_records in the bridge process.
+    record_directory: ""
+    record_csv_enabled: true
+    record_aps_every_n: 3
+    camera_fx: 0.0
+    camera_fy: 0.0
+    camera_cx: 0.0
+    camera_cy: 0.0
+    distortion_model: plumb_bob
+    distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+    backend: hbn
+    hbn_config_index: 1
+    hbn_settle_value: -1

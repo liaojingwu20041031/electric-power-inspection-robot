@@ -789,7 +789,7 @@ class PatrolExecutorNode(Node):
             "event_topic": "/patrol/event",
             "text_command_topic": "/inspection_ai/text_command",
             "map_frame": "map",
-            "cmd_vel_topic": "/cmd_vel",
+            "cmd_vel_topic": "/cmd_vel_manual",
             "localized_objects_topic": "/perception/localized_objects",
             "inspection_enabled": False,
             "default_inspection_window_sec": 5.0,

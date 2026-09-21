@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export WS_DIR
-LOG_DIR="${WS_DIR}/runs/ui_autostart"
+# This wrapper is installed by the DG workspace but always runs the protected
+# base UI. Keeping the script here lets the autostart entry be removed together
+# with the DG integration release without overlaying ylhb_llm at runtime.
+integration_ws="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+base_ws="${DG_BASE_WS:-/home/nvidia/ros2_DL}"
+export WS_DIR="${base_ws}"
+LOG_DIR="${integration_ws}/runs/ui_autostart"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/inspection_ui_$(date +%Y%m%d_%H%M%S).log"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/ylhb"
@@ -14,8 +18,13 @@ CHILD_PID=""
 trap 'STOPPED=true; [ -n "${CHILD_PID}" ] && kill -TERM "${CHILD_PID}" 2>/dev/null || true' INT TERM
 running_stack() { pgrep -f 'inspection_agent_node|basic_motion_command_node|base_motion_skill_node|voice_input_node|voice_session_node|voice_output_node|system_supervisor_node|inspection_display_ui_node' >/dev/null; }
 wait_for_old_stack() { while running_stack; do sleep 1; done; }
-if ! "${WS_DIR}/scripts/run_on_jetson.sh" inspection_preflight >>"${LOG_FILE}" 2>&1; then
-  echo "自启动静态预检失败；不会进入崩溃重启。缺少密钥时运行 ${WS_DIR}/scripts/configure_agent_env.sh。详情：${LOG_FILE}" >&2
+BASE_RUNNER="${base_ws}/scripts/run_on_jetson.sh"
+if [ ! -x "${BASE_RUNNER}" ]; then
+  echo "基础系统启动脚本不存在：${BASE_RUNNER}" >&2
+  exit 2
+fi
+if ! WS_DIR="${base_ws}" "${BASE_RUNNER}" inspection_preflight >>"${LOG_FILE}" 2>&1; then
+  echo "基础 UI 自启动静态预检失败；详情：${LOG_FILE}" >&2
   exit 2
 fi
 restart_times=()
@@ -29,11 +38,11 @@ while [ "${STOPPED}" = false ]; do
   rm -f "${STOP_MARKER}"
   export YLHB_INSPECTION_SESSION_ID="${SESSION_ID}"
   export YLHB_INSPECTION_STOP_MARKER="${STOP_MARKER}"
-  echo "$(date -Is) starting full inspection stack DISPLAY=${DISPLAY:-}" >>"${LOG_FILE}"
+  echo "$(date -Is) starting base inspection stack DISPLAY=${DISPLAY:-}" >>"${LOG_FILE}"
   if [ "${YLHB_UI_INHIBIT_IDLE:-true}" = "true" ] && systemd-inhibit --help 2>&1 | grep -q -- '--what='; then
-    systemd-inhibit --what=idle:sleep --why='YLHB inspection console' --mode=block "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true >>"${LOG_FILE}" 2>&1 &
+    systemd-inhibit --what=idle:sleep --why='YLHB inspection console' --mode=block "${BASE_RUNNER}" inspection fullscreen:=true mobile_bridge_managed_externally:=true auto_start_mobile_bridge:=false >>"${LOG_FILE}" 2>&1 &
   else
-    "${WS_DIR}/scripts/run_on_jetson.sh" inspection fullscreen:=true >>"${LOG_FILE}" 2>&1 &
+    "${BASE_RUNNER}" inspection fullscreen:=true mobile_bridge_managed_externally:=true auto_start_mobile_bridge:=false >>"${LOG_FILE}" 2>&1 &
   fi
   CHILD_PID=$!
   wait "${CHILD_PID}" || true

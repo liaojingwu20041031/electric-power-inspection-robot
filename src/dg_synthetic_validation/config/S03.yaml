@@ -1,0 +1,26 @@
+scenario_id: S03
+name: lidar_geometry_degradation
+duration_sec: 12.0
+seed: 20261103
+rates:
+  sensor_hz: 10.0
+  map_hz: 1.0
+phases:
+  - id: NOMINAL
+    start_sec: 0.0
+    end_sec: 4.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+  - id: NARROW_GEOMETRY
+    start_sec: 4.0
+    end_sec: 8.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: narrow, valid_fraction: 1.0, angle_min: -0.18, angle_max: 0.18, range_m: 3.0}
+  - id: EMPTY_SCAN
+    start_sec: 8.0
+    end_sec: 12.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: empty, valid_fraction: 0.0, angle_min: -0.18, angle_max: 0.18, range_m: 3.0}
+expected:
+  nominal_geometry_score_min: 0.2
+  degraded_geometry_score_max: 0.2

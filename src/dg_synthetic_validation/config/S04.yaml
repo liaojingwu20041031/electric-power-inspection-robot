@@ -1,0 +1,32 @@
+scenario_id: S04
+name: gnss_and_lidar_concurrent_degradation
+duration_sec: 16.0
+seed: 20261104
+rates:
+  sensor_hz: 10.0
+  map_hz: 1.0
+phases:
+  - id: NOMINAL
+    start_sec: 0.0
+    end_sec: 4.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+  - id: BOTH_DEGRADED
+    start_sec: 4.0
+    end_sec: 8.0
+    gnss: {quality: 4, satellites: 6, hdop: 2.0, differential_age: 2.0, fix_available: true}
+    lidar: {mode: narrow, valid_fraction: 1.0, angle_min: -0.18, angle_max: 0.18, range_m: 3.0}
+  - id: BOTH_REJECTED
+    start_sec: 8.0
+    end_sec: 12.0
+    gnss: {quality: 0, satellites: 2, hdop: 4.0, differential_age: 5.0, fix_available: false}
+    lidar: {mode: empty, valid_fraction: 0.0, angle_min: -0.18, angle_max: 0.18, range_m: 3.0}
+  - id: BOTH_OUTAGE
+    start_sec: 12.0
+    end_sec: 16.0
+    gnss: {quality: 0, satellites: 0, hdop: 99.0, differential_age: 99.0, fix_available: false, publish_fix: false, publish_status: false}
+    lidar: {mode: empty, valid_fraction: 0.0, angle_min: -0.18, angle_max: 0.18, range_m: 3.0}
+expected:
+  gnss_rejected: true
+  lidar_degraded: true
+  navigation_degraded: true

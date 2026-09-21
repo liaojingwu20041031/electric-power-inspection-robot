@@ -1,0 +1,173 @@
+# =============================================================================
+# S05 - gradual AMCL localization degradation that genuinely triggers
+#
+# SYNTHETIC_SOFTWARE_VALIDATION only: NOT_REAL_ROBOT_DATA, NOT_GAZEBO_DATA,
+# NOT_COMPETITION_PERFORMANCE_EVIDENCE.
+#
+# Everything in this header is documentation.  load_scenario() reads a fixed
+# key list (dg_synthetic_validation/scenario_schema.py) and never reads
+# comments, so nothing written here can reach the software under test.  The
+# executable part below describes synthetic sensor/base INPUT only.
+#
+# PRECONDITIONS
+#   - Integration launch as the runner starts it: ylhb_base
+#     dg_navigation_integration.launch.py with enable_nav2:=false,
+#     enable_multisource_fusion:=true, cmd_vel_output_topic:=/dg/test_cmd_vel.
+#   - The real /cmd_vel has zero publishers; arbitration output is
+#     /dg/test_cmd_vel only.
+#   - Supervisor runs its unmodified defaults: max_covariance 0.5,
+#     suspect_samples 2, trigger_samples 2, signal_timeout 1.0,
+#     timer_period 0.1 s.  This file changes no threshold.
+#   - required_signals is the default blank sentinel, so no *_MISSING and no
+#     *_STALE trigger path is armed.
+#   - /gps/fix, /gps/rtk_status, /scan, /odom, /amcl_pose, /map, /initialpose
+#     come only from the synthetic injector configured below.
+#
+# INPUT_CONDITIONS  (one input variable moves per phase)
+#   - P1 NOMINAL 0-6 s: RTK fixed (quality 4, 12 sats), full 360 deg LiDAR
+#     window, amcl covariance 0.05 flat, odom twist 0.05 m/s.
+#   - P2 LIDAR_GEOMETRY_DEGRADED 6-12 s: only the LiDAR angular window
+#     changes to +-0.18 rad.  Mode stays "narrow", never "empty", so the scan
+#     remains valid and no scan-side failure path is armed.
+#   - P3 AMCL_COVARIANCE_RAMP 12-18 s: LiDAR restored to the full window;
+#     amcl pose covariance ramps linearly 0.20 -> 0.90 (covariance +
+#     covariance_end), so the degradation is gradual, not a step.
+#   - P4 AMCL_COVARIANCE_HIGH_HOLD 18-24 s: covariance held at 0.90.
+#   - yaw_covariance stays 0.03 everywhere; only covariance[0]/[7], the field
+#     the supervisor reads as amcl_covariance, is varied.
+#   - plant disabled, so /odom carries the historical constant twist and a
+#     static identity pose; no motion is possible in S05.
+#
+# REAL_TRIGGER_PATH
+#   - assess_health(): amcl_covariance > max_covariance 0.5 appends
+#     AMCL_COVARIANCE_HIGH to trigger_reasons -> triggerable is true.
+#   - Ramp arithmetic: covariance_at(r) = 0.20 + 0.70 r over [12.0, 18.0).
+#     r > 0.4286 crosses 0.5, i.e. elapsed > 14.57 s.
+#   - Streak arithmetic at 0.1 s per supervisor tick: 2 triggerable samples
+#     -> SUSPECTED, 1 further sample -> TRIGGERED, so TRIGGERED lands near
+#     14.9 s: 3.1 s before P3 ends and 9.1 s before duration_sec.
+#   - P2 is the negative control.  LIDAR_QUALITY_LOW is a degraded-only
+#     reason, so ~60 consecutive degraded supervisor samples cannot advance
+#     the state machine.  GNSS is nominal for the whole run, so the other
+#     degraded-only causes (GNSS_DEGRADED / GNSS_REJECTED) never appear.
+#   - Scan-to-Map cannot pre-empt the trigger either: SCAN_MATCH_QUALITY_LOW
+#     needs match_quality, and P1/P2 keep the geometry good.
+#
+# EXPECTED_TRANSITIONS  (documentation; this file asserts nothing)
+#   - relocalization: NORMAL -> SUSPECTED (~14.7 s) -> TRIGGERED (~14.9 s)
+#     -> STOPPING, then held in STOPPING with reason WAITING_FOR_STOP.
+#   - navigation: NOMINAL -> DEGRADED (P2, LiDAR) -> NOMINAL (early P3)
+#     -> LOCALIZATION_SUSPECT (~14.6 s, amcl REJECTED) -> RECOVERING (once
+#     relocalization reports TRIGGERED/STOPPING).
+#   - supervisor amcl_health: GOOD -> BAD at the same crossing.
+#   - The LOCALIZATION_SUSPECT window is only ~0.3-0.4 s wide by
+#     construction: suspect_samples + trigger_samples at 10 Hz fix it, and
+#     RECOVERING then takes precedence in the aggregator.
+#
+# REQUIRED_OUTPUTS  (produced by the nodes under test, recorded by the runner)
+#   - /dg/relocalization/status: state, trigger_reason, amcl_health,
+#     health_reasons.
+#   - /dg/navigation/status: overall_state and reasons.
+#   - /dg/lidar/quality: geometry_score across P1/P2/P3.
+#   - samples.csv columns relocalization_state, navigation_state,
+#     lidar_state, geometry_score; timeline.csv state changes; rosbag.
+#
+# PASS_CRITERIA  (checked against the artifacts, not by this file)
+#   - relocalization_state reaches SUSPECTED and then TRIGGERED inside P3.
+#   - trigger_reason contains AMCL_COVARIANCE_HIGH.
+#   - throughout P2, relocalization_state stays NORMAL while lidar_state is
+#     DEGRADED or REJECTED.
+#   - navigation_state reaches LOCALIZATION_SUSPECT and/or RECOVERING.
+#   - the supervisor's amcl_health goes GOOD -> BAD.
+#   - zero publishers on the real /cmd_vel for the whole run.
+#
+# FAIL_CRITERIA
+#   - TRIGGERED never observed, or first observed during P1/P2, which would
+#     mean a degraded-only cause reached the trigger path.
+#   - relocalization leaves NORMAL during P2.
+#   - FAILED or MANUAL_REQUIRED observed.  Scan, odom, amcl and GNSS are all
+#     published in every phase, so a stale-signal failure indicates a runtime
+#     defect rather than scenario intent.
+#   - any publisher on the real /cmd_vel, or any /dg/* message attributable
+#     to this scenario file.
+#   - non-finite fusion outputs.
+#
+# SAFETY_ASSERTIONS
+#   - This file publishes nothing.  It only parameterizes injector input
+#     topics: /gps/fix, /gps/rtk_status, /scan, /odom, /amcl_pose, /map,
+#     /initialpose.
+#   - plant.enabled false: no command is consumed, no motion is possible.
+#   - No key here can write a /dg/* topic, a state, a verdict, or a
+#     threshold.  Thresholds live in node parameters only.
+#
+# OUT_OF_SCOPE
+#   - STOPPING confirmation, ACTIVE_SCAN motion, candidate quality,
+#     VERIFYING, RECOVERED, retry and escalation, seed provenance, command
+#     arbitration source: S06 and later.
+#   - Localization accuracy, map quality, timing or competition performance.
+#   - The `expected:` key is deliberately absent.  The verdict belongs to the
+#     evaluator and the reviewer; an input file that also states the answer
+#     is not evidence.
+#
+# KNOWN_SYNTHETIC_LIMITATIONS
+#   - With the plant disabled, /odom reports the historical constant
+#     0.05 m/s twist, which exceeds stop_velocity 0.03, so STOPPING can never
+#     confirm a stop.  S05 deliberately ends its chain at TRIGGERED/STOPPING
+#     and claims no recovery; closed-loop motion is S06.
+#   - The odom pose stays identity, so odom yaw is a constant 0.0.  No
+#     yaw-tracking claim can be made from this run.
+#   - The analytic scan waveform is not real LiDAR geometry.  It exercises
+#     the geometry_score path, not scan matching.
+#   - amcl covariance here is a schedule, not a filter output.  This shows
+#     threshold handling, not AMCL behaviour.
+#   - result_writer.py has no S05 branch, so the run reports
+#     UNKNOWN_SCENARIO_NO_SCENARIO_SPECIFIC_ASSERTIONS as a warning and the
+#     criteria above must be checked by review.  Adding that branch is
+#     outside this file's ownership.
+#   - Injector and evaluator both sample at 10 Hz; sub-100 ms ordering
+#     between them is not evidence.
+# =============================================================================
+
+scenario_id: S05
+name: amcl_covariance_ramp_localization_trigger
+duration_sec: 24.0
+seed: 20261105
+rates:
+  sensor_hz: 10.0
+  map_hz: 1.0
+scan:
+  generator: analytic          # S01-S04 waveform; S05 needs no matchable geometry
+plant:
+  enabled: false               # open loop: no synthetic body, so no motion
+amcl_surrogate:
+  enabled: false               # covariance schedule only, no pose observer
+publish_initialpose: true      # keep the S01-S04 Scan-to-Map bootstrap
+phases:
+  - id: NOMINAL
+    start_sec: 0.0
+    end_sec: 6.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 0.05, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.05}
+  - id: LIDAR_GEOMETRY_DEGRADED
+    start_sec: 6.0
+    end_sec: 12.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: narrow, valid_fraction: 1.0, angle_min: -0.18, angle_max: 0.18, range_m: 3.0}
+    amcl: {publish: true, covariance: 0.05, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.05}
+  - id: AMCL_COVARIANCE_RAMP
+    start_sec: 12.0
+    end_sec: 18.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 0.20, covariance_end: 0.90, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.05}
+  - id: AMCL_COVARIANCE_HIGH_HOLD
+    start_sec: 18.0
+    end_sec: 24.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 0.90, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.05}

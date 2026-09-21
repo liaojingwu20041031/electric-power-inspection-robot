@@ -31,8 +31,11 @@ def main(args=None):
             self.declare_parameter("segment_timeout", 8.0)
             self.declare_parameter("settle_seconds", 0.5)
             self.declare_parameter("control_period", 0.05)
+            self.declare_parameter("cmd_vel_topic", "/cmd_vel_recovery")
 
-            self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+            self._cmd_pub = self.create_publisher(
+                Twist, self.get_parameter("cmd_vel_topic").value, 10
+            )
             self.create_subscription(Odometry, "/odom", self._on_odom, 20)
             self.create_subscription(
                 PoseWithCovarianceStamped, "/amcl_pose", lambda _msg: None, 1

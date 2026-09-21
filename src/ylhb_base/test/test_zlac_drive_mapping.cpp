@@ -13,6 +13,7 @@ using ylhb_base::ChannelRpm;
 using ylhb_base::DifferentialDriveKinematics;
 using ylhb_base::LogicalFaults;
 using ylhb_base::LogicalWheelRpm;
+using ylhb_base::LongitudinalAxisMapping;
 using ylhb_base::ZlacChannelMapping;
 
 TEST(DifferentialDriveKinematicsTest, PositiveLinearVelocityProducesPositiveLogicalWheelRpm)
@@ -33,6 +34,43 @@ TEST(DifferentialDriveKinematicsTest, PositiveAngularVelocityKeepsRosLeftTurnSem
 
   EXPECT_LT(rpm.left, 0.0);
   EXPECT_GT(rpm.right, 0.0);
+}
+
+TEST(LongitudinalAxisMappingTest, ReversesOnlyLinearCommand)
+{
+  const LongitudinalAxisMapping mapping(-1.0);
+
+  const auto [linear_x, angular_z] = mapping.command_to_internal(0.2, 0.4);
+
+  EXPECT_DOUBLE_EQ(linear_x, -0.2);
+  EXPECT_DOUBLE_EQ(angular_z, 0.4);
+}
+
+TEST(LongitudinalAxisMappingTest, CorrectsFeedbackIntoRosCoordinates)
+{
+  const LongitudinalAxisMapping mapping(-1.0);
+
+  const auto [linear_x, angular_z] = mapping.feedback_to_external(-0.2, 0.4);
+
+  EXPECT_DOUBLE_EQ(linear_x, 0.2);
+  EXPECT_DOUBLE_EQ(angular_z, 0.4);
+}
+
+TEST(LongitudinalAxisMappingTest, CommandAndFeedbackRoundTrip)
+{
+  const LongitudinalAxisMapping mapping(-1.0);
+  const auto internal = mapping.command_to_internal(0.2, -0.4);
+  const auto external = mapping.feedback_to_external(internal.first, internal.second);
+
+  EXPECT_DOUBLE_EQ(external.first, 0.2);
+  EXPECT_DOUBLE_EQ(external.second, -0.4);
+}
+
+TEST(LongitudinalAxisMappingTest, DirectionValuesNormalizeToExplicitPolarity)
+{
+  EXPECT_DOUBLE_EQ(LongitudinalAxisMapping::normalize_direction(2.0), 1.0);
+  EXPECT_DOUBLE_EQ(LongitudinalAxisMapping::normalize_direction(-0.01), -1.0);
+  EXPECT_DOUBLE_EQ(LongitudinalAxisMapping::normalize_direction(0.0), 1.0);
 }
 
 TEST(ZlacChannelMappingTest, FieldMappingPreservesRosTurnDirection)
@@ -80,6 +118,7 @@ TEST(ZlacChannelMappingTest, BaseKinematicsConfigUsesCalibratedFieldMapping)
     (std::istreambuf_iterator<char>(config_stream)), std::istreambuf_iterator<char>());
 
   EXPECT_NE(config.find("low_channel_is_left: true"), std::string::npos);
+  EXPECT_NE(config.find("linear_axis_direction: 1.0"), std::string::npos);
   EXPECT_NE(config.find("low_channel_direction: 1.0"), std::string::npos);
   EXPECT_NE(config.find("high_channel_direction: -1.0"), std::string::npos);
 }

@@ -10,7 +10,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.time import Time
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,8 @@ class BaseMotionSkillNode(Node):
         self.declare_parameter("base_skill_status_topic", "/inspection_ai/base_skill_status")
         self.declare_parameter("system_mode_topic", "/inspection_ai/system_mode")
         self.declare_parameter("zlac_status_topic", "/zlac8015d/status")
-        self.declare_parameter("cmd_vel_topic", "/cmd_vel")
+        self.declare_parameter("cmd_vel_topic", "/cmd_vel_manual")
+        self.declare_parameter("manual_authorization_topic", "/dg/control/manual_authorized")
         self.declare_parameter("odom_frame", "odom")
         self.declare_parameter("base_frame", "base_footprint")
         self.declare_parameter("linear_speed", 0.10)
@@ -100,6 +101,9 @@ class BaseMotionSkillNode(Node):
             self.get_logger().warning(f"tf unavailable for base motion skill: {exc}")
 
         self.cmd_vel_pub = self.create_publisher(Twist, self.get_parameter("cmd_vel_topic").value, 10)
+        self.manual_authorized_pub = self.create_publisher(
+            Bool, self.get_parameter("manual_authorization_topic").value, 10
+        )
         self.status_pub = self.create_publisher(String, self.get_parameter("base_skill_status_topic").value, 10)
         self.create_subscription(String, self.get_parameter("base_skill_command_topic").value, self.command_callback, 10)
         self.create_subscription(String, self.get_parameter("system_mode_topic").value, self.mode_callback, 10)
@@ -186,6 +190,7 @@ class BaseMotionSkillNode(Node):
             return
         current_pose = self.current_pose()
         if current_pose is None:
+            self.set_manual_authorized(False)
             self.cmd_vel_pub.publish(Twist())
             if time.time() - float(self.active["last_pose_at"]) >= float(
                 self.get_parameter("pose_loss_timeout_sec").value
@@ -205,6 +210,7 @@ class BaseMotionSkillNode(Node):
         elif command == "move_relative":
             distance = float(arguments["distance_m"])
             twist.linear.x = math.copysign(float(self.get_parameter("linear_speed").value), distance)
+        self.set_manual_authorized(True)
         self.cmd_vel_pub.publish(twist)
 
     def reached_target(self, current_pose=None) -> bool:
@@ -266,14 +272,21 @@ class BaseMotionSkillNode(Node):
         return math.atan2(math.sin(a - b), math.cos(a - b))
 
     def reject(self, reason: str, correlation=None) -> None:
+        self.set_manual_authorized(False)
         self.cmd_vel_pub.publish(Twist())
         self.publish_status("rejected", reason, correlation)
 
     def stop(self, status: str, message: str = "") -> None:
         correlation = dict((self.active or {}).get("correlation") or {})
         self.active = None
+        self.set_manual_authorized(False)
         self.cmd_vel_pub.publish(Twist())
         self.publish_status(status, message or status, correlation)
+
+    def set_manual_authorized(self, enabled: bool) -> None:
+        message = Bool()
+        message.data = bool(enabled)
+        self.manual_authorized_pub.publish(message)
 
     def publish_status(self, status: str, message: str, correlation=None) -> None:
         msg = String()

@@ -1,0 +1,8 @@
+{
+  "source": "/home/weiyang/dg202611_uwb_data_20260905/move/raw_20260905_170425.log",
+  "sha256": "bff39f008886317d90dd7c52db8b078a2e1d0a0e56126d71376142fd9e42334f",
+  "kt1_frames": 3000,
+  "mp_frames": 3000,
+  "invalid_frames": 0,
+  "csv": "/home/weiyang/dg202611_uwb_data_20260905/processed/move_raw_20260905_170425.csv"
+}

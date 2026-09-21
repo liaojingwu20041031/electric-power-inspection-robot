@@ -24,7 +24,7 @@ from sensor_msgs.msg import LaserScan
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Empty
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 from ylhb_mobile_bridge.patrol_route_store import (
@@ -88,6 +88,8 @@ STARTUP_STEP_LABELS = {
     'waiting_odom': '等待底盘传感器',
     'waiting_scan': '等待底盘传感器',
     'waiting_tf': '等待底盘传感器',
+    'waiting_chassis': '等待底盘驱动',
+    'chassis_offline': '底盘驱动离线',
     'waiting_after_bringup': '底盘启动后等待',
     'starting_navigation': '等待地图',
     'navigation_process_spawned': '导航进程已创建',
@@ -121,6 +123,7 @@ STARTUP_STEP_LABELS = {
 }
 
 READINESS_ERROR_MESSAGES = {
+    'chassis': '底盘驱动未在线',
     'odom': '等待 /odom 发布者超时',
     'scan': '等待 /scan 发布者超时',
     'tf': '等待 /tf 发布者超时',
@@ -261,7 +264,14 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('system_command_topic', '/inspection_ai/system_command')
         self.declare_parameter('system_status_topic', '/inspection_ai/system_status')
         self.declare_parameter('system_mode_topic', '/inspection_ai/system_mode')
-        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel_manual')
+        self.declare_parameter('manual_authorization_topic', '/dg/control/manual_authorized')
+        # The supervisor must gate bringup success on the actual ZLAC state.
+        # /odom and /scan can remain alive while the CANopen controller is
+        # offline, which otherwise makes a failed chassis start look healthy.
+        self.declare_parameter('base_backend', 'zlac')
+        self.declare_parameter('zlac_status_topic', '/zlac8015d/status')
+        self.declare_parameter('chassis_status_max_age_sec', 2.5)
         self.declare_parameter('workspace_dir', '')
         self.declare_parameter('route_directory', '')
         self.declare_parameter('ros_distro', 'humble')
@@ -308,6 +318,13 @@ class SystemSupervisorNode(Node):
         route_directory = str(self.get_parameter('route_directory').value).strip()
         self.route_directory = os.path.expanduser(route_directory) if route_directory else os.path.join(self.workspace_dir, 'maps')
         self.ros_distro = str(self.get_parameter('ros_distro').value)
+        self.base_backend = str(self.get_parameter('base_backend').value or 'zlac').strip().lower()
+        self.zlac_status_topic = str(
+            self.get_parameter('zlac_status_topic').value or '/zlac8015d/status'
+        ).strip() or '/zlac8015d/status'
+        self.chassis_status_max_age_sec = max(
+            0.1, float(self.get_parameter('chassis_status_max_age_sec').value)
+        )
         map_output_dir = str(self.get_parameter('map_output_dir').value).strip()
         self.map_output_dir = os.path.expanduser(map_output_dir) if map_output_dir else os.path.join(self.workspace_dir, 'maps')
         mapping3d_output_dir = str(self.get_parameter('mapping3d_output_dir').value).strip()
@@ -396,6 +413,8 @@ class SystemSupervisorNode(Node):
         self.last_odom_received_at = 0.0
         self.last_scan_received_at = 0.0
         self.last_scan_stamp_at = 0.0
+        self.last_chassis_status = ''
+        self.last_chassis_status_received_at = 0.0
         self.last_amcl_received_at = 0.0
         self.startup_generation = 0
         self.startup_id = ''
@@ -481,6 +500,8 @@ class SystemSupervisorNode(Node):
             String, self.get_parameter('system_mode_topic').value, latched_qos())
         self.cmd_vel_pub = self.create_publisher(
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
+        self.manual_authorized_pub = self.create_publisher(
+            Bool, self.get_parameter('manual_authorization_topic').value, 10)
         self.patrol_command_pub = self.create_publisher(String, '/patrol/command', 10)
         self.mapping3d_command_pub = self.create_publisher(String, '/inspection_ai/mapping3d_capture_command', 10)
         self.scene_asset_ready_pub = self.create_publisher(
@@ -508,6 +529,12 @@ class SystemSupervisorNode(Node):
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.create_subscription(
             LaserScan, '/scan', self.scan_callback, qos_profile_sensor_data
+        )
+        self.create_subscription(
+            String,
+            self.zlac_status_topic,
+            self.chassis_status_callback,
+            10,
         )
         self.create_subscription(
             PoseWithCovarianceStamped, '/amcl_pose', self.amcl_pose_callback, 10
@@ -844,6 +871,11 @@ class SystemSupervisorNode(Node):
             float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
         )
 
+    def chassis_status_callback(self, msg: String) -> None:
+        """Cache the plain-text ZLAC status for startup gating."""
+        self.last_chassis_status = str(msg.data or '').strip()
+        self.last_chassis_status_received_at = time.time()
+
     def amcl_pose_callback(self, _msg: PoseWithCovarianceStamped) -> None:
         self.last_amcl_received_at = time.time()
 
@@ -1077,8 +1109,20 @@ class SystemSupervisorNode(Node):
                 if name == 'bringup' and success:
                     success = self.wait_for_core_sensors(
                         self.patrol_timeout('patrol_bringup_timeout_sec', 25.0))
-                    if not success and not was_running:
-                        self.stop_process(name, report=False)
+                    if not success:
+                        # start_process_raw only proves that the launch shell
+                        # survived its short spawn window.  A ZLAC process can
+                        # stay alive while can1/drive initialization is
+                        # offline, so replace the optimistic result with the
+                        # readiness failure and clean up a process we started.
+                        if not was_running:
+                            self.stop_process(name, report=False)
+                        self.set_result(
+                            f'start_{name}',
+                            False,
+                            getattr(self, 'patrol_error', '')
+                            or '底盘与传感器未就绪',
+                        )
                 if name == 'mapping':
                     self.publish_mode('mapping')
                 if name in AGENT_COMPONENTS and correlation['operation_id']:
@@ -1358,6 +1402,9 @@ class SystemSupervisorNode(Node):
             return False
 
     def publish_zero_velocity(self) -> None:
+        authorization = Bool()
+        authorization.data = False
+        self.manual_authorized_pub.publish(authorization)
         self.cmd_vel_pub.publish(Twist())
 
     def start_robot_stack(self) -> None:
@@ -2539,6 +2586,7 @@ class SystemSupervisorNode(Node):
             'navigation': bool(navigation and navigation.is_running()),
             'executor': self.is_patrol_executor_ready(),
             'route_file': self.has_patrol_route_file(),
+            'chassis': sensors.get('chassis_online', True),
             'odom': sensors['odom_publisher'] and sensors['odom_fresh'],
             'scan': sensors['scan_publisher'] and sensors['scan_fresh'],
             'tf': sensors['odom_to_base'] and sensors['base_to_laser'],
@@ -2585,6 +2633,7 @@ class SystemSupervisorNode(Node):
             'navigation': bool(navigation and navigation.is_running()),
             'executor': bool(executor and executor.is_running()),
             'route_file': self.has_patrol_route_file(),
+            'chassis': self.chassis_status_info()['chassis_online'],
             'odom': False,
             'scan': False,
             'tf': False,
@@ -2619,6 +2668,7 @@ class SystemSupervisorNode(Node):
             'navigation',
             'executor',
             'route_file',
+            'chassis',
             'odom',
             'scan',
             'tf',
@@ -2645,7 +2695,25 @@ class SystemSupervisorNode(Node):
             if self.process_exited_before_readiness('bringup'):
                 return False
             sensors = self.core_sensor_status()
+            if not sensors.get('chassis_online', True):
+                self.startup_step = (
+                    'chassis_offline'
+                    if sensors.get('chassis_status') in {'offline', 'fault', 'feedback_timeout'}
+                    else 'waiting_chassis'
+                )
+                self.patrol_error = (
+                    '底盘驱动未在线: '
+                    + (sensors.get('chassis_status_text') or '未收到 /zlac8015d/status')
+                )
+                # A published terminal state is definitive.  Do not wait the
+                # full sensor timeout while the CANopen controller is known
+                # to be offline; start_bringup will report failure immediately.
+                if sensors.get('chassis_status') in {'offline', 'fault', 'feedback_timeout'}:
+                    return False
+                time.sleep(0.25)
+                continue
             if all((
+                sensors.get('chassis_online', True),
                 sensors['odom_publisher'],
                 sensors['odom_fresh'],
                 sensors['scan_publisher'],
@@ -3024,6 +3092,7 @@ class SystemSupervisorNode(Node):
     def has_fresh_core_sensors(self) -> bool:
         sensors = self.core_sensor_status()
         return all((
+            sensors.get('chassis_online', True),
             sensors['odom_publisher'],
             sensors['odom_fresh'],
             sensors['scan_publisher'],
@@ -3038,8 +3107,10 @@ class SystemSupervisorNode(Node):
         last_odom = getattr(self, 'last_odom_received_at', 0.0)
         odom_age = now - last_odom if last_odom else None
         scan = self.scan_freshness_status()
+        chassis = self.chassis_status_info(now)
         return {
             'freshness_sec': freshness,
+            **chassis,
             'odom_publisher': self.topic_has_publishers('/odom'),
             'odom_age_sec': odom_age,
             'odom_fresh': odom_age is not None and odom_age <= freshness,
@@ -3076,6 +3147,7 @@ class SystemSupervisorNode(Node):
 
         return (
             '传感器门控未就绪: '
+            f"底盘状态={status.get('chassis_status') or '未收到'}, "
             f"/odom发布者={'有' if status['odom_publisher'] else '无'}, "
             f"odom消息年龄={age_text(status['odom_age_sec'])}; "
             f"/scan发布者={'有' if status['scan_publisher'] else '无'}, "
@@ -3084,6 +3156,37 @@ class SystemSupervisorNode(Node):
             f"base_footprint→laser_link={'有' if status['base_to_laser'] else '无'}; "
             f"新鲜度要求≤{float(status['freshness_sec']):.2f}s"
         )
+
+    def chassis_status_info(self, now: Optional[float] = None) -> Dict[str, Any]:
+        """Return normalized read-only chassis health for startup/status gates."""
+        now = time.time() if now is None else float(now)
+        backend = str(getattr(self, 'base_backend', 'zlac') or 'zlac').strip().lower()
+        requires_status = backend in {'zlac', 'zlac8015d', 'can', 'canopen'}
+        raw = str(getattr(self, 'last_chassis_status', '') or '').strip()
+        state = raw.split(maxsplit=1)[0] if raw else ''
+        received_at = float(getattr(self, 'last_chassis_status_received_at', 0.0) or 0.0)
+        age = now - received_at if received_at else None
+        max_age = max(
+            0.1,
+            float(getattr(self, 'chassis_status_max_age_sec', 2.5) or 2.5),
+        )
+        fresh = bool(age is not None and age >= 0.0 and age <= max_age)
+        topic = str(
+            getattr(self, 'zlac_status_topic', '/zlac8015d/status')
+            or '/zlac8015d/status'
+        )
+        online = (not requires_status) or (fresh and state == 'online')
+        return {
+            'chassis_backend': backend,
+            'chassis_status_topic': topic,
+            'chassis_status': state or 'unknown',
+            'chassis_status_text': raw,
+            'chassis_status_age_sec': age,
+            'chassis_status_fresh': fresh,
+            'chassis_status_publisher': self.topic_has_publishers(topic) if requires_status else False,
+            'chassis_online': online,
+            'chassis_status_required': requires_status,
+        }
 
     def has_base_sensor_tf(self) -> bool:
         return self.has_transform('odom', 'base_footprint') and self.has_transform(
@@ -3524,6 +3627,12 @@ class SystemSupervisorNode(Node):
             'running'
             if (capture and capture.is_running()) or (reconstruct and reconstruct.is_running())
             else 'stopped'
+        )
+        chassis = self.chassis_status_info()
+        payload['chassis_status'] = chassis
+        payload['chassis_online'] = chassis['chassis_online']
+        payload['bringup_ready'] = bool(
+            payload.get('bringup') == 'running' and chassis['chassis_online']
         )
         patrol_state = getattr(self, 'patrol_mode_state', 'idle')
         inspection_state, inspection_outcome = self.inspection_state_fields(patrol_state)

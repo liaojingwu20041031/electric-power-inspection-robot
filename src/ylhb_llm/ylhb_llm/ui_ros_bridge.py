@@ -4,11 +4,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import Twist
 from PyQt5.QtCore import QObject, pyqtSignal
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, Trigger
 from ylhb_mobile_bridge.patrol_qos import patrol_status_qos_profile
 
@@ -47,6 +48,7 @@ class UiSignals(QObject):
     localizedObjects = pyqtSignal(str)
     patrolStatus = pyqtSignal(dict)
     patrolEvent = pyqtSignal(dict)
+    dgModelStatus = pyqtSignal(str, dict)
     mapping3dStatus = pyqtSignal(dict)
     mapping3dResult = pyqtSignal(dict)
 
@@ -83,9 +85,14 @@ class InspectionDisplayRosBridge(Node):
             'patrol_status_topic': '/patrol/status',
             'patrol_event_topic': '/patrol/event',
             'patrol_command_topic': '/patrol/command',
+            'dg_fusion_status_topic': '/dg/fusion/status',
+            'dg_lidar_quality_topic': '/dg/lidar/quality',
+            'dg_relocalization_status_topic': '/dg/relocalization/status',
+            'dg_navigation_status_topic': '/dg/navigation/status',
             'mapping3d_status_topic': '/inspection_ai/mapping3d_status',
             'mapping3d_result_topic': '/inspection_ai/mapping3d_result',
-            'cmd_vel_topic': '/cmd_vel',
+            'cmd_vel_topic': '/cmd_vel_manual',
+            'manual_authorization_topic': '/dg/control/manual_authorized',
             'initial_system_mode': 'ready',
             'fullscreen': True,
             'display': ':0',
@@ -104,6 +111,9 @@ class InspectionDisplayRosBridge(Node):
         self.system_command_pub = self.create_publisher(String, self._param('system_command_topic'), 10)
         self.patrol_command_pub = self.create_publisher(String, self._param('patrol_command_topic'), 10)
         self.cmd_vel_pub = self.create_publisher(Twist, self._param('cmd_vel_topic'), 10)
+        self.manual_authorization_pub = self.create_publisher(
+            Bool, self._param('manual_authorization_topic'), 10
+        )
         self.local_confirm_ui_status_pub = self.create_publisher(
             String, self._param('local_confirm_ui_status_topic'), latched_qos()
         )
@@ -132,6 +142,18 @@ class InspectionDisplayRosBridge(Node):
             self._patrol_event,
             patrol_status_qos_profile(),
         )
+        for model_key, parameter_name in (
+            ('model1', 'dg_fusion_status_topic'),
+            ('model2', 'dg_lidar_quality_topic'),
+            ('model3', 'dg_relocalization_status_topic'),
+            ('navigation', 'dg_navigation_status_topic'),
+        ):
+            self.create_subscription(
+                DiagnosticArray,
+                self._param(parameter_name),
+                lambda msg, key=model_key: self._dg_model_status(key, msg),
+                10,
+            )
         self.create_subscription(String, self._param('mapping3d_status_topic'), self._mapping3d_status, latched_qos())
         self.create_subscription(String, self._param('mapping3d_result_topic'), self._mapping3d_result, latched_qos())
         self.voice_clients = {
@@ -192,6 +214,13 @@ class InspectionDisplayRosBridge(Node):
         except json.JSONDecodeError:
             return {'raw': text}
 
+    @staticmethod
+    def diagnostic_level(value: Any) -> int:
+        """Normalize ROS ``byte`` and integer diagnostic levels."""
+        if isinstance(value, (bytes, bytearray)):
+            return int(value[0]) if value else 0
+        return int(value)
+
     def _system_status(self, msg: String) -> None:
         self.signals.systemStatus.emit(self.parse_json(msg.data))
 
@@ -212,6 +241,30 @@ class InspectionDisplayRosBridge(Node):
 
     def _patrol_event(self, msg: String) -> None:
         self.signals.patrolEvent.emit(self.parse_json(msg.data))
+
+    def _dg_model_status(self, model_key: str, msg: DiagnosticArray) -> None:
+        if not msg.status:
+            self.signals.dgModelStatus.emit(model_key, {
+                'available': False,
+                'message': 'NO_STATUS',
+                'values': {},
+            })
+            return
+        selected = msg.status[0]
+        self.signals.dgModelStatus.emit(model_key, {
+            'available': True,
+            'level': self.diagnostic_level(selected.level),
+            'name': str(selected.name),
+            'message': str(selected.message),
+            'hardware_id': str(selected.hardware_id),
+            'frame_id': str(msg.header.frame_id),
+            'stamp_sec': int(msg.header.stamp.sec),
+            'stamp_nanosec': int(msg.header.stamp.nanosec),
+            'values': {
+                str(item.key): str(item.value)
+                for item in selected.values
+            },
+        })
 
     def _mapping3d_status(self, msg: String) -> None:
         self.signals.mapping3dStatus.emit(self.parse_json(msg.data))
@@ -267,6 +320,9 @@ class InspectionDisplayRosBridge(Node):
         msg = Twist()
         msg.linear.x = float(linear)
         msg.angular.z = float(angular)
+        authorization = Bool()
+        authorization.data = bool(linear or angular)
+        self.manual_authorization_pub.publish(authorization)
         self.cmd_vel_pub.publish(msg)
 
     def call_voice_service(self, name: str) -> None:

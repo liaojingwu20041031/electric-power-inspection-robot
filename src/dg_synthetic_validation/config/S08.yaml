@@ -1,0 +1,394 @@
+# =============================================================================
+# DG-202611 / S08 -- multi-frame verification of a real candidate, then a safe
+#                    control handoff.
+#
+# S08 uses the same synthetic input base as S07 and adds one thing: the AMCL
+# surrogate converges, and it converges ONLY because the real Scan-to-Map node
+# accepted a match and published /scan_match_pose.  Convergence is never
+# scheduled by time alone.
+#
+# This file describes SYNTHETIC INPUT ONLY: an occupancy map, ray-cast LiDAR
+# geometry, wheel odometry, a synthetic AMCL observer, and a synthetic base
+# plant.  It specifies NO software-under-test output.  No candidate is
+# injected, no RECOVERED state is injected, no /cmd_vel_nav is published, and
+# no map->odom ground-truth transform is published.
+#
+# PRECONDITIONS
+#   - scenario_runner starts the integration with enable_nav2:=false,
+#     enable_multisource_fusion:=true, cmd_vel_output_topic:=/dg/test_cmd_vel.
+#   - Nodes under test, unmodified: scan_map_relocalization_node,
+#     active_relocalization_node (+ active_relocalization_core),
+#     navigation_health_node, cmd_vel_arbiter_node, lidar_robust_node,
+#     gnss_quality_node, multisource_fusion_node.
+#   - Shipped thresholds are used as-is and are NOT overridden by this file:
+#       matcher    min_score 0.45, min_inlier_ratio 0.45,
+#                  max_mean_distance 0.30, sample_stride 2,
+#                  max_scan_range 8.0,
+#                  coarse search +-0.20 m in 0.05 m steps and
+#                  +-10 deg in 2.5 deg steps,
+#                  fine search +-0.05 m in 0.02 m steps and
+#                  +-3 deg in 1.0 deg steps
+#       supervisor max_covariance 0.5, suspect_samples 2, trigger_samples 2,
+#                  stop_velocity 0.03, angular_speed 0.18 rad/s,
+#                  yaw_tolerance 1.5 deg, segment_deltas_deg [10, -20, 10],
+#                  settle_time 0.5 s, segment_timeout 8.0 s,
+#                  max_attempt_duration 30.0 s, max_attempts 2,
+#                  verification_samples 3, max_verify_position_jump 0.5 m,
+#                  max_verify_yaw_jump 20 deg, timer_period 0.1 s (10 Hz)
+#       arbiter    source_timeout 0.5 s, switch_guard_duration 0.2 s,
+#                  status_timeout 1.0 s
+#   - The supervisor's command topic is /cmd_vel_recovery.  Nothing in this run
+#     publishes the real /cmd_vel.
+#
+# INPUT_CONDITIONS
+#   - Identical to S07 for /map, /scan, TF, /odom and GNSS:
+#     80 x 80 grid at 0.1 m with border walls plus one interior strip;
+#     360 ray-cast beams from the plant's true pose against that same grid;
+#     dynamic odom->base_footprint plus static base_footprint->laser and no
+#     map->odom; odom.linear_x pinned to 0.0 in every phase because the
+#     historical 0.05 default exceeds stop_velocity 0.03 and would hold
+#     STOPPING open forever; GNSS nominal throughout.
+#   - publish_initialpose: false, so the event-driven matcher only ever answers
+#     a real supervisor seed request.
+#   - /amcl_pose: SYNTHETIC_AMCL_SURROGATE = plant truth plus a constant bias
+#     of (+0.15 m, +0.15 m, +0.14 rad = +8.021 deg), i.e. a seed wrong by
+#     0.2121 m and 8.021 deg, inside the matcher's coarse window.
+#   - CONVERGENCE (the S08 addition): converge_on_match true.  The surrogate
+#     subscribes to the real /scan_match_pose, which the Scan-to-Map node
+#     publishes only when it ACCEPTS a match.  convergence_delay_sec 0.2 delays
+#     the response to that real event; it cannot cause convergence on its own.
+#     On convergence the bias drops to zero and the reported covariance becomes
+#     covariance_after_convergence 0.08, which is below max_covariance 0.5, so
+#     navigation_health_node can report RECOVERED after recovery.
+#   - The convergence step moves the observed pose by 0.2121 m and 8.021 deg in
+#     one sample.  That is deliberately kept below the supervisor's
+#     max_verify_position_jump 0.5 m (2.4x margin) and max_verify_yaw_jump
+#     20 deg (2.5x margin) so multi-frame verification survives it instead of
+#     rejecting it as a teleport.
+#
+# REAL_TRIGGER_PATH
+#   /amcl_pose covariance ramps 0.05 -> 1.10 across P02_DEGRADING and crosses
+#   max_covariance 0.5 at t = 3.0 + 3.0 * (0.45 / 1.05) = 4.286 s.
+#     assess_health() reports AMCL_COVARIANCE_HIGH -> triggerable
+#     -> 2 triggerable samples: NORMAL -> SUSPECTED
+#     -> 2 more: SUSPECTED -> TRIGGERED
+#     -> TRIGGERED -> STOPPING
+#     -> the plant's odom twist is already 0.0 (<= stop_velocity 0.03), so
+#        STOP_CONFIRMED lands on the first STOPPING tick
+#     -> _begin_attempt(): seed_source LAST_TRUSTED (fallback CURRENT_AMCL),
+#        seed_pose = the BIASED surrogate pose
+#     -> ACTIVE_SCAN, segment 1 of 3, target = odom yaw + 10 deg
+#   The rotation is executed by the real chain: navigation_health_node maps
+#   relocalization TRIGGERED / STOPPING / ACTIVE_SCAN / WAITING_CANDIDATE /
+#   VERIFYING to RECOVERING, cmd_vel_arbiter_node then forwards
+#   /cmd_vel_recovery to /dg/test_cmd_vel, and only then does the plant rotate.
+#     -> SEGMENT_REACHED -> settle 0.5 s -> WAITING_CANDIDATE
+#     -> seed published on /dg/relocalization/seed
+#     -> the REAL matcher returns an ACCEPTED candidate on
+#        /dg/relocalization/match_quality and /scan_match_pose
+#     -> the supervisor enters VERIFYING and takes 3 consecutive samples at
+#        10 Hz, each checking candidate quality against the same three matcher
+#        thresholds and checking the AMCL pose step against
+#        max_verify_position_jump 0.5 m and max_verify_yaw_jump 20 deg
+#     -> the surrogate, having seen the real /scan_match_pose, converges 0.2 s
+#        later: bias -> 0 (a 0.2121 m / 8.021 deg step, both inside the verify
+#        jump limits) and covariance -> 0.08
+#     -> verification_count reaches 3 -> RECOVERED
+#     -> RECOVERED is terminal in the core, so it stays observable for the rest
+#        of the run
+#
+# EXPECTED_TRANSITIONS   (relocalization_state; only the ten real names exist:
+#   NORMAL SUSPECTED TRIGGERED STOPPING ACTIVE_SCAN WAITING_CANDIDATE VERIFYING
+#   RECOVERED FAILED MANUAL_REQUIRED)
+#     NORMAL -> SUSPECTED -> TRIGGERED -> STOPPING -> ACTIVE_SCAN
+#            -> WAITING_CANDIDATE -> VERIFYING -> RECOVERED   (terminal)
+#   navigation_state:
+#     NOMINAL -> LOCALIZATION_SUSPECT -> RECOVERING -> RECOVERED
+#   cmd_vel_source / arbiter reason:
+#     NONE (STATE_LOCALIZATION_SUSPECT)
+#       -> RECOVERY (SOURCE_SWITCH_TO_RECOVERY, then FORWARDED during
+#          ACTIVE_SCAN rotation)
+#       -> NONE (STATE_LOCALIZATION_SUSPECT while still recovering, if the
+#          health tick lands between states)
+#       -> NONE (NAV_SOURCE_STALE) after RECOVERED
+#   THE CONTROL HANDOFF, and why the expected end state is a zero command:
+#     Once relocalization reports RECOVERED and the converged covariance 0.08
+#     is below max_covariance 0.5, navigation_health_node reports RECOVERED.
+#     RECOVERED is in the arbiter's navigation-owned set, so the arbiter stops
+#     owning the recovery source and looks for /cmd_vel_nav.  Nav2 is
+#     intentionally not running, so no navigation command exists, and the
+#     arbiter emits a ZERO command with reason NAV_SOURCE_STALE and source
+#     NONE.  This is the EXPECTED AND ACCEPTABLE outcome: it is the evidence
+#     that recovery released control safely rather than continuing to drive.
+#     The robot standing still after RECOVERED is the correct result and must
+#     not be worked around.
+#   TRIGGERED and STOPPING each last exactly one 0.1 s supervisor tick, and the
+#   evaluator also samples at 10 Hz, so either may be aliased out of
+#   samples.csv / timeline.csv.  The authoritative record is the recorded
+#   /dg/relocalization/status stream in the rosbag.
+#
+# REQUIRED_OUTPUTS   (all produced by the software under test, none injected)
+#   - /dg/relocalization/status reaches ACTIVE_SCAN, WAITING_CANDIDATE,
+#     VERIFYING and RECOVERED, with verification_count rising 1 -> 2 -> 3 and
+#     failure_reason empty at RECOVERED.
+#   - >= 1 message on /dg/relocalization/seed with request_candidate true.
+#   - >= 1 /dg/relocalization/match_quality with accepted=true,
+#     reason=ACCEPTED, score >= 0.45, inlier_ratio >= 0.45,
+#     mean_distance <= 0.30.
+#   - >= 1 message on /scan_match_pose, published before the surrogate's
+#     covariance drops -- this is the causal proof that convergence followed a
+#     real accepted match rather than a timer.
+#   - /dg/navigation/status reaches RECOVERING and then RECOVERED.
+#   - /dg/test_cmd_vel: non-zero angular_z only while ACTIVE_SCAN; zero for
+#     every sample after RECOVERED.
+#   - /dg/fusion/status present throughout with finite uncertainties.
+#   - >= 5 s of recorded samples after the first RECOVERED sample.
+#
+# PASS_CRITERIA
+#   NOTE: result_writer.evaluate_scenario() currently has no S08 branch, so it
+#   emits the warning UNKNOWN_SCENARIO_NO_SCENARIO_SPECIFIC_ASSERTIONS and the
+#   automated PASS/FAIL is decided only by the generic gates
+#   (samples_present, integration_alive, real_cmd_vel_is_unpublished,
+#   finite_fusion_outputs).  The criteria below are the review criteria for this
+#   scenario and are checked against samples.csv / timeline.csv / the rosbag.
+#   P1  The supervisor reached RECOVERED through VERIFYING, and
+#       verification_count reached 3 (verification_samples) without resetting.
+#   P2  At least one accepted match_quality message satisfies all three real
+#       matcher thresholds simultaneously.
+#   P3  Every accepted match_quality message is attributable to a preceding
+#       /dg/relocalization/seed message.
+#   P4  /scan_match_pose was published BEFORE the /amcl_pose covariance dropped
+#       to 0.08, i.e. convergence was caused by the real accepted match.
+#   P5  navigation_state reached RECOVERED, and after that the arbiter emitted
+#       a zero command with reason NAV_SOURCE_STALE.
+#   P6  /dg/test_cmd_vel is exactly zero on every sample after RECOVERED, and
+#       command_linear_x is 0.0 on every supervisor sample of the whole run.
+#   P7  The real /cmd_vel has zero publishers for the whole run.
+#   P8  Fusion outputs stay finite for the whole run.
+#
+# FAIL_CRITERIA
+#   F1  relocalization_state reaches FAILED or MANUAL_REQUIRED.
+#   F2  VERIFYING is entered but verification_count resets, or the run ends
+#       with VERIFY_POSE_JUMP / VERIFICATION_SIGNAL_STALE /
+#       CANDIDATE_QUALITY_LOW as failure_reason.
+#   F3  RECOVERED is never reached inside duration_sec.
+#   F4  The surrogate covariance drops without a preceding /scan_match_pose
+#       (convergence not caused by a real match).
+#   F5  A match_quality message with no preceding seed message.
+#   F6  Any non-zero command on /dg/test_cmd_vel after RECOVERED, or any
+#       non-zero command while the state is not ACTIVE_SCAN.
+#   F7  Non-zero /cmd_vel publishers, a non-finite fusion output, or the
+#       integration launch exiting early.
+#   NOT a failure: the robot standing still after RECOVERED, and the arbiter
+#   reporting NAV_SOURCE_STALE with cmd_vel source NONE.  Nav2 is intentionally
+#   not running.
+#
+# SAFETY_ASSERTIONS
+#   S1  The real /cmd_vel is never published.  The supervisor writes only to
+#       /cmd_vel_recovery and the arbiter only to /dg/test_cmd_vel; schema
+#       validation additionally refuses plant.command_topic == /cmd_vel.
+#   S2  command_linear_x is 0.0 in every supervisor output; recovery motion is
+#       rotation only, bounded by segment_deltas_deg and max_total_rotation
+#       60 deg.
+#   S3  Rotation is only forwarded while navigation health is RECOVERING; the
+#       moment health leaves RECOVERING the arbiter stops forwarding.
+#   S4  After RECOVERED the command is zero, so recovery cannot leave the robot
+#       driving.
+#   S5  No /dg/* topic is published by this scenario or by the injector.
+#   S6  No RECOVERED state, no candidate, and no match result is injected.
+#   S7  No map->odom transform is published, so the software under test cannot
+#       read a perfect ground-truth pose through TF.
+#   S8  The plant is subscribe-only on /dg/test_cmd_vel.
+#
+# OUT_OF_SCOPE
+#   - Localization ACCURACY.  The surrogate reads synthetic ground truth, so
+#     this run says nothing about how well a real AMCL would localize, and
+#     nothing about how accurate the recovered pose would be on hardware.
+#   - Nav2 behaviour after handoff.  Nav2 is intentionally not running, so the
+#     run shows the release of control, not the resumption of navigation.
+#   - Real LiDAR physics, real wheel dynamics, latency, and sensor noise.
+#   - Real-robot and Gazebo evidence.  This is SYNTHETIC_SOFTWARE_VALIDATION,
+#     NOT_REAL_ROBOT_DATA, NOT_GAZEBO_DATA,
+#     NOT_COMPETITION_PERFORMANCE_EVIDENCE.
+#   - Timing and CPU performance claims.
+#   - Retry, attempt exhaustion, and MANUAL_REQUIRED escalation.
+#   - Verification REJECTION behaviour: this scenario is the accept path.  The
+#     jump limits are exercised but not violated.
+#
+# KNOWN_SYNTHETIC_LIMITATIONS
+#   - The true pose is AUTHORED BY THE TEST RIG.  plant.start_x / start_y /
+#     start_yaw define it, and the ray-cast LiDAR and the AMCL surrogate are
+#     both generated from it.
+#   - GROUND_TRUTH_USED_BY_SUT = NO.  The surrogate's ground-truth access is on
+#     the input side only.  The software under test receives /scan, /map,
+#     /odom, /amcl_pose and TF, with no map->odom transform, so no node under
+#     test ever reads the true pose.
+#   - The matcher's mean_distance is a SCAN-TO-MAP RESIDUAL in metres measured
+#     against synthetic geometry: the mean distance from the transformed scan
+#     points to the nearest occupied cell in an approximate distance field.  It
+#     is NOT a positioning error in metres and must never be reported as one.
+#     score is a unitless inlier_ratio * exp(-mean_distance / 0.35) figure of
+#     merit, not a probability.
+#   - The surrogate's convergence is a STEP to the authored true pose.  A real
+#     AMCL would re-converge gradually and imperfectly.  What this run proves
+#     is that the software chain reacts correctly to a convergence event that
+#     a real accepted match caused; it does not prove a real AMCL would
+#     converge at all.
+#   - The verification jump limits are exercised with a single 0.2121 m /
+#     8.021 deg step.  Realistic multi-sample pose noise is not modelled, so
+#     verification is easier here than on hardware.
+#   - The scan is generated from the same grid the matcher matches against, so
+#     the residual is optimistically small.  Real sensor noise, unmapped
+#     obstacles and map staleness would all raise it.
+#   - The plant is forward-Euler kinematics with no wheel dynamics, no noise
+#     and no latency, so stop detection and rotation tracking are easier than
+#     on hardware.
+#   - The AMCL surrogate is NOT AMCL: its error is a single constant bias, not
+#     a particle-filter distribution, and its covariance schedule is authored
+#     by this file rather than estimated.
+#   - GNSS is nominal throughout, so cross-coupled GNSS failure is untested.
+# OFFLINE_MATCHER_EVIDENCE  (pure-function call, no ROS, no scenario run:
+#   refine_pose_near_seed + approximate_distance_field from
+#   scan_map_relocalization_node, with occupancy_matrix / beam_angles /
+#   raycast_ranges from synthetic_injector_node, scan built at the true pose,
+#   seed offset by this file's bias, laser->base_footprint identity,
+#   sample_stride 2 -> 180 points)
+#     true pose (0, 0, +10.0 deg), seed (+0.15, +0.15, +8.021 deg)
+#     seed offset needed: dx -0.15 m, dy -0.15 m, dyaw +1.98 deg
+#       (inside the coarse window +-0.20 m per axis / +-10 deg)
+#     seed pose scored on its own: score 0.2440, inlier_ratio 0.3782,
+#       mean_distance 0.1533 -> would be REJECTED
+#     refine_pose_near_seed: ACCEPTED
+#       score 0.9672 (>= 0.45), inlier_ratio 1.0000 (>= 0.45),
+#       mean_distance 0.0117 m (<= 0.30), used_points 180
+#       residual to the authored true pose: 0.0141 m, -0.479 deg
+#     checked across every yaw the plant can land on (0.0, 8.5, 9.0, 9.5, 10.0,
+#     10.5, 11.0 deg): ACCEPTED in all seven, score 0.9672-0.9890,
+#     inlier_ratio 1.0000, mean_distance <= 0.0117 m, and the seed alone stayed
+#     below both thresholds in all seven (max seed score 0.3306, max seed
+#     inlier_ratio 0.4846)
+#     matcher cost measured on this VM: 0.11-0.55 s per call across repeated
+#     runs (981 candidate poses x 180 points in pure Python).  This is a
+#     property of this VM under load, not a specification.  It is far inside
+#     both segment_timeout 8.0 s and max_attempt_duration 30.0 s.
+#
+# TIMING_BUDGET  (supervisor, sensors and evaluator all at 10 Hz)
+#     covariance crosses 0.5                                    t = 4.286 s
+#   + 0.1  first supervisor tick that observes it
+#   + 0.3  NORMAL -> SUSPECTED -> TRIGGERED (3 triggerable samples)
+#   + 0.1  TRIGGERED -> STOPPING
+#   + 0.1  STOPPING -> STOP_CONFIRMED -> ACTIVE_SCAN (odom twist already 0)
+#   + 0.3  navigation-health tick and the arbiter's 0.2 s switch guard
+#   + 1.1  segment 1 rotation: 10 deg at 0.18 rad/s, stop at 1.5 deg tolerance
+#   + 0.5  settle_time
+#   + 0.1  WAITING_CANDIDATE + seed published
+#   + 0.8  real matcher (measured 0.11-0.55 s, budgeted at 0.8 s)
+#   + 0.1  candidate consumed -> VERIFYING
+#   + 0.3  3 verification samples at 10 Hz -> RECOVERED
+#   = 8.1 s expected RECOVERED.  Surrogate convergence lands at about
+#     7.5 + 0.2 = 7.7 s, i.e. inside the verification window, which is the
+#     point of the 0.2 s delay.
+#   duration_sec 24.0 therefore leaves about 16 s of post-RECOVERED
+#   observation, and still leaves about 10 s even in the worst case where
+#   segments 1 and 2 both fail and segment 3 succeeds (about +5.9 s, RECOVERED
+#   near 14.0 s).  scenario_runner adds settle_sec 2.0 on top.  This is well
+#   over the 5 s minimum needed to see the control release, per the brief to
+#   budget generously.
+# =============================================================================
+scenario_id: S08
+name: multiframe_verification_and_control_handoff
+duration_sec: 24.0
+seed: 20261108
+rates:
+  sensor_hz: 10.0
+  map_hz: 1.0
+# Event-driven matcher: no periodic bootstrap /initialpose, so every
+# match_quality message is attributable to a real supervisor seed request.
+publish_initialpose: false
+map:
+  resolution: 0.1
+  width: 80
+  height: 80
+  origin_x: -4.0
+  origin_y: -4.0
+  border: true
+  interior_wall: true
+  interior_wall_x_min: 30
+  interior_wall_x_max: 31
+  interior_wall_y_min: 15
+  interior_wall_y_max: 65
+scan:
+  generator: raycast
+  beam_count: 360
+  range_min: 0.05
+  range_max: 8.0
+  frame_id: laser
+  raycast_step: 0.05
+plant:
+  enabled: true
+  command_topic: /dg/test_cmd_vel
+  start_x: 0.0
+  start_y: 0.0
+  start_yaw: 0.0
+  max_linear: 0.5
+  max_angular: 1.0
+  kinematics: PLANAR_DIFFERENTIAL_DRIVE
+  integration: EULER_FORWARD
+  command_latency_sec: 0.0
+  noise_stddev: 0.0
+  publish_tf: true
+  odom_frame_id: odom
+  base_frame_id: base_footprint
+  sensor_frame_id: laser
+amcl_surrogate:
+  enabled: true
+  follows_plant: true
+  accesses_plant_ground_truth: true
+  bias_x: 0.15
+  bias_y: 0.15
+  bias_yaw: 0.14
+  # Convergence is caused by a REAL accepted match on /scan_match_pose, never
+  # by a timer.  convergence_delay_sec only delays the response to that event.
+  converge_on_match: true
+  convergence_delay_sec: 0.2
+  covariance_after_convergence: 0.08
+  noise_stddev: 0.0
+  match_pose_topic: /scan_match_pose
+  map_frame_id: map
+phases:
+  - id: P01_NOMINAL
+    start_sec: 0.0
+    end_sec: 3.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 0.05, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.0}
+  - id: P02_DEGRADING
+    start_sec: 3.0
+    end_sec: 6.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 0.05, covariance_end: 1.10, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.0}
+  - id: P03_COVARIANCE_HIGH_UNTIL_REAL_MATCH
+    start_sec: 6.0
+    end_sec: 24.0
+    gnss: {quality: 4, satellites: 12, hdop: 0.8, differential_age: 0.5, fix_available: true}
+    lidar: {mode: normal, valid_fraction: 1.0, angle_min: -3.141592653589793, angle_max: 3.141592653589793, range_m: 3.0}
+    amcl: {publish: true, covariance: 1.10, yaw_covariance: 0.03}
+    odom: {publish: true, linear_x: 0.0}
+expected:
+  relocalization_states_required: [SUSPECTED, ACTIVE_SCAN, WAITING_CANDIDATE, VERIFYING, RECOVERED]
+  navigation_states_required: [RECOVERING, RECOVERED]
+  seed_requests_min_count: 1
+  accepted_match_min_count: 1
+  match_quality_min_score: 0.45
+  match_quality_min_inlier_ratio: 0.45
+  match_quality_max_mean_distance: 0.30
+  match_quality_attributable_to_seed: true
+  verification_samples_min_count: 3
+  post_recovered_observation_sec_min: 5.0
+  expected_arbiter_reason_after_recovered: NAV_SOURCE_STALE
+  expected_cmd_vel_after_recovered: zero
+  real_cmd_vel_publishers: 0
+  ground_truth_used_by_sut: false

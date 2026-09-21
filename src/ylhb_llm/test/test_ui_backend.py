@@ -71,6 +71,13 @@ def route_loop_config():
     return dict(data['routes'][0]['loop'])
 
 
+def test_diagnostic_level_accepts_ros_byte_and_integer_values():
+    assert InspectionDisplayRosBridge.diagnostic_level(b'\x00') == 0
+    assert InspectionDisplayRosBridge.diagnostic_level(b'\x01') == 1
+    assert InspectionDisplayRosBridge.diagnostic_level(bytearray([2])) == 2
+    assert InspectionDisplayRosBridge.diagnostic_level(1) == 1
+
+
 def process_events_until(predicate, timeout_sec=2.0):
     app = QCoreApplication.instance() or QCoreApplication([])
     deadline = time.monotonic() + timeout_sec
@@ -477,6 +484,24 @@ def test_patrol_readiness_properties_follow_system_status():
     assert backend.patrolError == '等待巡逻依赖: nav2_action'
     assert backend.patrolReady is True
     assert backend.patrolControlsEnabled is True
+
+
+def test_dg_model_status_expires_instead_of_staying_green():
+    now = [100.0]
+    backend = make_backend(lambda: now[0])
+
+    backend.update_dg_model_status('model1', {
+        'available': True,
+        'level': 0,
+        'message': 'FUSED',
+        'values': {'fusion_mode': 'FUSED'},
+    })
+
+    assert backend.dgModelStatuses['model1']['fresh'] is True
+    assert backend.dgModelStatuses['model1']['values']['fusion_mode'] == 'FUSED'
+
+    now[0] += 3.1
+    assert backend.dgModelStatuses['model1']['fresh'] is False
 
 
 def test_mapping3d_status_properties_follow_direct_and_system_status(tmp_path):

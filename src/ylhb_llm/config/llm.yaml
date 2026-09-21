@@ -65,7 +65,8 @@ basic_motion_command_node:
   ros__parameters:
     motion_command_topic: /inspection_ai/motion_command
     system_mode_topic: /inspection_ai/system_mode
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /cmd_vel_manual
+    manual_authorization_topic: /dg/control/manual_authorized
     say_text_topic: /inspection_ai/say_text
     zlac_status_topic: /zlac8015d/status
     linear_speed: 0.12
@@ -81,7 +82,8 @@ base_motion_skill_node:
     base_skill_status_topic: /inspection_ai/base_skill_status
     system_mode_topic: /inspection_ai/system_mode
     zlac_status_topic: /zlac8015d/status
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /cmd_vel_manual
+    manual_authorization_topic: /dg/control/manual_authorized
     odom_frame: odom
     base_frame: base_footprint
     linear_speed: 0.10
@@ -113,7 +115,8 @@ inspection_display_ui_node:
     stop_voice_session_service_name: /inspection_ai/stop_voice_session
     capture_voice_service_name: /inspection_ai/capture_voice
     localized_objects_topic: /perception/localized_objects
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /cmd_vel_manual
+    manual_authorization_topic: /dg/control/manual_authorized
     initial_system_mode: ready
     fullscreen: true
     display: ":0"
@@ -128,7 +131,11 @@ system_supervisor_node:
     system_command_topic: /inspection_ai/system_command
     system_status_topic: /inspection_ai/system_status
     system_mode_topic: /inspection_ai/system_mode
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /cmd_vel_manual
+    manual_authorization_topic: /dg/control/manual_authorized
+    base_backend: zlac
+    zlac_status_topic: /zlac8015d/status
+    chassis_status_max_age_sec: 2.5
     workspace_dir: ""
     route_directory: ""
     patrol_route_path: auto

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "requirement_id": "POSITION_CONCURRENT_DEGRADATION",
+  "evidence_source": "REAL_HARDWARE",
+  "operator_observed": true,
+  "conditions": {
+    "gnss_bds_interruption": true,
+    "lidar_degradation": true,
+    "concurrent": true
+  },
+  "ground_truth": {
+    "independent_xy": true,
+    "independent_z": true,
+    "method": "填写实际使用的卷尺/激光测距/全站仪方法",
+    "coordinate_frame": "map"
+  },
+  "notes": "运行前填写并冻结；不要在看到结果后改条件。"
+}
